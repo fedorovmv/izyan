@@ -152,6 +152,12 @@ func frameIsSymbol(fr TraceFrame, sym domain.SymbolRef) bool {
 		}
 	}
 	fn = strings.TrimPrefix(fn, "*")
+	// Receiver-qualified symbols ("Type.Method") must also match the frame's
+	// receiver; bare symbols match on the function name alone.
+	if i := strings.LastIndexByte(sym.Symbol, '.'); i >= 0 {
+		recv := strings.TrimPrefix(strings.TrimSuffix(strings.TrimPrefix(fr.Receiver, "("), ")"), "*")
+		return fn == sym.Symbol[i+1:] && recv == sym.Symbol[:i]
+	}
 	return fn == sym.Symbol
 }
 
@@ -168,7 +174,7 @@ func hasString(s []string, v string) bool {
 func (f Finding) CallPath() domain.CallPath {
 	cp := domain.CallPath{Frames: make([]domain.CallSite, 0, len(f.Trace))}
 	for _, fr := range f.Trace {
-		cs := domain.CallSite{Package: fr.Package, Function: fr.Function}
+		cs := domain.CallSite{Package: fr.Package, Function: fr.Function, Receiver: fr.Receiver}
 		if fr.Position != nil {
 			cs.File = fr.Position.Filename
 			cs.Line = fr.Position.Line

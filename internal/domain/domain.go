@@ -296,6 +296,7 @@ type CallSite struct {
 	Line     int    `json:"line,omitempty"`
 	Column   int    `json:"column,omitempty"`
 	Function string `json:"function"`
+	Receiver string `json:"receiver,omitempty"`
 	Package  string `json:"package,omitempty"`
 }
 

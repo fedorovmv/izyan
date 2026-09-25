@@ -2,6 +2,7 @@ package evaluator
 
 import (
 	"fmt"
+	"strings"
 
 	"example.com/vuln-analyzer/internal/domain"
 )
@@ -71,22 +72,41 @@ func (SymbolReachable) Evaluate(cond domain.Condition, c *domain.AnalysisCase) d
 }
 
 func reachabilitySubjects(cond domain.Condition, c *domain.AnalysisCase) []domain.SymbolRef {
-	if len(cond.Subjects) > 0 {
-		return cond.Subjects
-	}
-	if cond.Subject != nil {
-		return []domain.SymbolRef{*cond.Subject}
-	}
 	var out []domain.SymbolRef
-	if c.Exploit != nil {
-		out = append(out, c.Exploit.RootCauses...)
+	switch {
+	case len(cond.Subjects) > 0:
+		out = append(out, cond.Subjects...)
+	case cond.Subject != nil:
+		out = append(out, *cond.Subject)
+	default:
+		if c.Exploit != nil {
+			out = append(out, c.Exploit.RootCauses...)
+		}
+		if len(out) == 0 && c.RootCause != nil {
+			for _, rc := range c.RootCause.RootCauses {
+				out = append(out, domain.SymbolRef{Package: rc.Package, Symbol: rc.Symbol})
+			}
+		}
 	}
-	if len(out) == 0 && c.RootCause != nil {
-		for _, rc := range c.RootCause.RootCauses {
-			out = append(out, domain.SymbolRef{Package: rc.Package, Symbol: rc.Symbol})
+	// govulncheck traces to advisory-declared vulnerable symbols, which need
+	// not coincide with the fix-commit-derived root causes (e.g. a network-
+	// driven library sink). The advisory symbol set defines the vulnerable
+	// code, so a trace reaching any of them proves reachability.
+	for _, s := range c.Vulnerability.AffectedSymbols {
+		if !containsSymbol(out, s) {
+			out = append(out, s)
 		}
 	}
 	return out
+}
+
+func containsSymbol(list []domain.SymbolRef, s domain.SymbolRef) bool {
+	for _, x := range list {
+		if x == s {
+			return true
+		}
+	}
+	return false
 }
 
 func govulncheckRan(c *domain.AnalysisCase) bool {
@@ -111,5 +131,17 @@ func frameMatches(cs domain.CallSite, sym domain.SymbolRef) bool {
 	if cs.Package != sym.Package {
 		return false
 	}
+	// Symbols may be receiver-qualified ("Type.Method"); call sites carry the
+	// receiver separately ("*Type" + "Method").
+	if i := strings.LastIndexByte(sym.Symbol, '.'); i >= 0 {
+		recv, fn := sym.Symbol[:i], sym.Symbol[i+1:]
+		return cs.Function == fn && normalizeReceiver(cs.Receiver) == recv
+	}
 	return cs.Function == sym.Symbol
+}
+
+func normalizeReceiver(r string) string {
+	r = strings.TrimPrefix(r, "(")
+	r = strings.TrimSuffix(r, ")")
+	return strings.TrimPrefix(r, "*")
 }
