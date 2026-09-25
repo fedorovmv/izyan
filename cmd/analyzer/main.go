@@ -174,7 +174,7 @@ func analyzeCase(ctx context.Context, o analyzeOpts) (*domain.AnalysisCase, erro
 	var fallbackEval evaluator.ConditionEvaluator
 	if llmCfg.Enabled && !o.detOnly {
 		client := llm.NewClient(llmCfg)
-		rcResolver = llm.RootCauseResolver{Client: client, Fallback: rcResolver}
+		rcResolver = &llm.RootCauseResolver{Client: client, Fallback: rcResolver}
 		builder = llm.ExploitModelBuilder{Client: client, Fallback: builder}
 		reviewers = append(reviewers, llm.Reviewer{Client: client})
 		fallbackEval = llm.ClaimEvaluator{Client: client, Tools: llm.Tools{Source: srcIndex}}
@@ -405,6 +405,10 @@ func listModules(ctx context.Context, repo string) ([]string, error) {
 	cmd.Dir = repo
 	out, err := cmd.Output()
 	if err != nil {
+		// Vendor mode: `go list -m all` refuses; modules.txt is authoritative.
+		if vm := vendorModulePaths(repo); vm != nil {
+			return vm, nil
+		}
 		return nil, err
 	}
 	var mods []string
@@ -417,6 +421,20 @@ func listModules(ctx context.Context, repo string) ([]string, error) {
 		}
 	}
 	return mods, nil
+}
+
+// vendorModulePaths reads module paths from vendor/modules.txt when the
+// repository vendors its dependencies.
+func vendorModulePaths(repo string) []string {
+	b, err := os.ReadFile(filepath.Join(repo, "vendor", "modules.txt"))
+	if err != nil {
+		return nil
+	}
+	var mods []string
+	for _, m := range affected.ParseVendorModules(b) {
+		mods = append(mods, m.Path)
+	}
+	return mods
 }
 
 // dedupeAppend adds ids not already present, preserving order.

@@ -98,6 +98,13 @@ func (h CheckAffected) Run(ctx context.Context, c *domain.AnalysisCase) (workflo
 
 // RootCauseResolver produces a root cause model — deterministic or
 // LLM-assisted. LLM proposals still pass through Verifier.
+// RootCauseProposer is an optional resolver extension: when every
+// resolved candidate fails verification, the state asks it once for
+// alternative candidates and verifies those the same way.
+type RootCauseProposer interface {
+	Propose(ctx context.Context, c *domain.AnalysisCase, v domain.Vulnerability) ([]domain.RootCause, []string, error)
+}
+
 type RootCauseResolver interface {
 	Resolve(ctx context.Context, c *domain.AnalysisCase, v domain.Vulnerability) (*domain.RootCauseModel, []domain.Evidence, error)
 }
@@ -150,6 +157,23 @@ func (h ResolveRootCause) Run(ctx context.Context, c *domain.AnalysisCase) (work
 	}
 	c.RootCause = model
 	c.EvidenceGraph.ComputeHash()
+	// Candidates may fail source verification (e.g. a symbol added only by
+	// the fix commit). If the resolver can propose fresh candidates, ask
+	// once and verify those through the same verifier.
+	if model.Status != domain.RootCauseResolved && h.Verifier != nil {
+		if p, ok := h.Resolver.(RootCauseProposer); ok {
+			props, lims, err := p.Propose(ctx, c, c.Vulnerability)
+			model.Limitations = append(model.Limitations, lims...)
+			if err == nil && len(props) > 0 {
+				model.RootCauses = props
+				model.Limitations = append(model.Limitations,
+					h.Verifier.Verify(ctx, model, c.Vulnerability)...)
+				if len(model.RootCauses) > 0 {
+					model.Status = domain.RootCauseResolved
+				}
+			}
+		}
+	}
 	if model.Status != domain.RootCauseResolved {
 		return workflow.Transition{
 			Next:   domain.StateInconclusive,
@@ -331,7 +355,7 @@ func (h CollectEvidence) collectProvenance(ctx context.Context, c *domain.Analys
 		return
 	}
 	if len(sites) == 0 {
-		c.EvidenceGraph.Limitations = append(c.EvidenceGraph.Limitations,
+		c.EvidenceGraph.AddLimitation(
 			fmt.Sprintf("no call sites of %s.%s found in product packages", subj.Package, subj.Symbol))
 		return
 	}

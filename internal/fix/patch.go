@@ -118,8 +118,8 @@ type File struct {
 var (
 	diffGitRe  = regexp.MustCompile(`^diff --git a/(\S+) b/(\S+)`)
 	hunkRe     = regexp.MustCompile(`^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@\s*(.*)`)
-	funcCtxRe  = regexp.MustCompile(`func\s+(?:\([^)]*\)\s*)?([A-Za-z_]\w*)\s*\(`)
-	funcDeclRe = regexp.MustCompile(`^[+-]?func\s+(?:\([^)]*\)\s*)?([A-Za-z_]\w*)\s*\(`)
+	funcCtxRe  = regexp.MustCompile(`func\s+(?:\(([^)]*)\)\s*)?([A-Za-z_]\w*)\s*\(`)
+	funcDeclRe = regexp.MustCompile(`^[+-]?func\s+(?:\(([^)]*)\)\s*)?([A-Za-z_]\w*)\s*\(`)
 )
 
 // Parse splits a unified diff into per-file entries and extracts the names
@@ -145,7 +145,7 @@ func Parse(patch string) []File {
 		}
 		if m := hunkRe.FindStringSubmatch(line); m != nil {
 			if fm := funcCtxRe.FindStringSubmatch(m[1]); fm != nil {
-				curSym = fm[1]
+				curSym = qualifySym(fm[1], fm[2])
 				addSymbol(cur, curSym)
 			}
 			continue
@@ -157,11 +157,32 @@ func Parse(patch string) []File {
 			cur.Dels++
 		}
 		if fm := funcDeclRe.FindStringSubmatch(strings.TrimLeft(line, "+-")); fm != nil {
-			addSymbol(cur, fm[1])
+			addSymbol(cur, qualifySym(fm[1], fm[2]))
 		}
 	}
 	flush()
 	return files
+}
+
+// qualifySym renders a parsed func/method name as "Type.Name" when a
+// receiver is present: "func (ch *Channel) recvContent" -> "Channel.recvContent".
+// The verifier resolves Type.Method symbols; a bare name would miss methods.
+func qualifySym(recv, name string) string {
+	if recv == "" {
+		return name
+	}
+	f := strings.Fields(recv)
+	if len(f) == 0 {
+		return name
+	}
+	t := strings.TrimPrefix(f[len(f)-1], "*")
+	if i := strings.IndexByte(t, '['); i >= 0 {
+		t = t[:i] // generic receiver instantiation
+	}
+	if t == "" {
+		return name
+	}
+	return t + "." + name
 }
 
 func addSymbol(f *File, name string) {

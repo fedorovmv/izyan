@@ -43,7 +43,7 @@ func (r GoResolver) Resolve(ctx context.Context, vuln domain.Vulnerability, prod
 		ev = append(ev, e)
 	}
 
-	modRaw, err := tool.ListModules(ctx, product.Repository, product)
+	modRaw, modSource, err := tool.ListModules(ctx, product.Repository, product)
 	if err != nil {
 		res.ModulePresent = domain.ClaimUnknown
 		res.Limitations = append(res.Limitations, fmt.Sprintf("go list -m failed: %v", err))
@@ -55,9 +55,9 @@ func (r GoResolver) Resolve(ctx context.Context, vuln domain.Vulnerability, prod
 		ID:      "EV-AFFECTED-MODULES",
 		Kind:    domain.EvidenceModuleGraph,
 		Quality: domain.QualityDeterministic,
-		Source:  "go list -m -json all",
+		Source:  modSource,
 		Tool:    "go",
-		Command: "go list -m -json all",
+		Command: modSource,
 		Content: string(modRaw),
 	})
 	mods, err := decodeModules(modRaw)

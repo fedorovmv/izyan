@@ -63,7 +63,7 @@ index 111..222 100644
 	if len(files) != 1 || files[0].Path != "html/parse.go" {
 		t.Fatalf("files=%+v", files)
 	}
-	want := map[string]bool{"readUntilCloseTag": true, "Parse": true}
+	want := map[string]bool{"parser.readUntilCloseTag": true, "Parse": true}
 	for _, s := range files[0].Symbols {
 		delete(want, s)
 	}

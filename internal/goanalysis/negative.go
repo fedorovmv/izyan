@@ -65,6 +65,7 @@ func (v Verifier) VerifyFalse(ctx context.Context, c *domain.AnalysisCase, claim
 				Notes:  "dynamic scan failed: " + err.Error(),
 			})
 		}
+		dynSeen := map[string]bool{}
 		for _, m := range markers {
 			evID := c.EvidenceGraph.AddEvidence(domain.Evidence{
 				Kind:    domain.EvidenceSourceSnippet,
@@ -81,8 +82,11 @@ func (v Verifier) VerifyFalse(ctx context.Context, c *domain.AnalysisCase, claim
 					subj.Package+"."+subj.Symbol, m.Kind, m.File, m.Line)
 				return setNeg(claim, nv)
 			case "reflect", "unsafe", "plugin":
-				nv.Limitations = append(nv.Limitations,
-					m.Kind+" usage in product widens the call graph; static negative verification is weaker")
+				if !dynSeen[m.Kind] {
+					dynSeen[m.Kind] = true
+					nv.Limitations = append(nv.Limitations,
+						m.Kind+" usage in product widens the call graph; static negative verification is weaker")
+				}
 			}
 		}
 	}

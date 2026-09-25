@@ -137,7 +137,9 @@ func findObjectInPkg(fset *token.FileSet, pkg *packages.Package, typeName, name 
 		if obj := pkg.Types.Scope().Lookup(name); obj != nil {
 			return callSiteFor(fset, pkg, obj)
 		}
-		return nil
+		// Bare name may be a method whose receiver the caller did not
+		// preserve (e.g. "recvContent" for (*Channel).recvContent).
+		return findMethodInPkg(fset, pkg, name)
 	}
 	tn := pkg.Types.Scope().Lookup(typeName)
 	if tn == nil {
@@ -159,6 +161,32 @@ func findObjectInPkg(fset *token.FileSet, pkg *packages.Package, typeName, name 
 		}
 	}
 	return nil
+}
+
+// findMethodInPkg locates a uniquely-named method across all named
+// types in the package. Multiple matches are ambiguous -> nil, so the
+// caller reports the candidate as unverified rather than guessing.
+func findMethodInPkg(fset *token.FileSet, pkg *packages.Package, name string) *domain.CallSite {
+	var found *domain.CallSite
+	for _, n := range pkg.Types.Scope().Names() {
+		tn, ok := pkg.Types.Scope().Lookup(n).(*types.TypeName)
+		if !ok {
+			continue
+		}
+		nt := mustNamed(tn)
+		if nt == nil {
+			continue
+		}
+		for i := 0; i < nt.NumMethods(); i++ {
+			if nt.Method(i).Name() == name {
+				if found != nil {
+					return nil
+				}
+				found = callSiteFor(fset, pkg, nt.Method(i))
+			}
+		}
+	}
+	return found
 }
 
 func mustNamed(tn *types.TypeName) *types.Named {

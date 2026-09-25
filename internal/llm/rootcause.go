@@ -15,6 +15,7 @@ import (
 // dependency source. Unverifiable proposals become alternatives.
 type RootCauseResolver struct {
 	Client   *Client
+	proposed bool
 	Fallback interface {
 		Resolve(ctx context.Context, c *domain.AnalysisCase, v domain.Vulnerability) (*domain.RootCauseModel, []domain.Evidence, error)
 	}
@@ -29,14 +30,35 @@ Rules: only public API surface functions likely reachable from a consumer;
 prefer the advisory's own hints (function names, file names, references);
 if you cannot name at least one plausible symbol, output [].`
 
-func (r RootCauseResolver) Resolve(ctx context.Context, c *domain.AnalysisCase, v domain.Vulnerability) (*domain.RootCauseModel, []domain.Evidence, error) {
+// proposed memoizes the one-shot proposal call so a later retry
+// (Proposer hook after failed verification) does not burn a second
+// LLM call for the same advisory.
+func (r *RootCauseResolver) Resolve(ctx context.Context, c *domain.AnalysisCase, v domain.Vulnerability) (*domain.RootCauseModel, []domain.Evidence, error) {
 	model, evs, err := r.Fallback.Resolve(ctx, c, v)
 	if err != nil || (model != nil && model.Status == domain.RootCauseResolved) {
 		return model, evs, err
 	}
-	if r.Client == nil || llmBudgetExhausted(c) {
-		return model, evs, nil
+	props, lims, err := r.Propose(ctx, c, v)
+	model.Limitations = append(model.Limitations, lims...)
+	if err != nil || len(props) == 0 {
+		return model, evs, err
 	}
+	model.RootCauses = props
+	model.Status = domain.RootCauseResolved
+	model.Limitations = append(model.Limitations,
+		"root cause candidates proposed by LLM; each was verified against dependency source")
+	return model, evs, nil
+}
+
+// Propose asks the build model for sink candidates. Implements the
+// states.RootCauseProposer hook so the workflow can request fresh
+// candidates when deterministic ones fail source verification.
+func (r *RootCauseResolver) Propose(ctx context.Context, c *domain.AnalysisCase, v domain.Vulnerability) ([]domain.RootCause, []string, error) {
+	var lims []string
+	if r.Client == nil || llmBudgetExhausted(c) || r.proposed {
+		return nil, nil, nil
+	}
+	r.proposed = true
 
 	user, _ := json.Marshal(struct {
 		ID          string   `json:"id"`
@@ -56,7 +78,7 @@ func (r RootCauseResolver) Resolve(ctx context.Context, c *domain.AnalysisCase, 
 		c.Workflow.Usage.LLMCalls++
 		out, callErr := r.Client.Complete(ctx, Build, rootCauseSystem, string(user))
 		if callErr != nil {
-			model.Limitations = append(model.Limitations, "llm root cause proposal failed: "+callErr.Error())
+			lims = append(lims, "llm root cause proposal failed: "+callErr.Error())
 			break
 		}
 		if j := ExtractJSON(out); j != "" && json.Unmarshal([]byte(j), &props) == nil && len(props) > 0 {
@@ -65,28 +87,21 @@ func (r RootCauseResolver) Resolve(ctx context.Context, c *domain.AnalysisCase, 
 		}
 	}
 	if !parseOK {
-		model.Limitations = append(model.Limitations, "llm root cause proposal unusable")
-		return model, evs, nil
+		return nil, append(lims, "llm root cause proposal unusable"), nil
 	}
-	model.RootCauses = nil
+	var out []domain.RootCause
 	for i, p := range props {
 		if i >= 10 || p.Package == "" || p.Symbol == "" {
 			continue
 		}
-		model.RootCauses = append(model.RootCauses, domain.RootCause{
+		out = append(out, domain.RootCause{
 			Package:   p.Package,
 			Symbol:    normalizeSymbol(p.Package, p.Symbol),
 			Role:      domain.RootCauseSink,
 			Mechanism: "llm-proposed: " + p.Mechanism,
 		})
 	}
-	if len(model.RootCauses) == 0 {
-		return model, evs, nil
-	}
-	model.Status = domain.RootCauseResolved
-	model.Limitations = append(model.Limitations,
-		"root cause candidates proposed by LLM; each was verified against dependency source")
-	return model, evs, nil
+	return out, lims, nil
 }
 
 // normalizeSymbol strips a package-name prefix the model commonly adds:

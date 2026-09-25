@@ -15,8 +15,8 @@ type fakeTool struct {
 	pkgErr   error
 }
 
-func (f fakeTool) ListModules(context.Context, string, domain.ProductSnapshot) ([]byte, error) {
-	return f.modules, f.modErr
+func (f fakeTool) ListModules(context.Context, string, domain.ProductSnapshot) ([]byte, string, error) {
+	return f.modules, "go list -m -json all", f.modErr
 }
 
 func (f fakeTool) ListPackages(context.Context, string, domain.ProductSnapshot) ([]byte, error) {

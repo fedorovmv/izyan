@@ -110,7 +110,8 @@ type engineDeps struct {
 	Model       string
 	CaseDir     string
 	Govulncheck goanalysis.Runner
-	UseSource   bool // wire the go/packages source index + verifier
+	UseSource   bool                     // wire the go/packages source index + verifier
+	RCResolver  states.RootCauseResolver // overrides default rootcause.Resolver
 }
 
 func runEngine(t *testing.T, d engineDeps) *domain.AnalysisCase {
@@ -136,6 +137,9 @@ func runEngine(t *testing.T, d engineDeps) *domain.AnalysisCase {
 	if d.UseSource {
 		rc.Resolver = &rootcause.Resolver{Fix: fix.Resolver{}}
 		rc.Verifier = &rootcause.Verifier{Source: srcIndex}
+	}
+	if d.RCResolver != nil {
+		rc.Resolver = d.RCResolver
 	}
 	e := workflow.New(store,
 		states.Created{},
@@ -822,5 +826,62 @@ func TestE2EAmbiguousRootCause(t *testing.T) {
 	}
 	if c.Workflow.State != domain.StateInconclusive {
 		t.Fatalf("state=%s", c.Workflow.State)
+	}
+}
+
+// A resolver whose verified-failed candidates get a second chance via
+// the RootCauseProposer hook; proposals pass through the same verifier.
+type retryResolver struct{ proposed bool }
+
+func (r *retryResolver) Resolve(_ context.Context, _ *domain.AnalysisCase, _ domain.Vulnerability) (*domain.RootCauseModel, []domain.Evidence, error) {
+	return &domain.RootCauseModel{
+		Status: domain.RootCauseResolved,
+		RootCauses: []domain.RootCause{{
+			Package: "example.com/dep/vuln", Symbol: "AddedOnlyByFix",
+			Role: domain.RootCauseSink, Mechanism: "fix-commit candidate",
+		}},
+	}, nil, nil
+}
+
+func (r *retryResolver) Propose(_ context.Context, _ *domain.AnalysisCase, _ domain.Vulnerability) ([]domain.RootCause, []string, error) {
+	r.proposed = true
+	return []domain.RootCause{{
+		Package: "example.com/dep/vuln", Symbol: "Parse",
+		Role: domain.RootCauseSink, Mechanism: "retry proposal",
+	}}, nil, nil
+}
+
+// Fix commits may name symbols that only exist post-fix; verification
+// drops them -> the Proposer hook supplies a verified replacement.
+func TestRootCauseRetryOnVerificationFailure(t *testing.T) {
+	repo := initRepoFrom(t, "constprod")
+	dir := t.TempDir()
+	res := &retryResolver{}
+	c := runEngine(t, engineDeps{
+		RepoPath: repo,
+		VulnSrc: vulnerability.StaticSource{Vulns: map[string]*domain.Vulnerability{
+			"GO-TEST-2": {
+				ID:     "GO-TEST-2",
+				Module: "example.com/dep",
+				AffectedPackages: []domain.AffectedPackage{{
+					Path: "example.com/dep/vuln", Symbols: []string{"Parse"},
+				}},
+			},
+		}},
+		VulnID:      "GO-TEST-2",
+		Resolver:    stubResolver{},
+		RCResolver:  res,
+		CaseDir:     filepath.Join(dir, "cases"),
+		Govulncheck: fakeGovulncheck{out: []byte(`{"protocol_version":"v1.0.0"}`)},
+		UseSource:   true,
+	})
+	if !res.proposed {
+		t.Fatal("Propose was never called despite verification failure")
+	}
+	if c.RootCause == nil || c.RootCause.Status != domain.RootCauseResolved {
+		t.Fatalf("root cause=%+v", c.RootCause)
+	}
+	if len(c.RootCause.RootCauses) != 1 || c.RootCause.RootCauses[0].Symbol != "Parse" {
+		t.Fatalf("root causes=%+v", c.RootCause.RootCauses)
 	}
 }

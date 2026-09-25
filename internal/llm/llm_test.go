@@ -36,7 +36,7 @@ func TestRootCauseResolverFallsBackToLLM(t *testing.T) {
 	defer srv.Close()
 
 	fb := stubResolver{model: &domain.RootCauseModel{Status: domain.RootCauseNotFound}}
-	r := RootCauseResolver{Client: client, Fallback: fb}
+	r := &RootCauseResolver{Client: client, Fallback: fb}
 	c := newCase()
 	m, _, err := r.Resolve(context.Background(), c, domain.Vulnerability{ID: "X"})
 	if err != nil {
@@ -60,7 +60,7 @@ func TestRootCauseResolverKeepsDeterministicResult(t *testing.T) {
 		Status:     domain.RootCauseResolved,
 		RootCauses: []domain.RootCause{{Package: "p", Symbol: "S"}},
 	}}
-	r := RootCauseResolver{Client: client, Fallback: fb}
+	r := &RootCauseResolver{Client: client, Fallback: fb}
 	c := newCase()
 	m, _, _ := r.Resolve(context.Background(), c, domain.Vulnerability{})
 	if len(m.RootCauses) != 1 || m.RootCauses[0].Symbol != "S" {
@@ -74,7 +74,7 @@ func TestRootCauseResolverKeepsDeterministicResult(t *testing.T) {
 func TestRootCauseResolverUnparseableKeepsNotFound(t *testing.T) {
 	client, srv := mockServer(t, "not json at all")
 	defer srv.Close()
-	r := RootCauseResolver{Client: client, Fallback: stubResolver{
+	r := &RootCauseResolver{Client: client, Fallback: stubResolver{
 		model: &domain.RootCauseModel{Status: domain.RootCauseNotFound},
 	}}
 	c := newCase()
@@ -257,7 +257,7 @@ func TestBuildRetriesOnBadJSON(t *testing.T) {
 	}))
 	defer srv.Close()
 	client := NewClient(Config{BaseURL: srv.URL, BuildModel: "m", AnalyzeModel: "m", Enabled: true, BuildMaxRetries: 2})
-	r := RootCauseResolver{Client: client, Fallback: stubResolver{model: &domain.RootCauseModel{Status: domain.RootCauseNotFound}}}
+	r := &RootCauseResolver{Client: client, Fallback: stubResolver{model: &domain.RootCauseModel{Status: domain.RootCauseNotFound}}}
 	c := newCase()
 	m, _, _ := r.Resolve(context.Background(), c, domain.Vulnerability{ID: "X"})
 	if len(m.RootCauses) != 0 {

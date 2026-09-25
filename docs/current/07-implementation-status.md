@@ -281,3 +281,34 @@ build-tag развёртка), реальный tracker sink, P6 remediation.
   NO_EXPLOIT_PATH_FOUND).
 - Тесты: QueryOSV (body shape, ids, error status, empty), dedupeAppend,
   deterministicallyNotAffected для каждого звена цепочки.
+
+## Реальный прогон: продукт-референс × 6 advisory (done)
+
+Прогон на продукт-референс (vendor mode, ~200 модулей) по
+6 GHSA rabbitmq/amqp091-go (v1.10.0, fixed 1.13.0 — affected). Пойманы
+и исправлены реальные дефекты:
+
+- `packageGuess` panic на корневом файле диффа (LastIndexByte=-1).
+- vendor/: `go list -m all` отказывает → fallback на `vendor/modules.txt`
+  (авторитетный источник vendored-версий; evidence Source помечает
+  реальное происхождение). Применено и в scan listModules.
+- LLM root-cause fallback не срабатывал, когда кандидаты падали на
+  верификации после RESOLVED — новый `states.RootCauseProposer` hook:
+  свежие кандидаты проходят тот же Verifier. 465g: LLM дозапросил после
+  провала `String` (символ существует только post-fix) → NO_EXPLOIT_PATH_FOUND.
+- fix-diff терял receiver: `func (ch *Channel) recvContent` → голое
+  `recvContent`, которое не находится в package scope. Теперь парсер
+  выдаёт `Channel.recvContent`; `FindSymbol` дополнительно фолбэкает на
+  уникальный method-lookup по всем типам пакета (неоднозначно → reject).
+- Дедуп limitations: 30× "reflect usage widens call graph" → одна строка;
+  `AddLimitation` на EvidenceGraph.
+
+Итоги прогона: 4/6 NO_EXPLOIT_PATH_FOUND (govulncheck no path + verified
+negative), 2/6 INCONCLUSIVE (reflect в продукте демотировал FALSE —
+спековое поведение: dynamic call graph расширяет неопределённость).
+
+Известный качественный дефект: LLM-агент в одном кейсе выставил claim
+TRUE "vulnerability confirmed by govulncheck" на evidence, говорящем
+обратное — проверка evidence_ids ⊆ graph не ловит семантическое
+искажение. Вердикт не пострадал (mandatory FALSE доминирует), но
+report-точность LLM-claims требует доработки.

@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"example.com/vuln-analyzer/internal/domain"
@@ -45,16 +47,37 @@ type Package struct {
 }
 
 // GoTool runs the go toolchain inside the analyzed repository. Implementations
-// must return raw stdout; callers persist it as evidence.
+// must return raw stdout; callers persist it as evidence. The string result
+// names the actual evidence source (go list output vs vendor/modules.txt).
 type GoTool interface {
-	ListModules(ctx context.Context, dir string, build domain.ProductSnapshot) ([]byte, error)
+	ListModules(ctx context.Context, dir string, build domain.ProductSnapshot) (raw []byte, source string, err error)
 	ListPackages(ctx context.Context, dir string, build domain.ProductSnapshot) ([]byte, error)
 }
 
 type ExecGoTool struct{}
 
-func (ExecGoTool) ListModules(ctx context.Context, dir string, _ domain.ProductSnapshot) ([]byte, error) {
-	return runGo(ctx, dir, nil, "list", "-m", "-json", "all")
+func (ExecGoTool) ListModules(ctx context.Context, dir string, _ domain.ProductSnapshot) ([]byte, string, error) {
+	const goList = "go list -m -json all"
+	raw, err := runGo(ctx, dir, nil, "list", "-m", "-json", "all")
+	if err == nil {
+		return raw, goList, nil
+	}
+	// Vendor mode: `go list -m all` refuses to run. modules.txt is the
+	// authoritative record of what is actually vendored.
+	mods, vErr := loadVendorModules(dir)
+	if vErr != nil {
+		return raw, goList, err
+	}
+	var buf bytes.Buffer
+	for _, m := range mods {
+		b, mErr := json.Marshal(m)
+		if mErr != nil {
+			return nil, goList, mErr
+		}
+		buf.Write(b)
+		buf.WriteByte('\n')
+	}
+	return buf.Bytes(), "vendor/modules.txt", nil
 }
 
 func (ExecGoTool) ListPackages(ctx context.Context, dir string, build domain.ProductSnapshot) ([]byte, error) {
@@ -117,4 +140,42 @@ func decodePackages(b []byte) ([]Package, error) {
 		out = append(out, p)
 	}
 	return out, nil
+}
+
+// loadVendorModules parses vendor/modules.txt — the authoritative
+// module list when the repository builds in vendor mode.
+func loadVendorModules(dir string) ([]Module, error) {
+	b, err := os.ReadFile(filepath.Join(dir, "vendor", "modules.txt"))
+	if err != nil {
+		return nil, err
+	}
+	return ParseVendorModules(b), nil
+}
+
+// ParseVendorModules extracts module entries from vendor/modules.txt.
+// Header lines look like:
+//
+//	# example.com/mod v1.2.3
+//	# old.com/mod v1.0.0 => fork.com/mod v1.5.0
+//	# old.com/mod v1.0.0 => ./local/dir
+func ParseVendorModules(b []byte) []Module {
+	var mods []Module
+	for _, line := range strings.Split(string(b), "\n") {
+		if !strings.HasPrefix(line, "# ") {
+			continue // package line, meta line (##) or blank
+		}
+		fields := strings.Fields(strings.TrimPrefix(line, "# "))
+		if len(fields) < 2 {
+			continue
+		}
+		m := Module{Path: fields[0], Version: fields[1]}
+		if len(fields) >= 4 && fields[2] == "=>" {
+			m.Replace = &Module{Path: fields[3]}
+			if len(fields) >= 5 {
+				m.Replace.Version = fields[4]
+			}
+		}
+		mods = append(mods, m)
+	}
+	return mods
 }

@@ -354,6 +354,18 @@ func (g *EvidenceGraph) AddEvidence(e Evidence) EvidenceID {
 	return e.ID
 }
 
+// AddLimitation appends a limitation, skipping exact duplicates — the
+// same note (e.g. "no call sites") is meaningless when repeated per
+// condition or per dynamic marker.
+func (g *EvidenceGraph) AddLimitation(s string) {
+	for _, l := range g.Limitations {
+		if l == s {
+			return
+		}
+	}
+	g.Limitations = append(g.Limitations, s)
+}
+
 // ComputeHash sets Hash to the sha256 of the canonical graph encoding
 // (Hash field excluded) and returns it.
 func (g *EvidenceGraph) ComputeHash() string {

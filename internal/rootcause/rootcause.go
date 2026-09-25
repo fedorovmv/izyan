@@ -107,16 +107,16 @@ func symbolList(syms []domain.SymbolRef) string {
 // packageGuess maps a repo-relative path to the affected package path when
 // possible (suffix match on the module path tail).
 func packageGuess(v domain.Vulnerability, filePath string) string {
+	// fall back: module root file
+	if !strings.Contains(filePath, "/") {
+		return v.Module
+	}
 	dir := filePath[:strings.LastIndexByte(filePath, '/')]
 	for _, p := range v.AffectedPackages {
 		if strings.HasSuffix(dir, strings.TrimPrefix(p.Path, v.Module+"/")) ||
 			strings.HasSuffix(p.Path, dir) || p.Path == dir {
 			return p.Path
 		}
-	}
-	// fall back: module root file
-	if !strings.Contains(filePath, "/") {
-		return v.Module
 	}
 	return v.Module + "/" + dir
 }
