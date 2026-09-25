@@ -17,7 +17,9 @@ import (
 	"example.com/vuln-analyzer/internal/goanalysis"
 	"example.com/vuln-analyzer/internal/report"
 	"example.com/vuln-analyzer/internal/repository"
+	"example.com/vuln-analyzer/internal/review"
 	"example.com/vuln-analyzer/internal/rootcause"
+	"example.com/vuln-analyzer/internal/tracker"
 	"example.com/vuln-analyzer/internal/vulnerability"
 	"example.com/vuln-analyzer/internal/workflow"
 )
@@ -462,7 +464,7 @@ func (h NegativeCheck) Run(ctx context.Context, c *domain.AnalysisCase) (workflo
 		*cl = updated
 	}
 	c.EvidenceGraph.ComputeHash()
-	return workflow.Transition{Next: domain.StateEvaluateVerdict, Reason: "negative verification applied"}, nil
+	return workflow.Transition{Next: domain.StateReview, Reason: "negative verification applied"}, nil
 }
 
 func findCondition(m *domain.ExploitModel, id domain.ConditionID) *domain.Condition {
@@ -482,14 +484,76 @@ func findCondition(m *domain.ExploitModel, id domain.ConditionID) *domain.Condit
 	return nil
 }
 
-type Review struct{}
+type Review struct {
+	Reviewer  review.Reviewer
+	Evaluator evaluator.VerdictEvaluator
+}
 
 func (Review) State() domain.WorkflowState { return domain.StateReview }
 
-func (Review) Run(_ context.Context, c *domain.AnalysisCase) (workflow.Transition, error) {
-	c.EvidenceGraph.Limitations = append(c.EvidenceGraph.Limitations,
-		"reviewer not configured; proposed verdict not reviewed")
-	return workflow.Transition{Next: domain.StateEvaluateVerdict, Reason: "review skipped: no reviewer"}, nil
+func (h Review) Run(_ context.Context, c *domain.AnalysisCase) (workflow.Transition, error) {
+	if h.Reviewer == nil {
+		c.EvidenceGraph.Limitations = append(c.EvidenceGraph.Limitations,
+			"reviewer not configured; proposed verdict not reviewed")
+		return workflow.Transition{Next: domain.StateEvaluateVerdict, Reason: "review skipped: no reviewer"}, nil
+	}
+	maxIt := c.Workflow.Limits.MaxReviewIterations
+	if maxIt <= 0 {
+		maxIt = 2
+	}
+	if len(c.Reviews) >= maxIt {
+		c.EvidenceGraph.Limitations = append(c.EvidenceGraph.Limitations,
+			"review iteration budget exhausted; verdict computed on repaired claims")
+		return workflow.Transition{Next: domain.StateEvaluateVerdict, Reason: "review budget exhausted"}, nil
+	}
+
+	// The proposed verdict is computed deterministically before review;
+	// the reviewer may only repair claims, never set the verdict.
+	proposed := h.Evaluator.Evaluate(affectedOf(c), exploitOf(c), c.Claims)
+	rev := h.Reviewer.Review(c, proposed)
+	rev.ID = domain.ReviewID(fmt.Sprintf("REV-%d", len(c.Reviews)+1))
+	c.Reviews = append(c.Reviews, rev)
+	c.Workflow.Usage.ReviewIterations++
+	c.EvidenceGraph.ComputeHash()
+
+	if rev.Result != domain.ReviewRevise {
+		return workflow.Transition{Next: domain.StateEvaluateVerdict, Reason: "review ACCEPT"}, nil
+	}
+	// Repair: demote claims flagged high-severity to UNKNOWN. This is the
+	// bounded repair — it only removes unsupported strength, never adds.
+	repaired := false
+	for _, f := range rev.Findings {
+		if f.TargetType != "claim" || f.Severity != "high" {
+			continue
+		}
+		for i := range c.Claims {
+			if string(c.Claims[i].ID) == f.TargetID && c.Claims[i].Result != domain.ClaimUnknown {
+				c.Claims[i].Result = domain.ClaimUnknown
+				c.Claims[i].Limitations = append(c.Claims[i].Limitations,
+					"demoted by reviewer: "+f.Problem)
+				repaired = true
+			}
+		}
+	}
+	reason := "review REVISE: repaired claims"
+	if !repaired {
+		reason = "review REVISE: no repairable claims"
+	}
+	return workflow.Transition{Next: domain.StateEvaluateVerdict, Reason: reason}, nil
+}
+
+func affectedOf(c *domain.AnalysisCase) domain.AffectedResult {
+	if c.Affected != nil {
+		return *c.Affected
+	}
+	return domain.AffectedResult{}
+}
+
+func exploitOf(c *domain.AnalysisCase) domain.ExploitModel {
+	if c.Exploit != nil {
+		return *c.Exploit
+	}
+	return domain.ExploitModel{}
 }
 
 type EvaluateVerdict struct {
@@ -514,14 +578,21 @@ func (h EvaluateVerdict) Run(_ context.Context, c *domain.AnalysisCase) (workflo
 }
 
 type BuildReport struct {
-	Dir string
+	Dir     string
+	Tracker tracker.Sink
 }
 
 func (BuildReport) State() domain.WorkflowState { return domain.StateBuildReport }
 
-func (h BuildReport) Run(_ context.Context, c *domain.AnalysisCase) (workflow.Transition, error) {
+func (h BuildReport) Run(ctx context.Context, c *domain.AnalysisCase) (workflow.Transition, error) {
 	if err := report.Write(h.Dir, c); err != nil {
 		return workflow.Transition{}, fmt.Errorf("build report: %w", err)
+	}
+	if h.Tracker != nil {
+		if err := h.Tracker.Publish(ctx, string(c.ID), report.Markdown(c)); err != nil {
+			c.EvidenceGraph.ToolLimitations = append(c.EvidenceGraph.ToolLimitations,
+				"tracker publish failed: "+err.Error())
+		}
 	}
 	return workflow.Transition{Next: domain.StateCompleted, Reason: "report written to " + h.Dir}, nil
 }

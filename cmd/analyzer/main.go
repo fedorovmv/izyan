@@ -17,8 +17,10 @@ import (
 	"example.com/vuln-analyzer/internal/goanalysis"
 	"example.com/vuln-analyzer/internal/persistence/filesystem"
 	"example.com/vuln-analyzer/internal/repository"
+	"example.com/vuln-analyzer/internal/review"
 	"example.com/vuln-analyzer/internal/rootcause"
 	"example.com/vuln-analyzer/internal/states"
+	"example.com/vuln-analyzer/internal/tracker"
 	"example.com/vuln-analyzer/internal/vulnerability"
 	"example.com/vuln-analyzer/internal/workflow"
 )
@@ -150,9 +152,10 @@ func runAnalyze(args []string) error {
 			evaluator.ArgumentOrigin{},
 		}},
 		states.NegativeCheck{Verifier: &goanalysis.Verifier{Source: srcIndex}},
-		states.Review{},
+		states.Review{Reviewer: review.Structural{}, Evaluator: evaluator.VerdictEvaluator{}},
 		states.EvaluateVerdict{Evaluator: evaluator.VerdictEvaluator{}},
-		states.BuildReport{Dir: filepath.Join(*caseDir, string(caseID))},
+		states.BuildReport{Dir: filepath.Join(*caseDir, string(caseID)),
+			Tracker: tracker.FileSink{Dir: filepath.Join(*caseDir, string(caseID))}},
 	)
 
 	if err := engine.Run(context.Background(), c); err != nil {

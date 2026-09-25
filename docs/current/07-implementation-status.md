@@ -143,3 +143,27 @@ Planner — слоты готовы, детерминистический кон
 
 Оставшийся срез — Slice 6: Reviewer + bounded repair loop + tracker
 adapter.
+## Slice 6 — Reviewer + bounded repair + tracker adapter (done, deterministic)
+
+- `internal/review.Structural`: аудит immutable-пакета перед вердиктом —
+  TRUE без evidence, FALSE без/противоречащий negative verification,
+  dangling evidence-ссылки, exploit model без root cause, сильный вердикт
+  при tool limitations. Результат ACCEPT/REVISE + structured findings;
+  verdict reviewer не выставляет (спека §21).
+- `states.Review`: proposed verdict считается детерминистически, REVISE →
+  bounded repair = демоция claim-ов с high-findings до UNKNOWN (repair
+  только убирает неподдержанную силу, никогда не добавляет). Бюджет:
+  `MaxReviewIterations` (default 2), исчерпание → limitation + verdict на
+  repaired claims. Найден и закрыт маршрутный баг: NEGATIVE_CHECK раньше
+  прыгала прямо в EVALUATE_VERDICT минуя REVIEW.
+- `internal/tracker.Sink` + `FileSink`: tracker-ready markdown публикуется
+  в `tracker_comment.md` рядом с report; сбой публикации → tool
+  limitation, не fail. Слот для реального адаптера (SberTrack и т.п.) —
+  без изменения workflow.
+- report.md: секция `## Review` (результат + findings по каждому REV-*).
+- Тесты: reviewer unit (7 кейсов), repair-демоция TRUE→UNKNOWN, budget
+  exhausted → limitation; e2e прогон теперь всегда проходит REVIEW.
+- Live GO-2025-3595: REV-1 ACCEPT + tracker_comment.md записан.
+
+Не входит: LLM-Reviewer поверх `review.Reviewer` интерфейса, реальный
+tracker API sink.

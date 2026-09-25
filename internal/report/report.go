@@ -66,6 +66,21 @@ func Markdown(c *domain.AnalysisCase) string {
 		}
 		b.WriteString("\n")
 	}
+	if len(c.Reviews) > 0 {
+		b.WriteString("## Review\n\n")
+		for _, rv := range c.Reviews {
+			fmt.Fprintf(&b, "- `%s` → **%s**", rv.ID, rv.Result)
+			if len(rv.Findings) > 0 {
+				b.WriteString("\n")
+				for _, f := range rv.Findings {
+					fmt.Fprintf(&b, "  - [%s] %s `%s`: %s\n", f.Severity, f.TargetType, f.TargetID, f.Problem)
+				}
+			} else {
+				b.WriteString(" — no findings\n")
+			}
+		}
+		b.WriteString("\n")
+	}
 	if lims := allLimitations(c); len(lims) > 0 {
 		b.WriteString("## Limitations\n\n")
 		for _, l := range lims {

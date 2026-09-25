@@ -17,6 +17,7 @@ import (
 	"example.com/vuln-analyzer/internal/goanalysis"
 	"example.com/vuln-analyzer/internal/persistence/filesystem"
 	"example.com/vuln-analyzer/internal/repository"
+	"example.com/vuln-analyzer/internal/review"
 	"example.com/vuln-analyzer/internal/rootcause"
 	"example.com/vuln-analyzer/internal/states"
 	"example.com/vuln-analyzer/internal/vulnerability"
@@ -148,7 +149,7 @@ func runEngine(t *testing.T, d engineDeps) *domain.AnalysisCase {
 			evaluator.ArgumentOrigin{},
 		}},
 		states.NegativeCheck{Verifier: &goanalysis.Verifier{Source: srcIndex}},
-		states.Review{},
+		states.Review{Reviewer: review.Structural{}, Evaluator: evaluator.VerdictEvaluator{}},
 		states.EvaluateVerdict{Evaluator: evaluator.VerdictEvaluator{}},
 		states.BuildReport{Dir: filepath.Join(d.CaseDir, string(c.ID))},
 	)
@@ -640,5 +641,60 @@ func TestE2EAutoExploitModel(t *testing.T) {
 	}
 	if c.Verdict == nil || c.Verdict.Verdict != domain.VerdictNoExploitPathFound {
 		t.Fatalf("verdict=%+v want NO_EXPLOIT_PATH_FOUND", c.Verdict)
+	}
+}
+
+func TestReviewDemotesUnsupportedTrue(t *testing.T) {
+	c := &domain.AnalysisCase{
+		Exploit: &domain.ExploitModel{
+			MandatoryConditions: []domain.Condition{{ID: "C-1", Kind: domain.ConditionSymbolReachable}},
+		},
+		RootCause: &domain.RootCauseModel{Status: domain.RootCauseResolved},
+		Claims: []domain.Claim{{
+			ID: "CL-1", ConditionID: "C-1", Result: domain.ClaimTrue,
+		}},
+	}
+	h := states.Review{Reviewer: review.Structural{}, Evaluator: evaluator.VerdictEvaluator{}}
+	tr, err := h.Run(context.Background(), c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tr.Next != domain.StateEvaluateVerdict {
+		t.Fatalf("next = %s", tr.Next)
+	}
+	if len(c.Reviews) != 1 || c.Reviews[0].Result != domain.ReviewRevise {
+		t.Fatalf("reviews: %+v", c.Reviews)
+	}
+	if c.Claims[0].Result != domain.ClaimUnknown {
+		t.Fatalf("claim not demoted: %s", c.Claims[0].Result)
+	}
+	if len(c.Claims[0].Limitations) == 0 {
+		t.Fatal("demotion must record a limitation")
+	}
+}
+
+func TestReviewBudgetExhausted(t *testing.T) {
+	c := &domain.AnalysisCase{
+		Reviews: []domain.Review{{Result: domain.ReviewRevise}, {Result: domain.ReviewRevise}},
+		Workflow: domain.WorkflowStatus{
+			Limits: domain.AnalysisLimits{MaxReviewIterations: 2},
+		},
+	}
+	h := states.Review{Reviewer: review.Structural{}, Evaluator: evaluator.VerdictEvaluator{}}
+	tr, err := h.Run(context.Background(), c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tr.Next != domain.StateEvaluateVerdict {
+		t.Fatalf("next = %s", tr.Next)
+	}
+	found := false
+	for _, l := range c.EvidenceGraph.Limitations {
+		if l == "review iteration budget exhausted; verdict computed on repaired claims" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("budget limitation not recorded")
 	}
 }
