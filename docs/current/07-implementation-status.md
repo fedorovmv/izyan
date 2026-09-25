@@ -62,6 +62,25 @@
 - CollectEvidence собирает DataFlows + Validations + source evidence по
   provenance-условиям; `EvidenceGraph.ComputeHash` после всех мутаций.
 
+## Slice 4 — Root Cause automation (done, deterministic part)
+
+- `internal/fix`: FixResolver (FIX/ADVISORY/WEB references → commit/patch
+  URLs), HTTPProvider (github `.patch`, googlesource `^!/?format=TEXT`,
+  go.dev/cl → Gerrit `patch?download`, base64-decode), unified-diff парсер
+  (`diff --git` + `@@` hunks → changed files/symbols, .go only, tests skipped).
+- `internal/rootcause.Resolver`: кандидаты по приоритету спеки —
+  advisory `affected_symbols` (AUTHORITATIVE evidence), затем функции,
+  изменённые fix-патчем (FIX_DIFF evidence). Нет кандидатов → NOT_FOUND.
+- `internal/rootcause.Verifier`: каждый кандидат проверен —
+  символ существует в dep (goanalysis.Index.FindSymbol, module cache
+  aware) и принадлежит affected package; неверифицированные →
+  Alternatives; все отвергнуты → AMBIGUOUS → INCONCLUSIVE.
+- `states.ResolveRootCause`: `--root-cause` → manual с верификацией;
+  иначе авто-пайплайн; RESOLVED → продолжение, остальное → INCONCLUSIVE.
+- provenance: whitelist pure-функций stdlib (strings.NewReader,
+  fmt.Sprintf, strconv.Itoa, ...) — origin аргументов пропагирует через
+  них; неизвестные вызовы по-прежнему UNKNOWN.
+
 ## Проверено end-to-end
 
 - `NOT_AFFECTED`: модуль отсутствует в графе зависимостей реального repo.
@@ -74,27 +93,35 @@
   — C-INPUT FALSE-кандидат → verifier: все call sites non-external →
   VERIFIED → детерминистический вердикт. govulncheck при этом отсутствовал
   в PATH → C-REACH остался UNKNOWN: tool failure ≠ negative evidence.
+- `NO_EXPLOIT_PATH_FOUND` на реальном GO-2025-3595 без `--root-cause`:
+  авто-резолв 6 advisory-символов (html.Parse, ParseFragment, ...),
+  верификация в x/net module cache, govulncheck trace TRUE для C-REACH,
+  provenance `html.Parse(strings.NewReader("<p>x</p>"))` → CONSTANT →
+  C-INPUT verified FALSE. «Reachable but mitigated» — полностью
+  автоматический пайплайн.
 
 ## Тесты
 
 - unit: semver ranges, OSV-маппинг, verdict matrix, affected resolver
   на fake GoTool; goanalysis: FindSymbol/FindCallers/TraceArgument
-  (constant/external/param-hop)/FindValidations/ScanDynamic/FindEntrypoints.
+  (constant/external/param-hop)/FindValidations/ScanDynamic/FindEntrypoints;
+  fix: patchURL/patch parse/fix refs; rootcause: resolver/verifier на
+  fixtures.
 - golden e2e (`internal/states`): NOT_AFFECTED; affected → INCONCLUSIVE;
   SYMBOL_REACHABLE TRUE; no-path → кандидат-FALSE → INCONCLUSIVE;
   constprod → verified FALSE → NO_EXPLOIT_PATH_FOUND;
   extprod (os.Args) → ATTACKER_CONTROL TRUE → EXPLOITABLE;
-  funcvalprod (func-value escape) → CONTRADICTED → INCONCLUSIVE.
+  funcvalprod (func-value escape) → CONTRADICTED → INCONCLUSIVE;
+  авто root cause из advisory symbols → тот же verified путь.
 - fixtures: `testdata/{constprod,extprod,funcvalprod,validprod,dep}`.
 
-## Следующий вертикальный срез — Slice 4
+## Следующий вертикальный срез — Slice 5
 
-1. FixResolver/PatchProvider — pull fix commits/diffs по advisory.
-2. LLM RootCauseResolver (typed tools поверх `goanalysis.Index`),
-   RootCauseVerifier (символ существует, механизм не расширяется без
-   evidence).
-3. ExploitModelBuilder (Slice 5): паттерны обязательных условий,
-   semantic ConditionEvaluator, gap-driven Planner, Reviewer.
+1. ExploitModelBuilder: паттерны mandatory conditions из root cause
+   (SymbolReachable для SINK + ATTACKER_CONTROL для аргументов + …),
+   авто-генерация `--exploit-model` если не задан.
+2. Semantic ConditionEvaluator и gap-driven Planner поверх typed tools.
+3. Reviewer + bounded repair loop (Slice 6), tracker adapter.
 
-Дальше: оркестратор, бюджеты и persisted state для LLM-стадий уже готовы;
-вердикт остаётся чистой функцией от claims.
+LLM-стадии подключаются поверх тех же typed tools (`goanalysis.Index` —
+backend); вердикт остаётся чистой функцией от claims.

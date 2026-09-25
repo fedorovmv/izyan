@@ -268,6 +268,9 @@ func (ix *Index) classifyCall(pkg *packages.Package, enc *ast.FuncDecl, call *as
 		if sig, ok2 := fn.Type().(*types.Signature); ok2 && sig.Recv() != nil && isHTTPRequest(sig.Recv().Type()) {
 			return domain.OriginExternalUntrusted, "method on *http.Request"
 		}
+		if passthroughFuncs[key] {
+			return ix.mergeArgs(pkg, enc, call, depth)
+		}
 		return domain.OriginUnknown, fmt.Sprintf("opaque call %s", key)
 	}
 	// builtins / transformations propagate the origin of their input
@@ -275,6 +278,41 @@ func (ix *Index) classifyCall(pkg *packages.Package, enc *ast.FuncDecl, call *as
 		return ix.classify(pkg, enc, call.Args[0], depth)
 	}
 	return domain.OriginUnknown, "unresolvable call"
+}
+
+// mergeArgs merges the origins of all call arguments — used for pure
+// transformations whose output derives only from inputs.
+func (ix *Index) mergeArgs(pkg *packages.Package, enc *ast.FuncDecl, call *ast.CallExpr, depth int) (domain.DataOrigin, string) {
+	if len(call.Args) == 0 {
+		return domain.OriginConstant, "pure call without args"
+	}
+	merged := domain.OriginConstant
+	var whys []string
+	for _, a := range call.Args {
+		o, w := ix.classify(pkg, enc, a, depth+1)
+		whys = append(whys, w)
+		merged = mergeOrigin(merged, o)
+	}
+	return merged, "via " + strings.Join(whys, " | ")
+}
+
+// passthroughFuncs are well-known stdlib pure transformations: their return
+// value derives solely from the argument(s), so argument origin propagates.
+// Anything not listed stays UNKNOWN — no guessing.
+var passthroughFuncs = map[string]bool{
+	"strings.NewReader":     true,
+	"strings.NewReplacer":   true,
+	"bytes.NewReader":       true,
+	"bytes.NewBuffer":       true,
+	"bytes.NewBufferString": true,
+	"fmt.Sprintf":           true,
+	"fmt.Sprint":            true,
+	"fmt.Sprintln":          true,
+	"fmt.Errorf":            true,
+	"errors.New":            true,
+	"strconv.Itoa":          true,
+	"io.NopCloser":          true,
+	"strings.Join":          true,
 }
 
 // knownSourceFuncs maps pkgpath.Func to a data origin. Extend as needed —

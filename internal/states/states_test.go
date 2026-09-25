@@ -12,9 +12,11 @@ import (
 	"example.com/vuln-analyzer/internal/affected"
 	"example.com/vuln-analyzer/internal/domain"
 	"example.com/vuln-analyzer/internal/evaluator"
+	"example.com/vuln-analyzer/internal/fix"
 	"example.com/vuln-analyzer/internal/goanalysis"
 	"example.com/vuln-analyzer/internal/persistence/filesystem"
 	"example.com/vuln-analyzer/internal/repository"
+	"example.com/vuln-analyzer/internal/rootcause"
 	"example.com/vuln-analyzer/internal/states"
 	"example.com/vuln-analyzer/internal/vulnerability"
 	"example.com/vuln-analyzer/internal/workflow"
@@ -127,12 +129,17 @@ func runEngine(t *testing.T, d engineDeps) *domain.AnalysisCase {
 	if d.UseSource {
 		srcIndex = &goanalysis.Index{Dir: d.RepoPath}
 	}
+	rc := states.ResolveRootCause{Manual: d.ManualRC}
+	if d.UseSource {
+		rc.Resolver = &rootcause.Resolver{Fix: fix.Resolver{}}
+		rc.Verifier = &rootcause.Verifier{Source: srcIndex}
+	}
 	e := workflow.New(store,
 		states.Created{},
 		states.SnapshotProduct{Repo: repository.Service{}, Path: d.RepoPath},
 		states.ResolveVulnerability{Source: d.VulnSrc, ID: d.VulnID},
 		states.CheckAffected{Resolver: d.Resolver},
-		states.ResolveRootCause{Manual: d.ManualRC},
+		rc,
 		states.BuildExploitModel{ModelPath: d.Model},
 		states.CollectEvidence{Govulncheck: d.Govulncheck, Source: srcIndex},
 		states.EvaluateConditions{Evaluators: []evaluator.ConditionEvaluator{
@@ -520,5 +527,65 @@ func TestE2EFuncValueDemotesFalse(t *testing.T) {
 	}
 	if c.Verdict == nil || c.Verdict.Verdict != domain.VerdictInconclusive {
 		t.Fatalf("verdict=%+v want INCONCLUSIVE", c.Verdict)
+	}
+}
+
+// Slice 4 golden: no --root-cause flag — the pipeline derives the root cause
+// from advisory affected symbols (AUTHORITATIVE evidence) and verifies the
+// symbol exists in the dependency source. Same verdict path as the manual
+// constprod case.
+func TestE2EAutoRootCause(t *testing.T) {
+	repo := initRepoFrom(t, "constprod")
+	dir := t.TempDir()
+	vulnPath := filepath.Join(dir, "vuln.json")
+	osv := `{"id":"GO-TEST-AUTO","summary":"auto rc",
+ "affected":[{"package":{"name":"example.com/dep","ecosystem":"Go"},
+  "ranges":[{"type":"SEMVER","events":[{"introduced":"0"},{"fixed":"1.0.1"}]}],
+  "ecosystem_specific":{"imports":[{"path":"example.com/dep/vuln","symbols":["Parse"]}]}}],
+ "references":[{"type":"ADVISORY","url":"https://example.com/adv"}]}`
+	if err := os.WriteFile(vulnPath, []byte(osv), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	model := `{"impact":"t","mandatory_conditions":[
+		{"id":"C-REACH","kind":"SYMBOL_REACHABLE","mandatory":true,
+		 "subject":{"package":"example.com/dep/vuln","symbol":"Parse"}},
+		{"id":"C-INPUT","kind":"ATTACKER_CONTROL","mandatory":true,
+		 "subject":{"package":"example.com/dep/vuln","symbol":"Parse"},"arg_index":0}
+	]}`
+	mp := filepath.Join(dir, "model.json")
+	if err := os.WriteFile(mp, []byte(model), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	caseDir := filepath.Join(dir, "cases")
+
+	gv := `{"protocol_version":"v1.0.0"}
+{"finding":{"osv":"GO-TEST-AUTO","fixed_version":"v1.0.1","trace":[
+ {"module":"example.com/constprod","package":"example.com/constprod","function":"main","position":{"filename":"main.go","line":9}},
+ {"module":"example.com/dep","package":"example.com/dep/vuln","function":"Parse","position":{"filename":"vuln.go","line":4}}
+]}}`
+
+	c := runEngine(t, engineDeps{
+		RepoPath: repo,
+		VulnSrc:  vulnerability.FileSource{Path: vulnPath},
+		VulnID:   "GO-TEST-AUTO",
+		Resolver: stubResolver{},
+		// no ManualRC — resolved automatically
+		Model:       mp,
+		CaseDir:     caseDir,
+		Govulncheck: fakeGovulncheck{out: []byte(gv)},
+		UseSource:   true,
+	})
+
+	if c.Workflow.State != domain.StateCompleted {
+		t.Fatalf("state=%s reason=%s", c.Workflow.State, c.Workflow.Reason)
+	}
+	if c.RootCause == nil || c.RootCause.Status != domain.RootCauseResolved {
+		t.Fatalf("rootcause=%+v", c.RootCause)
+	}
+	if len(c.RootCause.RootCauses) != 1 || c.RootCause.RootCauses[0].Symbol != "Parse" {
+		t.Fatalf("root causes=%+v", c.RootCause.RootCauses)
+	}
+	if c.Verdict == nil || c.Verdict.Verdict != domain.VerdictNoExploitPathFound {
+		t.Fatalf("verdict=%+v want NO_EXPLOIT_PATH_FOUND", c.Verdict)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	"example.com/vuln-analyzer/internal/affected"
 	"example.com/vuln-analyzer/internal/domain"
@@ -15,6 +16,7 @@ import (
 	"example.com/vuln-analyzer/internal/goanalysis"
 	"example.com/vuln-analyzer/internal/report"
 	"example.com/vuln-analyzer/internal/repository"
+	"example.com/vuln-analyzer/internal/rootcause"
 	"example.com/vuln-analyzer/internal/vulnerability"
 	"example.com/vuln-analyzer/internal/workflow"
 )
@@ -93,26 +95,60 @@ func (h CheckAffected) Run(ctx context.Context, c *domain.AnalysisCase) (workflo
 }
 
 type ResolveRootCause struct {
-	Manual []domain.RootCause
+	Manual   []domain.RootCause
+	Resolver *rootcause.Resolver
+	Verifier *rootcause.Verifier
 }
 
 func (ResolveRootCause) State() domain.WorkflowState { return domain.StateResolveRootCause }
 
-func (h ResolveRootCause) Run(_ context.Context, c *domain.AnalysisCase) (workflow.Transition, error) {
-	if len(h.Manual) == 0 {
+func (h ResolveRootCause) Run(ctx context.Context, c *domain.AnalysisCase) (workflow.Transition, error) {
+	if len(h.Manual) > 0 {
+		c.RootCause = &domain.RootCauseModel{
+			Status:     domain.RootCauseResolved,
+			RootCauses: h.Manual,
+			Limitations: []string{
+				"root cause provided manually; symbol existence verified only if verifier configured",
+			},
+		}
+		if h.Verifier != nil {
+			c.RootCause.Limitations = append(c.RootCause.Limitations,
+				h.Verifier.Verify(ctx, c.RootCause, c.Vulnerability)...)
+			if c.RootCause.Status != domain.RootCauseResolved {
+				return workflow.Transition{
+					Next:   domain.StateInconclusive,
+					Reason: "manual root cause failed verification",
+				}, nil
+			}
+		}
+		return workflow.Transition{Next: domain.StateBuildExploitModel, Reason: "manual root cause accepted"}, nil
+	}
+	if h.Resolver == nil {
 		return workflow.Transition{
 			Next:   domain.StateInconclusive,
-			Reason: "root cause unresolved: automatic resolver not implemented; provide --root-cause",
+			Reason: "root cause unresolved: no resolver configured and --root-cause not provided",
 		}, nil
 	}
-	c.RootCause = &domain.RootCauseModel{
-		Status:     domain.RootCauseResolved,
-		RootCauses: h.Manual,
-		Limitations: []string{
-			"root cause provided manually; symbol existence/mechanism verification pending (slice 4)",
-		},
+	model, evs, err := h.Resolver.Resolve(ctx, c.Vulnerability)
+	if err != nil {
+		return workflow.Transition{}, fmt.Errorf("root cause resolve: %w", err)
 	}
-	return workflow.Transition{Next: domain.StateBuildExploitModel, Reason: "manual root cause accepted pending verification"}, nil
+	for _, e := range evs {
+		c.EvidenceGraph.AddEvidence(e)
+	}
+	if h.Verifier != nil && len(model.RootCauses) > 0 {
+		model.Limitations = append(model.Limitations,
+			h.Verifier.Verify(ctx, model, c.Vulnerability)...)
+	}
+	c.RootCause = model
+	c.EvidenceGraph.ComputeHash()
+	if model.Status != domain.RootCauseResolved {
+		return workflow.Transition{
+			Next:   domain.StateInconclusive,
+			Reason: fmt.Sprintf("root cause %s: %s", model.Status, strings.Join(model.Limitations, "; ")),
+		}, nil
+	}
+	return workflow.Transition{Next: domain.StateBuildExploitModel, Reason: "root cause resolved from advisory/fix evidence"}, nil
 }
 
 type BuildExploitModel struct {
