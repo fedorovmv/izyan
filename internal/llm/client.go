@@ -250,5 +250,5 @@ func ExtractJSON(s string) string {
 // the CLI wiring); tests and adapters without limits keep working.
 func llmBudgetExhausted(c *domain.AnalysisCase) bool {
 	max := c.Workflow.Limits.MaxLLMCalls
-	return max > 0 && c.Workflow.Usage.LLMCalls >= max
+	return max > 0 && c.UsageSnapshot().LLMCalls >= max
 }

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 
 	"example.com/vuln-analyzer/internal/affected"
 	"example.com/vuln-analyzer/internal/domain"
@@ -230,7 +231,9 @@ func (h BuildExploitModel) Run(ctx context.Context, c *domain.AnalysisCase) (wor
 			Reason: "exploit model could not be built: " + strings.Join(limitations, "; "),
 		}, nil
 	}
-	c.EvidenceGraph.Limitations = append(c.EvidenceGraph.Limitations, limitations...)
+	for _, l := range limitations {
+		c.EvidenceGraph.AddLimitation(l)
+	}
 	c.Exploit = m
 	return workflow.Transition{Next: domain.StateCollectEvidence, Reason: "exploit model built from root causes"}, nil
 }
@@ -250,8 +253,7 @@ func (h CollectEvidence) Run(ctx context.Context, c *domain.AnalysisCase) (workf
 		h.runSourceAnalysis(ctx, c)
 	}
 	if h.Govulncheck == nil && h.Source == nil {
-		c.EvidenceGraph.Limitations = append(c.EvidenceGraph.Limitations,
-			"no evidence collectors beyond affected resolution are wired yet")
+		c.EvidenceGraph.AddLimitation("no evidence collectors beyond affected resolution are wired yet")
 	}
 	c.EvidenceGraph.ComputeHash()
 	return workflow.Transition{Next: domain.StateEvaluateConditions, Reason: "deterministic evidence collection complete"}, nil
@@ -260,8 +262,7 @@ func (h CollectEvidence) Run(ctx context.Context, c *domain.AnalysisCase) (workf
 func (h CollectEvidence) runGovulncheck(ctx context.Context, c *domain.AnalysisCase) {
 	raw, err := h.Govulncheck.RunGovulncheck(ctx, c.Product.Repository, c.Product)
 	if err != nil {
-		c.EvidenceGraph.ToolLimitations = append(c.EvidenceGraph.ToolLimitations,
-			fmt.Sprintf("govulncheck failed: %v", err))
+		c.EvidenceGraph.AddToolLimitation(fmt.Sprintf("govulncheck failed: %v", err))
 		return
 	}
 	evID := c.EvidenceGraph.AddEvidence(domain.Evidence{
@@ -274,13 +275,13 @@ func (h CollectEvidence) runGovulncheck(ctx context.Context, c *domain.AnalysisC
 	})
 	res, err := goanalysis.Parse(raw)
 	if err != nil {
-		c.EvidenceGraph.ToolLimitations = append(c.EvidenceGraph.ToolLimitations, err.Error())
+		c.EvidenceGraph.AddToolLimitation(err.Error())
 		return
 	}
 	for _, f := range res.ForVulnerability(c.Vulnerability) {
 		cp := f.CallPath()
 		cp.EvidenceID = evID
-		c.EvidenceGraph.CallPaths = append(c.EvidenceGraph.CallPaths, cp)
+		c.EvidenceGraph.AddCallPath(cp)
 	}
 }
 
@@ -291,8 +292,7 @@ func (h CollectEvidence) runSourceAnalysis(ctx context.Context, c *domain.Analys
 		return
 	}
 	if err := h.Source.Loaded(ctx); err != nil {
-		c.EvidenceGraph.ToolLimitations = append(c.EvidenceGraph.ToolLimitations,
-			fmt.Sprintf("source index load failed: %v", err))
+		c.EvidenceGraph.AddToolLimitation(fmt.Sprintf("source index load failed: %v", err))
 		return
 	}
 	conds := append([]domain.Condition{}, c.Exploit.MandatoryConditions...)
@@ -350,8 +350,7 @@ func needsProvenance(k domain.ConditionKind) bool {
 func (h CollectEvidence) collectProvenance(ctx context.Context, c *domain.AnalysisCase, cond domain.Condition, subj domain.SymbolRef) {
 	sites, err := h.Source.FindCallers(ctx, subj)
 	if err != nil {
-		c.EvidenceGraph.ToolLimitations = append(c.EvidenceGraph.ToolLimitations,
-			fmt.Sprintf("find_callers %s.%s: %v", subj.Package, subj.Symbol, err))
+		c.EvidenceGraph.AddToolLimitation(fmt.Sprintf("find_callers %s.%s: %v", subj.Package, subj.Symbol, err))
 		return
 	}
 	if len(sites) == 0 {
@@ -362,13 +361,12 @@ func (h CollectEvidence) collectProvenance(ctx context.Context, c *domain.Analys
 	for _, site := range sites {
 		flows, evs, err := h.traceArgs(ctx, site, cond)
 		if err != nil {
-			c.EvidenceGraph.ToolLimitations = append(c.EvidenceGraph.ToolLimitations,
-				fmt.Sprintf("trace_argument %s:%d: %v", site.File, site.Line, err))
+			c.EvidenceGraph.AddToolLimitation(fmt.Sprintf("trace_argument %s:%d: %v", site.File, site.Line, err))
 			continue
 		}
 		for _, flow := range flows {
 			flow.ConditionID = cond.ID
-			c.EvidenceGraph.DataFlows = append(c.EvidenceGraph.DataFlows, flow)
+			c.EvidenceGraph.AddDataFlows(flow)
 		}
 		for _, e := range evs {
 			c.EvidenceGraph.AddEvidence(e)
@@ -381,7 +379,7 @@ func (h CollectEvidence) collectProvenance(ctx context.Context, c *domain.Analys
 		if err == nil {
 			for _, v := range vals {
 				v.Property = fmt.Sprintf("cond=%s %s", cond.ID, v.Property)
-				c.EvidenceGraph.Validations = append(c.EvidenceGraph.Validations, v)
+				c.EvidenceGraph.AddValidations(v)
 			}
 			for _, e := range vev {
 				c.EvidenceGraph.AddEvidence(e)
@@ -408,6 +406,7 @@ func (h EvaluateConditions) Run(_ context.Context, c *domain.AnalysisCase) (work
 		existing[cl.ConditionID] = true
 	}
 	hasFalse := false
+	var pending []domain.Condition
 	for _, cond := range c.Exploit.MandatoryConditions {
 		if existing[cond.ID] {
 			if claim := findClaim(c.Claims, cond.ID); claim != nil && claim.Result == domain.ClaimFalse {
@@ -427,16 +426,48 @@ func (h EvaluateConditions) Run(_ context.Context, c *domain.AnalysisCase) (work
 				break
 			}
 		}
-		if claim.Result == domain.ClaimUnknown && h.Fallback != nil && h.Fallback.CanEvaluate(cond) {
-			alt := h.Fallback.Evaluate(cond, c)
-			if alt.Result != domain.ClaimUnknown || len(alt.EvidenceIDs) > 0 {
-				claim = alt
-			}
-		}
 		if claim.Result == domain.ClaimFalse {
 			hasFalse = true
+		} else if claim.Result == domain.ClaimUnknown {
+			pending = append(pending, cond)
 		}
 		c.Claims = append(c.Claims, claim)
+	}
+	// The fallback (LLM agent) runs only on UNKNOWN conditions and only
+	// when no mandatory condition is already FALSE: a proven-false
+	// condition caps the verdict below EXPLOITABLE regardless of the rest,
+	// so spending bounded-expensive agent steps cannot change the outcome.
+	if !hasFalse {
+		// Conditions are independent: run the fallback concurrently.
+		// EvidenceGraph and Usage counters are mutex-guarded.
+		var wg sync.WaitGroup
+		var mu sync.Mutex
+		for _, cond := range pending {
+			if h.Fallback == nil || !h.Fallback.CanEvaluate(cond) {
+				continue
+			}
+			wg.Add(1)
+			go func(cond domain.Condition) {
+				defer wg.Done()
+				alt := h.Fallback.Evaluate(cond, c)
+				mu.Lock()
+				defer mu.Unlock()
+				claim := findClaim(c.Claims, cond.ID)
+				if claim == nil {
+					return
+				}
+				if alt.Result != domain.ClaimUnknown || len(alt.EvidenceIDs) > 0 {
+					*claim = alt
+				}
+				if claim.Result == domain.ClaimFalse {
+					hasFalse = true
+				}
+			}(cond)
+		}
+		wg.Wait()
+	} else {
+		c.EvidenceGraph.AddLimitation(
+			"agent fallback skipped: a mandatory condition is already FALSE, so remaining UNKNOWNs cannot change the verdict")
 	}
 	if hasFalse {
 		return workflow.Transition{Next: domain.StateNegativeCheck, Reason: "candidate FALSE requires negative verification"}, nil
@@ -536,8 +567,7 @@ func (Review) State() domain.WorkflowState { return domain.StateReview }
 
 func (h Review) Run(_ context.Context, c *domain.AnalysisCase) (workflow.Transition, error) {
 	if h.Reviewer == nil {
-		c.EvidenceGraph.Limitations = append(c.EvidenceGraph.Limitations,
-			"reviewer not configured; proposed verdict not reviewed")
+		c.EvidenceGraph.AddLimitation("reviewer not configured; proposed verdict not reviewed")
 		return workflow.Transition{Next: domain.StateEvaluateVerdict, Reason: "review skipped: no reviewer"}, nil
 	}
 	maxIt := c.Workflow.Limits.MaxReviewIterations
@@ -545,8 +575,7 @@ func (h Review) Run(_ context.Context, c *domain.AnalysisCase) (workflow.Transit
 		maxIt = 2
 	}
 	if len(c.Reviews) >= maxIt {
-		c.EvidenceGraph.Limitations = append(c.EvidenceGraph.Limitations,
-			"review iteration budget exhausted; verdict computed on repaired claims")
+		c.EvidenceGraph.AddLimitation("review iteration budget exhausted; verdict computed on repaired claims")
 		return workflow.Transition{Next: domain.StateEvaluateVerdict, Reason: "review budget exhausted"}, nil
 	}
 
@@ -556,7 +585,7 @@ func (h Review) Run(_ context.Context, c *domain.AnalysisCase) (workflow.Transit
 	rev := h.Reviewer.Review(c, proposed)
 	rev.ID = domain.ReviewID(fmt.Sprintf("REV-%d", len(c.Reviews)+1))
 	c.Reviews = append(c.Reviews, rev)
-	c.Workflow.Usage.ReviewIterations++
+	c.IncReviewIterations()
 	c.EvidenceGraph.ComputeHash()
 
 	if rev.Result != domain.ReviewRevise {
@@ -633,8 +662,7 @@ func (h BuildReport) Run(ctx context.Context, c *domain.AnalysisCase) (workflow.
 	}
 	if h.Tracker != nil {
 		if err := h.Tracker.Publish(ctx, string(c.ID), report.Markdown(c)); err != nil {
-			c.EvidenceGraph.ToolLimitations = append(c.EvidenceGraph.ToolLimitations,
-				"tracker publish failed: "+err.Error())
+			c.EvidenceGraph.AddToolLimitation("tracker publish failed: " + err.Error())
 		}
 	}
 	return workflow.Transition{Next: domain.StateCompleted, Reason: "report written to " + h.Dir}, nil

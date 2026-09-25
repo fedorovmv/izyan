@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"example.com/vuln-analyzer/internal/domain"
 )
@@ -178,4 +179,33 @@ func ParseVendorModules(b []byte) []Module {
 		mods = append(mods, m)
 	}
 	return mods
+}
+
+// CachingTool memoizes GoTool results for one (repo, build) pair — in
+// scan mode the same module/package listing serves every advisory.
+func CachingTool(inner GoTool) GoTool { return &cachingTool{inner: inner} }
+
+type cachingTool struct {
+	inner GoTool
+	mOnce sync.Once
+	mRaw  []byte
+	mSrc  string
+	mErr  error
+	pOnce sync.Once
+	pRaw  []byte
+	pErr  error
+}
+
+func (t *cachingTool) ListModules(ctx context.Context, dir string, build domain.ProductSnapshot) ([]byte, string, error) {
+	t.mOnce.Do(func() {
+		t.mRaw, t.mSrc, t.mErr = t.inner.ListModules(ctx, dir, build)
+	})
+	return t.mRaw, t.mSrc, t.mErr
+}
+
+func (t *cachingTool) ListPackages(ctx context.Context, dir string, build domain.ProductSnapshot) ([]byte, error) {
+	t.pOnce.Do(func() {
+		t.pRaw, t.pErr = t.inner.ListPackages(ctx, dir, build)
+	})
+	return t.pRaw, t.pErr
 }

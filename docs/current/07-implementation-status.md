@@ -312,3 +312,27 @@ TRUE "vulnerability confirmed by govulncheck" на evidence, говорящем
 обратное — проверка evidence_ids ⊆ graph не ловит семантическое
 искажение. Вердикт не пострадал (mandatory FALSE доминирует), но
 report-точность LLM-claims требует доработки.
+
+## Performance pass (done)
+
+Замеры на продукт-референс показали: детерминистика ~25-30с/кейс
+(go list -deps 3.5s, index load 4.5s, govulncheck 14s), а 13-32 LLM
+вызова × 20-60с — основные ~10-15 мин. Меры:
+
+- `Workflow.Timings` — пер-состояние секунды, пишутся в case.json и
+  печатаются (`timings:` строка + total + llm_calls).
+- EvaluateConditions двухпроходный: сначала все детерминистические
+  оценщики; LLM-fallback только на UNKNOWN и только пока ни одного
+  mandatory FALSE — FALSE кладёт вердикт ниже EXPLOITABLE, остальные
+  UNKNOWN его уже не меняют. Кейс xwwf: 32 LLM-вызова → 2,
+  ~15 мин → 67.5s.
+- UNKNOWN-условия оцениваются fallback'ом параллельно (EvidenceGraph и
+  Usage под мьютексами).
+- Scan: разделяемые `affected.CachingTool` (один `go list` на репо),
+  `goanalysis.CachingRunner` (один прогон govulncheck — вывод покрывает
+  всю БД уязвимостей), один shared `goanalysis.Index` (мьютекс на
+  публичных методах), параллельные воркеры ×4 на выживших advisory,
+  `loadLLMEnv` под sync.Once (гонки os.Setenv).
+- Prefilter теперь переиспользует кешированный GoTool — 60 advisory
+  отфильтрованы за секунды на монорепо с 201 модулем.
+- `go test -race ./...` чистый.

@@ -42,10 +42,10 @@ func (Tools) Schemas() string { return toolSchemas }
 // usage counters; results never fabricate facts — a tool miss is returned
 // to the model as an error string, not as "no evidence exists".
 func (t Tools) Call(ctx context.Context, c *domain.AnalysisCase, name string, args json.RawMessage) ToolResult {
-	if c.Workflow.Usage.ToolCalls >= c.Workflow.Limits.MaxToolCalls && c.Workflow.Limits.MaxToolCalls > 0 {
+	if c.UsageSnapshot().ToolCalls >= c.Workflow.Limits.MaxToolCalls && c.Workflow.Limits.MaxToolCalls > 0 {
 		return ToolResult{Error: "tool call budget exhausted"}
 	}
-	c.Workflow.Usage.ToolCalls++
+	c.IncToolCalls()
 
 	fail := func(err error) ToolResult { return ToolResult{Error: err.Error()} }
 	switch name {
@@ -57,10 +57,10 @@ func (t Tools) Call(ctx context.Context, c *domain.AnalysisCase, name string, ar
 		if err := json.Unmarshal(args, &a); err != nil {
 			return fail(err)
 		}
-		if c.Workflow.Usage.SourceReads >= c.Workflow.Limits.MaxSourceReads && c.Workflow.Limits.MaxSourceReads > 0 {
+		if c.UsageSnapshot().SourceReads >= c.Workflow.Limits.MaxSourceReads && c.Workflow.Limits.MaxSourceReads > 0 {
 			return ToolResult{Error: "source read budget exhausted"}
 		}
-		c.Workflow.Usage.SourceReads++
+		c.IncSourceReads()
 		src, err := t.Source.ReadFunction(ctx, a.File, a.Function)
 		if err != nil {
 			return fail(err)
@@ -134,7 +134,7 @@ func (t Tools) Call(ctx context.Context, c *domain.AnalysisCase, name string, ar
 		for i := range flows {
 			flows[i].ConditionID = condFromCtx(ctx)
 		}
-		c.EvidenceGraph.DataFlows = append(c.EvidenceGraph.DataFlows, flows...)
+		c.EvidenceGraph.AddDataFlows(flows...)
 		b, _ := json.Marshal(flows)
 		id := addEvidence(c, domain.EvidenceDataFlow, "trace_argument",
 			fmt.Sprintf("%s:%d", a.File, a.Line), string(b))
@@ -162,7 +162,7 @@ func (t Tools) Call(ctx context.Context, c *domain.AnalysisCase, name string, ar
 		for _, e := range evs {
 			last = c.EvidenceGraph.AddEvidence(e)
 		}
-		c.EvidenceGraph.Validations = append(c.EvidenceGraph.Validations, vals...)
+		c.EvidenceGraph.AddValidations(vals...)
 		b, _ := json.Marshal(vals)
 		id := addEvidence(c, domain.EvidenceValidation,
 			"find_validations", fmt.Sprintf("%s:%d", a.File, a.Line), string(b))

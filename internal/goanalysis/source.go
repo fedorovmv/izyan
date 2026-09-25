@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 
 	"golang.org/x/tools/go/packages"
 
@@ -21,6 +22,7 @@ import (
 type Index struct {
 	Dir     string
 	Build   domain.ProductSnapshot
+	mu      sync.Mutex // serializes queries; shared across cases in scan mode
 	pkgs    []*packages.Package
 	fset    *token.FileSet
 	loaded  bool
@@ -87,12 +89,20 @@ func (ix *Index) loadExtra(ctx context.Context, patterns ...string) ([]*packages
 // Loaded reports whether the index can answer structural queries; if false,
 // callers must treat results as tool failures (UNKNOWN, never FALSE inputs).
 func (ix *Index) Loaded(ctx context.Context) error {
+	ix.mu.Lock()
+	defer ix.mu.Unlock()
 	return ix.load(ctx)
 }
 
 // FindSymbol locates a symbol (function or method) by package path and name.
 // The name may be "Func" or "Type.Method"/"(*Type).Method".
 func (ix *Index) FindSymbol(ctx context.Context, ref domain.SymbolRef) (*domain.CallSite, error) {
+	ix.mu.Lock()
+	defer ix.mu.Unlock()
+	return ix.findSymbol(ctx, ref)
+}
+
+func (ix *Index) findSymbol(ctx context.Context, ref domain.SymbolRef) (*domain.CallSite, error) {
 	if err := ix.load(ctx); err != nil {
 		return nil, err
 	}
@@ -210,6 +220,8 @@ func callSiteFor(fset *token.FileSet, pkg *packages.Package, obj types.Object) *
 // packages — direct calls as well as value references (assignments,
 // interface satisfaction candidates, etc.).
 func (ix *Index) SearchSymbol(ctx context.Context, ref domain.SymbolRef) ([]domain.CallSite, error) {
+	ix.mu.Lock()
+	defer ix.mu.Unlock()
 	if err := ix.load(ctx); err != nil {
 		return nil, err
 	}
@@ -256,6 +268,8 @@ type CallSiteRef struct {
 // FindCallers returns statically resolved call sites of the symbol inside
 // the product packages (loaded ./... roots).
 func (ix *Index) FindCallers(ctx context.Context, ref domain.SymbolRef) ([]domain.CallSite, error) {
+	ix.mu.Lock()
+	defer ix.mu.Unlock()
 	refs, err := ix.findCallSites(ctx, ref)
 	if err != nil {
 		return nil, err
@@ -361,6 +375,8 @@ func (ix *Index) siteOf(pkg *packages.Package, enc *ast.FuncDecl, call *ast.Call
 // ReadFunction returns the source text of the function enclosing pos or
 // matching name in the given file.
 func (ix *Index) ReadFunction(ctx context.Context, file, funcName string) (string, error) {
+	ix.mu.Lock()
+	defer ix.mu.Unlock()
 	if err := ix.load(ctx); err != nil {
 		return "", err
 	}
@@ -398,6 +414,8 @@ func (ix *Index) nodeSource(n ast.Node) (string, error) {
 // FindEntrypoints enumerates plausible external entrypoints in product
 // packages: main/init functions and net/http handlers.
 func (ix *Index) FindEntrypoints(ctx context.Context) ([]domain.Entrypoint, error) {
+	ix.mu.Lock()
+	defer ix.mu.Unlock()
 	if err := ix.load(ctx); err != nil {
 		return nil, err
 	}
@@ -475,6 +493,8 @@ type DynamicMarker struct {
 
 // ScanDynamic finds dynamic-dispatch risk markers inside product packages.
 func (ix *Index) ScanDynamic(ctx context.Context, ref domain.SymbolRef) ([]DynamicMarker, error) {
+	ix.mu.Lock()
+	defer ix.mu.Unlock()
 	if err := ix.load(ctx); err != nil {
 		return nil, err
 	}

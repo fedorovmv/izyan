@@ -8,7 +8,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"example.com/vuln-analyzer/internal/affected"
@@ -82,6 +84,10 @@ type analyzeOpts struct {
 	llmEnv        string
 	detOnly       bool
 	rootCauseArgs []string
+	// Shared across advisories in scan mode; nil in single analyze.
+	srcIndex *goanalysis.Index
+	goTool   affected.GoTool
+	gvRunner goanalysis.Runner
 }
 
 // commonFlags registers the flags shared by analyze and scan.
@@ -156,11 +162,22 @@ func analyzeCase(ctx context.Context, o analyzeOpts) (*domain.AnalysisCase, erro
 		return nil, err
 	}
 
-	srcIndex := &goanalysis.Index{
-		Dir: absRepo,
-		Build: domain.ProductSnapshot{
-			GOOS: o.goos, GOARCH: o.goarch, BuildTags: splitCSV(o.tags),
-		},
+	srcIndex := o.srcIndex
+	if srcIndex == nil {
+		srcIndex = &goanalysis.Index{
+			Dir: absRepo,
+			Build: domain.ProductSnapshot{
+				GOOS: o.goos, GOARCH: o.goarch, BuildTags: splitCSV(o.tags),
+			},
+		}
+	}
+	goTool := o.goTool
+	if goTool == nil {
+		goTool = affected.ExecGoTool{}
+	}
+	gvRunner := o.gvRunner
+	if gvRunner == nil {
+		gvRunner = goanalysis.ExecRunner{}
 	}
 
 	// LLM layer: env file auto-load (explicit --llm-env, else .env in
@@ -198,7 +215,7 @@ func analyzeCase(ctx context.Context, o analyzeOpts) (*domain.AnalysisCase, erro
 			},
 		},
 		states.ResolveVulnerability{Source: src, ID: o.vulnID},
-		states.CheckAffected{Resolver: affected.GoResolver{}},
+		states.CheckAffected{Resolver: affected.GoResolver{Tool: goTool}},
 		states.ResolveRootCause{
 			Manual:   parseRootCauses(o.rootCauseArgs),
 			Resolver: rcResolver,
@@ -209,7 +226,7 @@ func analyzeCase(ctx context.Context, o analyzeOpts) (*domain.AnalysisCase, erro
 			Builder:   builder,
 		},
 		states.CollectEvidence{
-			Govulncheck: goanalysis.ExecRunner{},
+			Govulncheck: gvRunner,
 			Source:      srcIndex,
 		},
 		states.EvaluateConditions{Evaluators: []evaluator.ConditionEvaluator{
@@ -235,13 +252,30 @@ func printCase(c *domain.AnalysisCase, caseDir string) {
 	if c.Verdict != nil {
 		fmt.Printf("verdict: %s\nreason: %s\n", c.Verdict.Verdict, c.Verdict.Reason)
 	}
+	if len(c.Workflow.Timings) > 0 {
+		var parts []string
+		var total float64
+		for _, k := range sortedKeys(c.Workflow.Timings) {
+			total += c.Workflow.Timings[k]
+			parts = append(parts, fmt.Sprintf("%s=%.1fs", k, c.Workflow.Timings[k]))
+		}
+		fmt.Printf("timings: %s | total=%.1fs llm_calls=%d\n",
+			strings.Join(parts, " "), total, c.Workflow.Usage.LLMCalls)
+	}
 	fmt.Printf("report: %s\n", filepath.Join(caseDir, string(c.ID), "report.md"))
 }
 
 // loadLLMEnv loads the LLM dotenv file: explicit --llm-env wins, else it
 // probes .env in the working directory and the analyzed repo.
-// Missing files are ignored; malformed lines are skipped.
+// Missing files are ignored; malformed lines are skipped. Guarded by
+// llmEnvOnce: concurrent os.Setenv from parallel scan workers would race.
+var llmEnvOnce sync.Once
+
 func loadLLMEnv(explicit, repo string) {
+	llmEnvOnce.Do(func() { loadLLMEnvOnce(explicit, repo) })
+}
+
+func loadLLMEnvOnce(explicit, repo string) {
 	candidates := []string{explicit}
 	if explicit == "" {
 		candidates = []string{".env", filepath.Join(repo, ".env")}
@@ -317,6 +351,17 @@ func runScan(args []string) error {
 	}
 	ctx := context.Background()
 
+	// Shared per-scan resources: one source index, one go list, one
+	// govulncheck run — repeated per-advisory otherwise.
+	o.goTool = affected.CachingTool(affected.ExecGoTool{})
+	o.gvRunner = goanalysis.CachingRunner(goanalysis.ExecRunner{})
+	o.srcIndex = &goanalysis.Index{
+		Dir: absRepo,
+		Build: domain.ProductSnapshot{
+			GOOS: o.goos, GOARCH: o.goarch, BuildTags: splitCSV(o.tags),
+		},
+	}
+
 	mods, err := listModules(ctx, absRepo)
 	if err != nil {
 		return fmt.Errorf("list modules: %w", err)
@@ -346,7 +391,7 @@ func runScan(args []string) error {
 	if err != nil {
 		return fmt.Errorf("snapshot: %w", err)
 	}
-	resolver := affected.GoResolver{}
+	resolver := affected.GoResolver{Tool: o.goTool}
 	src := vulnerability.OSVSource{BaseURL: o.osvURL}
 
 	type row struct {
@@ -356,6 +401,7 @@ func runScan(args []string) error {
 		Reason  string `json:"reason,omitempty"`
 	}
 	var rows []row
+	var survivors []string
 	for _, id := range vulnIDs {
 		v, err := src.Get(ctx, id)
 		if err != nil {
@@ -369,23 +415,50 @@ func runScan(args []string) error {
 			fmt.Printf("%-18s NOT_AFFECTED (prefilter)\n", id)
 			continue
 		}
-
-		co := o
-		co.vulnID = id
-		c, err := analyzeCase(ctx, co)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "%s: %v\n", id, err)
-			rows = append(rows, row{ID: id, State: "ERROR", Reason: err.Error()})
-			continue
-		}
-		r := row{ID: id, State: string(c.Workflow.State)}
-		if c.Verdict != nil {
-			r.Verdict = string(c.Verdict.Verdict)
-			r.Reason = c.Verdict.Reason
-		}
-		rows = append(rows, r)
-		fmt.Printf("%-18s %s %s\n", id, r.Verdict, r.Reason)
+		survivors = append(survivors, id)
 	}
+
+	// Deep-analyze survivors in parallel: the shared index/tool/runner are
+	// mutex/once-guarded, and each case keeps its own evidence and budget.
+	loadLLMEnv(o.llmEnv, absRepo) // resolved once, before workers read env
+	const workers = 4
+	sem := make(chan struct{}, workers)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for _, id := range survivors {
+		wg.Add(1)
+		go func(id string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			co := o
+			co.vulnID = id
+			c, err := analyzeCase(ctx, co)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "%s: %v\n", id, err)
+				rows = append(rows, row{ID: id, State: "ERROR", Reason: err.Error()})
+				return
+			}
+			r := row{ID: id, State: string(c.Workflow.State)}
+			if c.Verdict != nil {
+				r.Verdict = string(c.Verdict.Verdict)
+				r.Reason = c.Verdict.Reason
+			}
+			rows = append(rows, r)
+			var tm string
+			var total float64
+			for _, sec := range c.Workflow.Timings {
+				total += sec
+			}
+			if total > 0 {
+				tm = fmt.Sprintf(" (%.0fs, %d llm calls)", total, c.Workflow.Usage.LLMCalls)
+			}
+			fmt.Printf("%-18s %s %s%s\n", id, r.Verdict, r.Reason, tm)
+		}(id)
+	}
+	wg.Wait()
 	b, _ := json.MarshalIndent(rows, "", "  ")
 	out := filepath.Join(o.caseDir, "scan.json")
 	if err := os.MkdirAll(o.caseDir, 0o755); err != nil {
@@ -474,4 +547,13 @@ func notAffectedReason(r domain.AffectedResult) string {
 		return "affected package excluded by GOOS/GOARCH/build tags"
 	}
 	return ""
+}
+
+func sortedKeys(m map[string]float64) []string {
+	ks := make([]string, 0, len(m))
+	for k := range m {
+		ks = append(ks, k)
+	}
+	sort.Strings(ks)
+	return ks
 }

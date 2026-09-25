@@ -69,7 +69,7 @@ func (a ClaimEvaluator) Evaluate(cond domain.Condition, c *domain.AnalysisCase) 
 			claim.Limitations = append(claim.Limitations, "llm call budget exhausted mid-loop")
 			return claim
 		}
-		c.Workflow.Usage.LLMCalls++
+		c.IncLLMCalls()
 		out, err := a.Client.CompleteMessages(ctx, Analyze, system, transcript)
 		if err != nil {
 			claim.Limitations = append(claim.Limitations, "agent step failed: "+err.Error())
@@ -123,7 +123,7 @@ func (a ClaimEvaluator) acceptClaim(claim domain.Claim, p struct {
 	Explanation string   `json:"explanation"`
 }, c *domain.AnalysisCase) domain.Claim {
 	valid := map[domain.EvidenceID]bool{}
-	for _, e := range c.EvidenceGraph.Evidence {
+	for _, e := range c.EvidenceGraph.EvidenceList() {
 		valid[e.ID] = true
 	}
 	var ids []domain.EvidenceID
@@ -182,7 +182,7 @@ func agentUser(cond domain.Condition, c *domain.AnalysisCase) string {
 		})
 	}
 	var evs []map[string]any
-	for _, e := range c.EvidenceGraph.Evidence {
+	for _, e := range c.EvidenceGraph.EvidenceList() {
 		evs = append(evs, map[string]any{
 			"id": e.ID, "kind": e.Kind, "source": e.Source,
 		})

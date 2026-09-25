@@ -38,10 +38,15 @@ func (e *Engine) Run(ctx context.Context, c *domain.AnalysisCase) error {
 		if !ok {
 			return fmt.Errorf("no handler for state %s", c.Workflow.State)
 		}
+		start := time.Now()
 		tr, err := h.Run(ctx, c)
 		if err != nil {
 			return err
 		}
+		if c.Workflow.Timings == nil {
+			c.Workflow.Timings = map[string]float64{}
+		}
+		c.Workflow.Timings[string(c.Workflow.State)] += time.Since(start).Seconds()
 		c.Workflow.PreviousState = c.Workflow.State
 		c.Workflow.State = tr.Next
 		c.Workflow.Reason = tr.Reason

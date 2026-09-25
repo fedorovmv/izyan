@@ -20,6 +20,8 @@ const maxTraceHops = 2
 // TraceArgument classifies the data origin of the argument at argIndex of
 // the call site (File+Line locate the call expression).
 func (ix *Index) TraceArgument(ctx context.Context, site domain.CallSite, argIndex int) (domain.DataFlow, []domain.Evidence, error) {
+	ix.mu.Lock()
+	defer ix.mu.Unlock()
 	flow := domain.DataFlow{
 		Sink:   site,
 		Origin: domain.OriginUnknown,
@@ -499,6 +501,8 @@ func (ix *Index) funcDecl(fn *types.Func) (*ast.FuncDecl, *packages.Package) {
 // TraceAllArguments classifies every argument of the call site — used when
 // the attacker-controlled parameter index is not known in advance.
 func (ix *Index) TraceAllArguments(ctx context.Context, site domain.CallSite) ([]domain.DataFlow, []domain.Evidence, error) {
+	ix.mu.Lock()
+	defer ix.mu.Unlock()
 	call, enc, pkg, err := ix.callAt(site)
 	if err != nil {
 		return nil, nil, err
@@ -531,7 +535,9 @@ func (ix *Index) TraceAllArguments(ctx context.Context, site domain.CallSite) ([
 // and reader types win over plain data types. Returns -1 when nothing
 // looks like input — callers must treat that as UNKNOWN, never guess.
 func (ix *Index) InputParamIndex(ref domain.SymbolRef) (int, error) {
-	cs, err := ix.FindSymbol(context.Background(), ref)
+	ix.mu.Lock()
+	defer ix.mu.Unlock()
+	cs, err := ix.findSymbol(context.Background(), ref)
 	if err != nil {
 		return -1, err
 	}
@@ -713,6 +719,8 @@ var rank = map[domain.DataOrigin]int{
 // FindValidations locates guard statements in the enclosing function that
 // constrain the argument before the sink call.
 func (ix *Index) FindValidations(ctx context.Context, site domain.CallSite, argIndex int) ([]domain.Validation, []domain.Evidence, error) {
+	ix.mu.Lock()
+	defer ix.mu.Unlock()
 	var vals []domain.Validation
 	var ev []domain.Evidence
 	if err := ix.load(ctx); err != nil {

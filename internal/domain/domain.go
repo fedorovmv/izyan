@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 )
 
@@ -331,6 +332,7 @@ type ConfigItem struct {
 }
 
 type EvidenceGraph struct {
+	mu              sync.Mutex   `json:"-"`
 	Version         string       `json:"version"`
 	Evidence        []Evidence   `json:"evidence"`
 	CallPaths       []CallPath   `json:"call_paths,omitempty"`
@@ -345,8 +347,11 @@ type EvidenceGraph struct {
 }
 
 // AddEvidence appends e to the graph, assigning an ID when empty, and
-// returns the assigned EvidenceID.
+// returns the assigned EvidenceID. Safe for concurrent use — parallel
+// condition evaluators add evidence into the same case graph.
 func (g *EvidenceGraph) AddEvidence(e Evidence) EvidenceID {
+	g.mu.Lock()
+	defer g.mu.Unlock()
 	if e.ID == "" {
 		e.ID = EvidenceID(fmt.Sprintf("EV-%03d", len(g.Evidence)+1))
 	}
@@ -358,12 +363,53 @@ func (g *EvidenceGraph) AddEvidence(e Evidence) EvidenceID {
 // same note (e.g. "no call sites") is meaningless when repeated per
 // condition or per dynamic marker.
 func (g *EvidenceGraph) AddLimitation(s string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
 	for _, l := range g.Limitations {
 		if l == s {
 			return
 		}
 	}
 	g.Limitations = append(g.Limitations, s)
+}
+
+func (g *EvidenceGraph) AddToolLimitation(s string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for _, l := range g.ToolLimitations {
+		if l == s {
+			return
+		}
+	}
+	g.ToolLimitations = append(g.ToolLimitations, s)
+}
+
+func (g *EvidenceGraph) AddDataFlows(flows ...DataFlow) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.DataFlows = append(g.DataFlows, flows...)
+}
+
+func (g *EvidenceGraph) AddValidations(vals ...Validation) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.Validations = append(g.Validations, vals...)
+}
+
+func (g *EvidenceGraph) AddCallPath(cp CallPath) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.CallPaths = append(g.CallPaths, cp)
+}
+
+// EvidenceList returns a copy of the evidence slice for safe iteration
+// while other goroutines may be appending.
+func (g *EvidenceGraph) EvidenceList() []Evidence {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	out := make([]Evidence, len(g.Evidence))
+	copy(out, g.Evidence)
+	return out
 }
 
 // ComputeHash sets Hash to the sha256 of the canonical graph encoding
@@ -425,18 +471,24 @@ type AnalysisUsage struct {
 }
 
 type WorkflowStatus struct {
-	State         WorkflowState  `json:"state"`
-	PreviousState WorkflowState  `json:"previous_state,omitempty"`
-	Reason        string         `json:"reason,omitempty"`
-	StartedAt     time.Time      `json:"started_at"`
-	UpdatedAt     time.Time      `json:"updated_at"`
-	FinishedAt    *time.Time     `json:"finished_at,omitempty"`
-	Iteration     int            `json:"iteration"`
-	Limits        AnalysisLimits `json:"limits"`
-	Usage         AnalysisUsage  `json:"usage"`
+	State         WorkflowState `json:"state"`
+	PreviousState WorkflowState `json:"previous_state,omitempty"`
+	Reason        string        `json:"reason,omitempty"`
+	StartedAt     time.Time     `json:"started_at"`
+	UpdatedAt     time.Time     `json:"updated_at"`
+	FinishedAt    *time.Time    `json:"finished_at,omitempty"`
+	Iteration     int           `json:"iteration"`
+	// Timings records wall-clock seconds spent in each workflow state —
+	// persisted so slow stages are visible in the case file, not guessed.
+	Timings map[string]float64 `json:"timings,omitempty"`
+	Limits  AnalysisLimits     `json:"limits"`
+	Usage   AnalysisUsage      `json:"usage"`
 }
 
 type AnalysisCase struct {
+	// mu guards Usage counters when condition evaluators or scan workers
+	// touch the case concurrently. JSON ignores unexported fields.
+	mu            sync.Mutex      `json:"-"`
 	ID            CaseID          `json:"id"`
 	Vulnerability Vulnerability   `json:"vulnerability"`
 	Product       ProductSnapshot `json:"product"`
@@ -448,4 +500,19 @@ type AnalysisCase struct {
 	Reviews       []Review        `json:"reviews,omitempty"`
 	Verdict       *VerdictResult  `json:"verdict,omitempty"`
 	Workflow      WorkflowStatus  `json:"workflow"`
+}
+
+// Usage counter helpers — the only safe writers under parallelism.
+func (c *AnalysisCase) IncLLMCalls()    { c.mu.Lock(); c.Workflow.Usage.LLMCalls++; c.mu.Unlock() }
+func (c *AnalysisCase) IncToolCalls()   { c.mu.Lock(); c.Workflow.Usage.ToolCalls++; c.mu.Unlock() }
+func (c *AnalysisCase) IncSourceReads() { c.mu.Lock(); c.Workflow.Usage.SourceReads++; c.mu.Unlock() }
+func (c *AnalysisCase) IncReviewIterations() {
+	c.mu.Lock()
+	c.Workflow.Usage.ReviewIterations++
+	c.mu.Unlock()
+}
+func (c *AnalysisCase) UsageSnapshot() AnalysisUsage {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.Workflow.Usage
 }

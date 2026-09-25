@@ -75,7 +75,7 @@ func (r *RootCauseResolver) Propose(ctx context.Context, c *domain.AnalysisCase,
 	}
 	parseOK := false
 	for attempt := 0; attempt <= r.Client.Retries(); attempt++ {
-		c.Workflow.Usage.LLMCalls++
+		c.IncLLMCalls()
 		out, callErr := r.Client.Complete(ctx, Build, rootCauseSystem, string(user))
 		if callErr != nil {
 			lims = append(lims, "llm root cause proposal failed: "+callErr.Error())

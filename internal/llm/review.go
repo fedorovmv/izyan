@@ -29,7 +29,7 @@ func (rv Reviewer) Review(c *domain.AnalysisCase, proposed domain.VerdictResult)
 	}
 	payload := reviewPayload(c, proposed)
 	user, _ := json.Marshal(payload)
-	c.Workflow.Usage.LLMCalls++
+	c.IncLLMCalls()
 	out, err := rv.Client.Complete(context.Background(), Analyze, reviewSystem, string(user))
 	if err != nil {
 		r.Findings = append(r.Findings, domain.ReviewFinding{

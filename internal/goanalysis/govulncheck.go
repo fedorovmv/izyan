@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"sync"
 
 	"example.com/vuln-analyzer/internal/domain"
 )
@@ -21,6 +22,25 @@ type Runner interface {
 
 type ExecRunner struct {
 	Bin string
+}
+
+// CachingRunner runs govulncheck once per (repo, build) — its output
+// covers the whole vulnerability database, so a single run serves every
+// advisory in a batch scan.
+func CachingRunner(inner Runner) Runner { return &cachingRunner{inner: inner} }
+
+type cachingRunner struct {
+	inner Runner
+	once  sync.Once
+	out   []byte
+	err   error
+}
+
+func (r *cachingRunner) RunGovulncheck(ctx context.Context, dir string, build domain.ProductSnapshot) ([]byte, error) {
+	r.once.Do(func() {
+		r.out, r.err = r.inner.RunGovulncheck(ctx, dir, build)
+	})
+	return r.out, r.err
 }
 
 func (r ExecRunner) RunGovulncheck(ctx context.Context, dir string, build domain.ProductSnapshot) ([]byte, error) {
