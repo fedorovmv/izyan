@@ -8,6 +8,7 @@ package review
 
 import (
 	"fmt"
+	"strings"
 
 	"example.com/vuln-analyzer/internal/domain"
 )
@@ -92,6 +93,22 @@ func (Structural) Review(c *domain.AnalysisCase, proposed domain.VerdictResult) 
 					TargetType: "claim", TargetID: string(cl.ID), Severity: "medium",
 					Problem: "FALSE claim lacks verified negative check; verdict cannot rely on it",
 				})
+			}
+			// A VERIFIED negative check that still records dynamic-dispatch
+			// caveats (reflect/unsafe/plugin) does not support FALSE on this
+			// codebase — demote deterministically instead of relying on the
+			// LLM reviewer to notice.
+			if nv == nil {
+				break
+			}
+			for _, l := range nv.Limitations {
+				if strings.Contains(l, "widens the call graph") {
+					findings = append(findings, domain.ReviewFinding{
+						TargetType: "claim", TargetID: string(cl.ID), Severity: "high",
+						Problem: "FALSE claim verified but dynamic dispatch markers limit coverage: " + l,
+					})
+					break
+				}
 			}
 		}
 		if cl.Result == domain.ClaimUnknown && mandatory[cl.ConditionID] {
