@@ -171,6 +171,7 @@ func runAnalyze(args []string) error {
 		states.EvaluateConditions{Evaluators: []evaluator.ConditionEvaluator{
 			evaluator.SymbolReachable{},
 			evaluator.ArgumentOrigin{},
+			evaluator.Validation{},
 		}, Fallback: fallbackEval},
 		states.NegativeCheck{Verifier: &goanalysis.Verifier{Source: srcIndex}},
 		states.Review{Reviewer: reviewers, Evaluator: evaluator.VerdictEvaluator{}},

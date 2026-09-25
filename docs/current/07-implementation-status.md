@@ -225,3 +225,16 @@ tracker API sink.
 
 Осталось: CONDITION-EVAL для других доменов (CONFIGURATION источники,
 build-tag развёртка), реальный tracker sink, P6 remediation.
+
+## Добивка Slice 7 (done)
+
+- `evaluator.Validation`: VALIDATION-условия по DataFlows+Validations —
+  гарды перед sink на всех call sites → FALSE-кандидат (negative
+  verification обязателен); частичное/нулевое покрытие → UNKNOWN.
+  Отсутствие гардов не доказывает отсутствие валидации.
+- `LLM_BUILD_MAX_RETRIES` теперь реально работает: build-модель повторяет
+  запрос при непарсящемся JSON (rootcause + exploit builders).
+- Фикстура из плана — tool-failure: `TestE2EGovulncheckFailure` —
+  ошибка runner-а не даёт FALSE, C-REACH UNKNOWN → INCONCLUSIVE
+  (на extprod, где C-INPUT TRUE — единственный обход был бы ложный FALSE).
+- Тесты: +3 validation, +1 tool-failure e2e, +1 build-retry.

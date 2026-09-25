@@ -46,18 +46,25 @@ func (r RootCauseResolver) Resolve(ctx context.Context, c *domain.AnalysisCase, 
 		Symbols     []string `json:"affected_symbols"`
 		References  []string `json:"references"`
 	}{v.ID, v.Summary, v.Description, affectedPackages(v), affectedSymbols(v), referenceURLs(v)})
-	c.Workflow.Usage.LLMCalls++
-	out, callErr := r.Client.Complete(ctx, Build, rootCauseSystem, string(user))
-	if callErr != nil {
-		model.Limitations = append(model.Limitations, "llm root cause proposal failed: "+callErr.Error())
-		return model, evs, nil
-	}
 	var props []struct {
 		Package   string `json:"package"`
 		Symbol    string `json:"symbol"`
 		Mechanism string `json:"mechanism"`
 	}
-	if j := ExtractJSON(out); j == "" || json.Unmarshal([]byte(j), &props) != nil || len(props) == 0 {
+	parseOK := false
+	for attempt := 0; attempt <= r.Client.Retries(); attempt++ {
+		c.Workflow.Usage.LLMCalls++
+		out, callErr := r.Client.Complete(ctx, Build, rootCauseSystem, string(user))
+		if callErr != nil {
+			model.Limitations = append(model.Limitations, "llm root cause proposal failed: "+callErr.Error())
+			break
+		}
+		if j := ExtractJSON(out); j != "" && json.Unmarshal([]byte(j), &props) == nil && len(props) > 0 {
+			parseOK = true
+			break
+		}
+	}
+	if !parseOK {
 		model.Limitations = append(model.Limitations, "llm root cause proposal unusable")
 		return model, evs, nil
 	}

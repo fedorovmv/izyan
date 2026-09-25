@@ -39,6 +39,8 @@ type Config struct {
 	MaxTokens    int
 	InsecureTLS  bool
 	Enabled      bool
+	// BuildMaxRetries bounds JSON-repair retries for the build model.
+	BuildMaxRetries int
 }
 
 // ConfigFromEnv reads LLM_* variables. LLM_ENABLED must be truthy.
@@ -58,6 +60,9 @@ func ConfigFromEnv() Config {
 	}
 	if v, err := strconv.Atoi(os.Getenv("LLM_MAX_TOKENS")); err == nil && v > 0 {
 		c.MaxTokens = v
+	}
+	if v, err := strconv.Atoi(os.Getenv("LLM_BUILD_MAX_RETRIES")); err == nil && v >= 0 {
+		c.BuildMaxRetries = v
 	}
 	if c.BuildModel == "" {
 		c.BuildModel = c.AnalyzeModel
@@ -115,6 +120,10 @@ func NewClient(cfg Config) *Client {
 		Transport: tr,
 	}}
 }
+
+// Retries returns how many extra attempts build-model calls get on
+// unparseable output (0 = single attempt).
+func (c *Client) Retries() int { return c.cfg.BuildMaxRetries }
 
 func (c *Client) modelFor(role ModelRole) string {
 	if role == Build && c.cfg.BuildModel != "" {

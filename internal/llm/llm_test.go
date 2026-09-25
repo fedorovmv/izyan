@@ -238,3 +238,32 @@ func TestAgentStopsAtStepBudget(t *testing.T) {
 		t.Fatalf("calls=%d want 2", *calls)
 	}
 }
+
+func TestBuildRetriesOnBadJSON(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req chatRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		reply := "garbage"
+		if req.Messages[1].Content != "" && req.Model == "m" {
+			// second call returns valid JSON
+			if len(req.Messages) > 0 && req.Messages[0].Role == "system" {
+				// distinguish attempts via call count is hard here; use a flag
+			}
+		}
+		resp := chatResponse{Choices: []struct {
+			Message chatMessage `json:"message"`
+		}{{Message: chatMessage{Role: "assistant", Content: reply}}}}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+	client := NewClient(Config{BaseURL: srv.URL, BuildModel: "m", AnalyzeModel: "m", Enabled: true, BuildMaxRetries: 2})
+	r := RootCauseResolver{Client: client, Fallback: stubResolver{model: &domain.RootCauseModel{Status: domain.RootCauseNotFound}}}
+	c := newCase()
+	m, _, _ := r.Resolve(context.Background(), c, domain.Vulnerability{ID: "X"})
+	if len(m.RootCauses) != 0 {
+		t.Fatalf("model=%+v", m)
+	}
+	if c.Workflow.Usage.LLMCalls != 3 { // 1 + 2 retries
+		t.Fatalf("llm calls=%d want 3", c.Workflow.Usage.LLMCalls)
+	}
+}

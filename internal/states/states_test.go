@@ -3,6 +3,7 @@ package states_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -147,6 +148,7 @@ func runEngine(t *testing.T, d engineDeps) *domain.AnalysisCase {
 		states.EvaluateConditions{Evaluators: []evaluator.ConditionEvaluator{
 			evaluator.SymbolReachable{},
 			evaluator.ArgumentOrigin{},
+			evaluator.Validation{},
 		}},
 		states.NegativeCheck{Verifier: &goanalysis.Verifier{Source: srcIndex}},
 		states.Review{Reviewer: review.Structural{}, Evaluator: evaluator.VerdictEvaluator{}},
@@ -696,5 +698,46 @@ func TestReviewBudgetExhausted(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("budget limitation not recorded")
+	}
+}
+
+// Tool failure is never negative evidence: a govulncheck error must leave
+// the reachability claim UNKNOWN and the case INCONCLUSIVE — not FALSE.
+func TestE2EGovulncheckFailureStaysInconclusive(t *testing.T) {
+	// extprod passes os.Args into the sink: C-INPUT is TRUE, so the only
+	// path to a non-INCONCLUSIVE verdict would be a fabricated FALSE on
+	// C-REACH — the bug this test guards against.
+	repo := initRepoFrom(t, "extprod")
+	dir := t.TempDir()
+	model := `{"impact":"t","mandatory_conditions":[
+		{"id":"C-REACH","kind":"SYMBOL_REACHABLE","mandatory":true,
+		 "subject":{"package":"example.com/dep/vuln","symbol":"Parse"}},
+		{"id":"C-INPUT","kind":"ATTACKER_CONTROL","mandatory":true,
+		 "subject":{"package":"example.com/dep/vuln","symbol":"Parse"},"arg_index":0}
+	]}`
+	mp := filepath.Join(dir, "model.json")
+	if err := os.WriteFile(mp, []byte(model), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c := runEngine(t, engineDeps{
+		RepoPath: repo,
+		VulnSrc: vulnerability.StaticSource{Vulns: map[string]*domain.Vulnerability{
+			"GO-TEST-1": {ID: "GO-TEST-1", Module: "example.com/dep"},
+		}},
+		VulnID:      "GO-TEST-1",
+		Resolver:    stubResolver{},
+		ManualRC:    []domain.RootCause{{Package: "example.com/dep/vuln", Symbol: "Parse"}},
+		Model:       mp,
+		CaseDir:     filepath.Join(dir, "cases"),
+		Govulncheck: fakeGovulncheck{err: fmt.Errorf("govulncheck: binary missing")},
+		UseSource:   true,
+	})
+	for _, cl := range c.Claims {
+		if cl.ConditionID == "C-REACH" && cl.Result == domain.ClaimFalse {
+			t.Fatal("tool failure produced a FALSE claim")
+		}
+	}
+	if c.Verdict == nil || c.Verdict.Verdict != domain.VerdictInconclusive {
+		t.Fatalf("verdict=%+v", c.Verdict)
 	}
 }
