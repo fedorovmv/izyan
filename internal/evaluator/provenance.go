@@ -31,11 +31,15 @@ func (ArgumentOrigin) Evaluate(cond domain.Condition, c *domain.AnalysisCase) do
 			"no argument-provenance data flows recorded for this condition")
 		return claim
 	}
-	var safe, external, unknown int
+	var safe, external, unknown, deployDependent int
 	for _, f := range flows {
 		switch f.Origin {
 		case domain.OriginExternalUntrusted, domain.OriginExternalAuthenticated:
 			external++
+		case domain.OriginConfiguration, domain.OriginDatabase, domain.OriginInternalService:
+			// Deployment-controlled sources: trust boundary is a deployment
+			// property — we cannot prove the value is not attacker-influenced.
+			deployDependent++
 		case domain.OriginUnknown:
 			unknown++
 		default:
@@ -54,11 +58,14 @@ func (ArgumentOrigin) Evaluate(cond domain.Condition, c *domain.AnalysisCase) do
 	case unknown > 0:
 		claim.Limitations = append(claim.Limitations,
 			fmt.Sprintf("%d call site(s) have unresolvable argument origin", unknown))
+	case deployDependent > 0:
+		claim.Limitations = append(claim.Limitations,
+			fmt.Sprintf("%d call site(s) receive config/service-provided input; attacker control depends on deployment trust boundary — cannot prove non-external", deployDependent))
 	default:
 		claim.Result = domain.ClaimFalse
 		claim.Explanation = fmt.Sprintf("all %d traced call site(s) receive non-external input", safe)
 		claim.Limitations = append(claim.Limitations,
-			"FALSE is a candidate: configuration-controlled values may still be attacker-influenced in some deployments")
+			"FALSE is a candidate: provenance coverage is limited to direct call sites")
 	}
 	return claim
 }

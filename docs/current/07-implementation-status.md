@@ -238,3 +238,17 @@ build-tag развёртка), реальный tracker sink, P6 remediation.
   ошибка runner-а не даёт FALSE, C-REACH UNKNOWN → INCONCLUSIVE
   (на extprod, где C-INPUT TRUE — единственный обход был бы ложный FALSE).
 - Тесты: +3 validation, +1 tool-failure e2e, +1 build-retry.
+
+## Deployment-dependent provenance + fixture matrix (done)
+
+- `evaluator.ArgumentOrigin`: CONFIGURATION/DATABASE/INTERNAL_SERVICE
+  origins больше не идут в FALSE — это deployment-trust-boundary, не
+  доказуемо «не под контролем атакующего» (спека §12). Только
+  CONSTANT/GENERATED → FALSE-кандидат; deploy-dependent → UNKNOWN.
+- `goanalysis.Verifier` выровнен: те же origins теперь CONTRADICTED
+  для FALSE-claim input-условий (было: verified).
+- Новая фикстура `testdata/configprod` (flag → sink) → C-INPUT UNKNOWN →
+  INCONCLUSIVE. `TestE2EAmbiguousRootCause`: advisory symbol отсутствует
+  в dep source → AMBIGUOUS → INCONCLUSIVE. Матрица фикстур из плана
+  закрыта: constprod/extprod/funcvalprod/validprod/configprod +
+  tool-failure + ambiguous-root-cause.

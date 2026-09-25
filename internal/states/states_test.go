@@ -741,3 +741,86 @@ func TestE2EGovulncheckFailureStaysInconclusive(t *testing.T) {
 		t.Fatalf("verdict=%+v", c.Verdict)
 	}
 }
+
+// Deployment-dependent provenance: a flag-fed sink argument is neither
+// provably safe nor provably attacker-controlled — the claim must stay
+// UNKNOWN and the case INCONCLUSIVE (spec §12: no silent default-config
+// generalization).
+func TestE2EConfigInputStaysUnknown(t *testing.T) {
+	repo := initRepoFrom(t, "configprod")
+	dir := t.TempDir()
+	model := `{"impact":"t","mandatory_conditions":[
+		{"id":"C-REACH","kind":"SYMBOL_REACHABLE","mandatory":true,
+		 "subject":{"package":"example.com/dep/vuln","symbol":"Parse"}},
+		{"id":"C-INPUT","kind":"ATTACKER_CONTROL","mandatory":true,
+		 "subject":{"package":"example.com/dep/vuln","symbol":"Parse"},"arg_index":0}
+	]}`
+	mp := filepath.Join(dir, "model.json")
+	if err := os.WriteFile(mp, []byte(model), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gv := `{"protocol_version":"v1.0.0"}
+{"finding":{"osv":"GO-TEST-1","fixed_version":"v1.2.0","trace":[
+ {"module":"example.com/configprod","package":"example.com/configprod","function":"main","position":{"filename":"main.go","line":17}},
+ {"module":"example.com/dep","package":"example.com/dep/vuln","function":"Parse","position":{"filename":"vuln.go","line":4}}
+]}}`
+	c := runEngine(t, engineDeps{
+		RepoPath: repo,
+		VulnSrc: vulnerability.StaticSource{Vulns: map[string]*domain.Vulnerability{
+			"GO-TEST-1": {ID: "GO-TEST-1", Module: "example.com/dep"},
+		}},
+		VulnID:      "GO-TEST-1",
+		Resolver:    stubResolver{},
+		ManualRC:    []domain.RootCause{{Package: "example.com/dep/vuln", Symbol: "Parse"}},
+		Model:       mp,
+		CaseDir:     filepath.Join(dir, "cases"),
+		Govulncheck: fakeGovulncheck{out: []byte(gv)},
+		UseSource:   true,
+	})
+	var input *domain.Claim
+	for i := range c.Claims {
+		if c.Claims[i].ConditionID == "C-INPUT" {
+			input = &c.Claims[i]
+		}
+	}
+	if input == nil || input.Result != domain.ClaimUnknown {
+		t.Fatalf("C-INPUT=%+v want UNKNOWN", input)
+	}
+	if c.Verdict == nil || c.Verdict.Verdict != domain.VerdictInconclusive {
+		t.Fatalf("verdict=%+v", c.Verdict)
+	}
+}
+
+// Advisory names a symbol that does not exist in the dependency source:
+// all candidates fail verification -> AMBIGUOUS -> INCONCLUSIVE.
+func TestE2EAmbiguousRootCause(t *testing.T) {
+	repo := initRepoFrom(t, "constprod")
+	dir := t.TempDir()
+	c := runEngine(t, engineDeps{
+		RepoPath: repo,
+		VulnSrc: vulnerability.StaticSource{Vulns: map[string]*domain.Vulnerability{
+			"GO-TEST-1": {
+				ID:     "GO-TEST-1",
+				Module: "example.com/dep",
+				AffectedPackages: []domain.AffectedPackage{{
+					Path:    "example.com/dep/vuln",
+					Symbols: []string{"Nonexistent"},
+				}},
+				AffectedSymbols: []domain.SymbolRef{
+					{Package: "example.com/dep/vuln", Symbol: "Nonexistent"},
+				},
+			},
+		}},
+		VulnID:      "GO-TEST-1",
+		Resolver:    stubResolver{},
+		CaseDir:     filepath.Join(dir, "cases"),
+		Govulncheck: fakeGovulncheck{out: []byte(`{"protocol_version":"v1.0.0"}`)},
+		UseSource:   true,
+	})
+	if c.RootCause == nil || c.RootCause.Status != domain.RootCauseAmbiguous {
+		t.Fatalf("root cause=%+v", c.RootCause)
+	}
+	if c.Workflow.State != domain.StateInconclusive {
+		t.Fatalf("state=%s", c.Workflow.State)
+	}
+}

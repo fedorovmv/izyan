@@ -162,7 +162,10 @@ func (v Verifier) verifyInputFalse(ctx context.Context, c *domain.AnalysisCase, 
 			for _, flow := range flows {
 				if flow.Origin == domain.OriginUnknown ||
 					flow.Origin == domain.OriginExternalUntrusted ||
-					flow.Origin == domain.OriginExternalAuthenticated {
+					flow.Origin == domain.OriginExternalAuthenticated ||
+					flow.Origin == domain.OriginConfiguration ||
+					flow.Origin == domain.OriginDatabase ||
+					flow.Origin == domain.OriginInternalService {
 					nv.Status = domain.NegativeContradicted
 					nv.Notes = fmt.Sprintf("call site %s passes %s input (%s); FALSE contradicted",
 						site.Function, flow.Origin, flow.Summary)
