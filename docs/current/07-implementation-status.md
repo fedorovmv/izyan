@@ -201,3 +201,27 @@ tracker API sink.
 - Analyze-модель 404 (не развёрнута на инфре): honest low-severity finding
   в review, пайплайн не ломается.
 - Unit: mock-сервер, 8 кейсов llm-пакета.
+
+## LLM agent loop — Slice 7 (done)
+
+- `llm.Tools`: typed tools поверх goanalysis.Index — read_function,
+  find_symbol, find_callers, find_entrypoints, trace_argument,
+  find_validations, scan_dynamic. Каждый вызов бюджетится
+  (MaxToolCalls/MaxSourceReads) и регистрирует DETERMINISTIC evidence;
+  ошибка инструмента возвращается модели как error, не как «нет данных».
+- `llm.ClaimEvaluator` (evaluator.ConditionEvaluator): bounded loop
+  (MaxSteps=8) per condition — модель выбирает tool_calls или claim;
+  transcript короткий, per-condition (спека §20); TRUE принимается
+  только с evidence_ids ⊆ графа, FALSE идёт через negative verifier.
+- `states.EvaluateConditions.Fallback`: агент вызывается только на
+  UNKNOWN после детерминистических оценщиков.
+- Live GO-2025-3595: build-модель предложила C-ATTR-SOLIDUS +
+  C-FOREIGN-CONTENT (семантические условия), analyze-модель
+  (Qwen3.6-35B-A3B) совершила tool calls, LLM-ревью вернуло REVISE с
+  findings по scope evidence. Вердикт сохранил NO_EXPLOIT_PATH_FOUND —
+  на verified FALSE по C-INPUT.
+- Тесты: scripted mock-server — claim через tool evidence, отклонение
+  TRUE без evidence, остановка по step-бюджету.
+
+Осталось: CONDITION-EVAL для других доменов (CONFIGURATION источники,
+build-tag развёртка), реальный tracker sink, P6 remediation.

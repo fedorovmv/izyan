@@ -146,12 +146,16 @@ type chatResponse struct {
 
 // Complete runs a single-shot chat completion.
 func (c *Client) Complete(ctx context.Context, role ModelRole, system, user string) (string, error) {
+	return c.CompleteMessages(ctx, role, system, []chatMessage{{Role: "user", Content: user}})
+}
+
+// CompleteMessages runs a multi-turn chat completion: system prompt plus
+// the given transcript (used by the bounded agent loop — per condition,
+// never a global chat history).
+func (c *Client) CompleteMessages(ctx context.Context, role ModelRole, system string, messages []chatMessage) (string, error) {
 	req := chatRequest{
-		Model: c.modelFor(role),
-		Messages: []chatMessage{
-			{Role: "system", Content: system},
-			{Role: "user", Content: user},
-		},
+		Model:       c.modelFor(role),
+		Messages:    append([]chatMessage{{Role: "system", Content: system}}, messages...),
 		Temperature: 0,
 		MaxTokens:   c.cfg.MaxTokens,
 	}

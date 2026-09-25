@@ -127,11 +127,13 @@ func runAnalyze(args []string) error {
 	var rcResolver states.RootCauseResolver = &rootcause.Resolver{Fix: fix.Resolver{}, Patch: fix.HTTPProvider{}}
 	var builder states.ExploitBuilder = &exploit.Builder{Source: srcIndex}
 	reviewers := review.Multi{review.Structural{}}
+	var fallbackEval evaluator.ConditionEvaluator
 	if llmCfg.Enabled && !*deterministicOnly {
 		client := llm.NewClient(llmCfg)
 		rcResolver = llm.RootCauseResolver{Client: client, Fallback: rcResolver}
 		builder = llm.ExploitModelBuilder{Client: client, Fallback: builder}
 		reviewers = append(reviewers, llm.Reviewer{Client: client})
+		fallbackEval = llm.ClaimEvaluator{Client: client, Tools: llm.Tools{Source: srcIndex}}
 	} else if *deterministicOnly {
 		c.EvidenceGraph.Limitations = append(c.EvidenceGraph.Limitations,
 			"deterministic-only mode: LLM adapters disabled")
@@ -169,7 +171,7 @@ func runAnalyze(args []string) error {
 		states.EvaluateConditions{Evaluators: []evaluator.ConditionEvaluator{
 			evaluator.SymbolReachable{},
 			evaluator.ArgumentOrigin{},
-		}},
+		}, Fallback: fallbackEval},
 		states.NegativeCheck{Verifier: &goanalysis.Verifier{Source: srcIndex}},
 		states.Review{Reviewer: reviewers, Evaluator: evaluator.VerdictEvaluator{}},
 		states.EvaluateVerdict{Evaluator: evaluator.VerdictEvaluator{}},

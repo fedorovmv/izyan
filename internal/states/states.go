@@ -368,6 +368,9 @@ func (h CollectEvidence) collectProvenance(ctx context.Context, c *domain.Analys
 
 type EvaluateConditions struct {
 	Evaluators []evaluator.ConditionEvaluator
+	// Fallback (e.g. the LLM agent) runs on conditions that deterministic
+	// evaluators left UNKNOWN.
+	Fallback evaluator.ConditionEvaluator
 }
 
 func (EvaluateConditions) State() domain.WorkflowState { return domain.StateEvaluateConditions }
@@ -398,6 +401,12 @@ func (h EvaluateConditions) Run(_ context.Context, c *domain.AnalysisCase) (work
 			if ev.CanEvaluate(cond) {
 				claim = ev.Evaluate(cond, c)
 				break
+			}
+		}
+		if claim.Result == domain.ClaimUnknown && h.Fallback != nil && h.Fallback.CanEvaluate(cond) {
+			alt := h.Fallback.Evaluate(cond, c)
+			if alt.Result != domain.ClaimUnknown || len(alt.EvidenceIDs) > 0 {
+				claim = alt
 			}
 		}
 		if claim.Result == domain.ClaimFalse {

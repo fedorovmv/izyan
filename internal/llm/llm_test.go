@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 
 	"example.com/vuln-analyzer/internal/domain"
+	"example.com/vuln-analyzer/internal/goanalysis"
 )
 
 func mockServer(t *testing.T, reply string) (*Client, *httptest.Server) {
@@ -167,4 +169,72 @@ type stubBuilder struct {
 
 func (s stubBuilder) Build(_ context.Context, _ *domain.AnalysisCase, _ domain.Vulnerability, _ *domain.RootCauseModel) (*domain.ExploitModel, []string) {
 	return s.model, s.lims
+}
+
+// scriptServer returns queued responses in order, then repeats the last.
+func scriptServer(t *testing.T, replies ...string) (*Client, *httptest.Server, *int) {
+	t.Helper()
+	var n int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		i := n
+		if i >= len(replies) {
+			i = len(replies) - 1
+		}
+		n++
+		resp := chatResponse{Choices: []struct {
+			Message chatMessage `json:"message"`
+		}{{Message: chatMessage{Role: "assistant", Content: replies[i]}}}}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	return NewClient(Config{BaseURL: srv.URL, AnalyzeModel: "m", Enabled: true}), srv, &n
+}
+
+func TestAgentResolvesClaimWithTools(t *testing.T) {
+	// Step 1: tool call to trace_argument; step 2: claim TRUE citing evidence.
+	client, srv, calls := scriptServer(t,
+		`{"tool_calls":[{"name":"find_callers","args":{"package":"example.com/dep","symbol":"vuln.Parse"},"purpose":"locate sinks"}]}`,
+		`{"claim":{"result":"TRUE","evidence_ids":["EV-001"],"explanation":"arg flows from os.Args"}}`)
+	defer srv.Close()
+
+	ix := &goanalysis.Index{Dir: filepath.Join("..", "..", "testdata", "constprod")}
+	ev := ClaimEvaluator{Client: client, Tools: Tools{Source: ix}, MaxSteps: 4}
+	c := newCase()
+	cond := domain.Condition{ID: "C-IN", Kind: domain.ConditionInputConstraint,
+		Subjects: []domain.SymbolRef{{Package: "example.com/dep", Symbol: "vuln.Parse"}}}
+	cl := ev.Evaluate(cond, c)
+	if cl.Result != domain.ClaimTrue {
+		t.Fatalf("claim=%+v", cl)
+	}
+	if len(cl.EvidenceIDs) == 0 {
+		t.Fatal("claim must cite evidence")
+	}
+	if *calls != 2 {
+		t.Fatalf("calls=%d", *calls)
+	}
+}
+
+func TestAgentKeepsUnknownWithoutEvidence(t *testing.T) {
+	client, srv, _ := scriptServer(t,
+		`{"claim":{"result":"TRUE","evidence_ids":["EV-999"],"explanation":"made up"}}`)
+	defer srv.Close()
+	ix := &goanalysis.Index{Dir: filepath.Join("..", "..", "testdata", "constprod")}
+	ev := ClaimEvaluator{Client: client, Tools: Tools{Source: ix}}
+	cl := ev.Evaluate(domain.Condition{ID: "C-X", Kind: domain.ConditionCustom}, newCase())
+	if cl.Result != domain.ClaimUnknown {
+		t.Fatalf("unsupported TRUE must not survive: %+v", cl)
+	}
+}
+
+func TestAgentStopsAtStepBudget(t *testing.T) {
+	client, srv, calls := scriptServer(t, `{"tool_calls":[{"name":"find_entrypoints","args":{},"purpose":"x"}]}`)
+	defer srv.Close()
+	ix := &goanalysis.Index{Dir: filepath.Join("..", "..", "testdata", "constprod")}
+	ev := ClaimEvaluator{Client: client, Tools: Tools{Source: ix}, MaxSteps: 2}
+	cl := ev.Evaluate(domain.Condition{ID: "C-X", Kind: domain.ConditionCustom}, newCase())
+	if cl.Result != domain.ClaimUnknown {
+		t.Fatalf("claim=%+v", cl)
+	}
+	if *calls != 2 {
+		t.Fatalf("calls=%d want 2", *calls)
+	}
 }
