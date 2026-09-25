@@ -71,6 +71,9 @@ func (SymbolReachable) Evaluate(cond domain.Condition, c *domain.AnalysisCase) d
 }
 
 func reachabilitySubjects(cond domain.Condition, c *domain.AnalysisCase) []domain.SymbolRef {
+	if len(cond.Subjects) > 0 {
+		return cond.Subjects
+	}
 	if cond.Subject != nil {
 		return []domain.SymbolRef{*cond.Subject}
 	}

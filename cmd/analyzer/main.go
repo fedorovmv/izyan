@@ -12,6 +12,7 @@ import (
 	"example.com/vuln-analyzer/internal/affected"
 	"example.com/vuln-analyzer/internal/domain"
 	"example.com/vuln-analyzer/internal/evaluator"
+	"example.com/vuln-analyzer/internal/exploit"
 	"example.com/vuln-analyzer/internal/fix"
 	"example.com/vuln-analyzer/internal/goanalysis"
 	"example.com/vuln-analyzer/internal/persistence/filesystem"
@@ -136,7 +137,10 @@ func runAnalyze(args []string) error {
 			Resolver: &rootcause.Resolver{Fix: fix.Resolver{}, Patch: fix.HTTPProvider{}},
 			Verifier: &rootcause.Verifier{Source: srcIndex},
 		},
-		states.BuildExploitModel{ModelPath: *exploitModelPath},
+		states.BuildExploitModel{
+			ModelPath: *exploitModelPath,
+			Builder:   &exploit.Builder{Source: srcIndex},
+		},
 		states.CollectEvidence{
 			Govulncheck: goanalysis.ExecRunner{},
 			Source:      srcIndex,

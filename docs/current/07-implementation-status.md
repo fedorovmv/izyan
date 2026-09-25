@@ -101,6 +101,9 @@
   provenance `html.Parse(strings.NewReader("<p>x</p>"))` → CONSTANT →
   C-INPUT verified FALSE. «Reachable but mitigated» — полностью
   автоматический пайплайн.
+- Полностью автоматический прогон `analyze --repo . --vuln GO-2025-3595`
+  (без root-cause и без exploit-model): grouped model из 6 sink-ов,
+  `os.Args` input → EXPLOITABLE; constant input → NO_EXPLOIT_PATH_FOUND.
 
 ## Тесты
 
@@ -114,16 +117,29 @@
   constprod → verified FALSE → NO_EXPLOIT_PATH_FOUND;
   extprod (os.Args) → ATTACKER_CONTROL TRUE → EXPLOITABLE;
   funcvalprod (func-value escape) → CONTRADICTED → INCONCLUSIVE;
-  авто root cause из advisory symbols → тот же verified путь.
+  авто root cause из advisory symbols → тот же verified путь;
+  авто exploit model → grouped conditions → verified FALSE.
 - fixtures: `testdata/{constprod,extprod,funcvalprod,validprod,dep}`.
 
-## Следующий вертикальный срез — Slice 5
+## Slice 5 — Exploit Model automation (done, deterministic part)
 
-1. ExploitModelBuilder: паттерны mandatory conditions из root cause
-   (SymbolReachable для SINK + ATTACKER_CONTROL для аргументов + …),
-   авто-генерация `--exploit-model` если не задан.
-2. Semantic ConditionEvaluator и gap-driven Planner поверх typed tools.
-3. Reviewer + bounded repair loop (Slice 6), tracker adapter.
+- `internal/exploit.Builder`: ExploitModel из RootCauseModel — advisory
+  symbols это МНОЖЕСТВО альтернативных sink-ов одного механизма, поэтому
+  модель групповая: один `C-REACH` (Subjects: все sink-и, TRUE по любому)
+  + один `C-INPUT` (ATTACKER_CONTROL при совпадающем input-arg, иначе
+  INPUT_CONSTRAINT по всем аргументам, ArgIndex=-1).
+- `Condition.Subjects []SymbolRef` — grouped semantics во всех слоях:
+  evaluator, provenance collector, negative verifier.
+- `goanalysis.InputParamIndex`: выбор input-аргумента по сигнатуре
+  (http.Request > io.Reader > []byte/string > слайсы); -1 при
+  неразрешимости → all-args trace, не догадка.
+- `TraceAllArguments` для ArgIndex<0; verifier проверяет все call sites
+  всех subject-ов.
+- `--exploit-model` теперь опционален: без него модель строится из
+  root cause; без root cause resolver-а по-прежнему INCONCLUSIVE.
 
-LLM-стадии подключаются поверх тех же typed tools (`goanalysis.Index` —
-backend); вердикт остаётся чистой функцией от claims.
+Не входит: LLM ExploitModelBuilder, semantic evaluator, gap-driven
+Planner — слоты готовы, детерминистический контур закрыт.
+
+Оставшийся срез — Slice 6: Reviewer + bounded repair loop + tracker
+adapter.

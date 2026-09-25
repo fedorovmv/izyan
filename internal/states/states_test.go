@@ -12,6 +12,7 @@ import (
 	"example.com/vuln-analyzer/internal/affected"
 	"example.com/vuln-analyzer/internal/domain"
 	"example.com/vuln-analyzer/internal/evaluator"
+	"example.com/vuln-analyzer/internal/exploit"
 	"example.com/vuln-analyzer/internal/fix"
 	"example.com/vuln-analyzer/internal/goanalysis"
 	"example.com/vuln-analyzer/internal/persistence/filesystem"
@@ -140,7 +141,7 @@ func runEngine(t *testing.T, d engineDeps) *domain.AnalysisCase {
 		states.ResolveVulnerability{Source: d.VulnSrc, ID: d.VulnID},
 		states.CheckAffected{Resolver: d.Resolver},
 		rc,
-		states.BuildExploitModel{ModelPath: d.Model},
+		states.BuildExploitModel{ModelPath: d.Model, Builder: exploitBuilder(srcIndex)},
 		states.CollectEvidence{Govulncheck: d.Govulncheck, Source: srcIndex},
 		states.EvaluateConditions{Evaluators: []evaluator.ConditionEvaluator{
 			evaluator.SymbolReachable{},
@@ -584,6 +585,58 @@ func TestE2EAutoRootCause(t *testing.T) {
 	}
 	if len(c.RootCause.RootCauses) != 1 || c.RootCause.RootCauses[0].Symbol != "Parse" {
 		t.Fatalf("root causes=%+v", c.RootCause.RootCauses)
+	}
+	if c.Verdict == nil || c.Verdict.Verdict != domain.VerdictNoExploitPathFound {
+		t.Fatalf("verdict=%+v want NO_EXPLOIT_PATH_FOUND", c.Verdict)
+	}
+}
+
+func exploitBuilder(ix *goanalysis.Index) *exploit.Builder {
+	if ix == nil {
+		return nil
+	}
+	return &exploit.Builder{Source: ix}
+}
+
+// Slice 5 golden: fully automatic — no --root-cause, no --exploit-model.
+// The builder derives mandatory conditions from the resolved root cause;
+// on constprod the same verified-FALSE path yields NO_EXPLOIT_PATH_FOUND.
+func TestE2EAutoExploitModel(t *testing.T) {
+	repo := initRepoFrom(t, "constprod")
+	dir := t.TempDir()
+	vulnPath := filepath.Join(dir, "vuln.json")
+	osv := `{"id":"GO-TEST-AUTO","summary":"auto model",
+ "affected":[{"package":{"name":"example.com/dep","ecosystem":"Go"},
+  "ranges":[{"type":"SEMVER","events":[{"introduced":"0"},{"fixed":"1.0.1"}]}],
+  "ecosystem_specific":{"imports":[{"path":"example.com/dep/vuln","symbols":["Parse"]}]}}],
+ "references":[{"type":"ADVISORY","url":"https://example.com/adv"}]}`
+	if err := os.WriteFile(vulnPath, []byte(osv), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	caseDir := filepath.Join(dir, "cases")
+
+	gv := `{"protocol_version":"v1.0.0"}
+{"finding":{"osv":"GO-TEST-AUTO","fixed_version":"v1.0.1","trace":[
+ {"module":"example.com/constprod","package":"example.com/constprod","function":"main","position":{"filename":"main.go","line":9}},
+ {"module":"example.com/dep","package":"example.com/dep/vuln","function":"Parse","position":{"filename":"vuln.go","line":4}}
+]}}`
+
+	c := runEngine(t, engineDeps{
+		RepoPath: repo,
+		VulnSrc:  vulnerability.FileSource{Path: vulnPath},
+		VulnID:   "GO-TEST-AUTO",
+		Resolver: stubResolver{},
+		CaseDir:  caseDir,
+		// no ManualRC, no Model — both derived automatically
+		Govulncheck: fakeGovulncheck{out: []byte(gv)},
+		UseSource:   true,
+	})
+
+	if c.Workflow.State != domain.StateCompleted {
+		t.Fatalf("state=%s reason=%s", c.Workflow.State, c.Workflow.Reason)
+	}
+	if c.Exploit == nil || len(c.Exploit.MandatoryConditions) == 0 {
+		t.Fatal("expected auto-built exploit model")
 	}
 	if c.Verdict == nil || c.Verdict.Verdict != domain.VerdictNoExploitPathFound {
 		t.Fatalf("verdict=%+v want NO_EXPLOIT_PATH_FOUND", c.Verdict)

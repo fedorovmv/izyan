@@ -6,8 +6,8 @@ import (
 	"example.com/vuln-analyzer/internal/domain"
 )
 
-// ArgumentOrigin evaluates ATTACKER_CONTROL conditions from DataFlow entries
-// recorded by the argument-provenance collector.
+// ArgumentOrigin evaluates ATTACKER_CONTROL and INPUT_CONSTRAINT conditions
+// from DataFlow entries recorded by the argument-provenance collector.
 //
 // TRUE  — at least one trace proves EXTERNAL_UNTRUSTED/AUTHENTICATED origin.
 // FALSE (candidate) — every traced call site has a non-external origin
@@ -16,7 +16,7 @@ import (
 type ArgumentOrigin struct{}
 
 func (ArgumentOrigin) CanEvaluate(cond domain.Condition) bool {
-	return cond.Kind == domain.ConditionAttackerControl
+	return cond.Kind == domain.ConditionAttackerControl || cond.Kind == domain.ConditionInputConstraint
 }
 
 func (ArgumentOrigin) Evaluate(cond domain.Condition, c *domain.AnalysisCase) domain.Claim {

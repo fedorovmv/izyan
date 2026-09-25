@@ -184,6 +184,7 @@ type Condition struct {
 	Description       string        `json:"description"`
 	Mandatory         bool          `json:"mandatory"`
 	Subject           *SymbolRef    `json:"subject,omitempty"`
+	Subjects          []SymbolRef   `json:"subjects,omitempty"` // alternative symbols: condition holds if ANY is satisfied
 	ArgIndex          int           `json:"arg_index,omitempty"`
 	VerificationHints []string      `json:"verification_hints,omitempty"`
 }

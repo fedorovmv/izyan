@@ -13,6 +13,7 @@ import (
 	"example.com/vuln-analyzer/internal/affected"
 	"example.com/vuln-analyzer/internal/domain"
 	"example.com/vuln-analyzer/internal/evaluator"
+	"example.com/vuln-analyzer/internal/exploit"
 	"example.com/vuln-analyzer/internal/goanalysis"
 	"example.com/vuln-analyzer/internal/report"
 	"example.com/vuln-analyzer/internal/repository"
@@ -153,36 +154,49 @@ func (h ResolveRootCause) Run(ctx context.Context, c *domain.AnalysisCase) (work
 
 type BuildExploitModel struct {
 	ModelPath string
+	Builder   *exploit.Builder
 }
 
 func (BuildExploitModel) State() domain.WorkflowState { return domain.StateBuildExploitModel }
 
 func (h BuildExploitModel) Run(_ context.Context, c *domain.AnalysisCase) (workflow.Transition, error) {
-	if h.ModelPath == "" {
+	if h.ModelPath != "" {
+		b, err := os.ReadFile(h.ModelPath)
+		if err != nil {
+			return workflow.Transition{}, fmt.Errorf("read exploit model: %w", err)
+		}
+		var m domain.ExploitModel
+		if err := json.Unmarshal(b, &m); err != nil {
+			return workflow.Transition{
+				Next:   domain.StateInconclusive,
+				Reason: fmt.Sprintf("exploit model file is invalid: %v", err),
+			}, nil
+		}
+		if len(m.MandatoryConditions) == 0 {
+			return workflow.Transition{
+				Next:   domain.StateInconclusive,
+				Reason: "exploit model has no mandatory conditions",
+			}, nil
+		}
+		c.Exploit = &m
+		return workflow.Transition{Next: domain.StateCollectEvidence, Reason: "exploit model loaded"}, nil
+	}
+	if h.Builder == nil || c.RootCause == nil {
 		return workflow.Transition{
 			Next:   domain.StateInconclusive,
-			Reason: "exploit model builder not implemented (slice 5); provide --exploit-model",
+			Reason: "no exploit model: provide --exploit-model or configure a builder",
 		}, nil
 	}
-	b, err := os.ReadFile(h.ModelPath)
-	if err != nil {
-		return workflow.Transition{}, fmt.Errorf("read exploit model: %w", err)
-	}
-	var m domain.ExploitModel
-	if err := json.Unmarshal(b, &m); err != nil {
+	m, limitations := h.Builder.Build(c.Vulnerability, c.RootCause)
+	if m == nil {
 		return workflow.Transition{
 			Next:   domain.StateInconclusive,
-			Reason: fmt.Sprintf("exploit model file is invalid: %v", err),
+			Reason: "exploit model could not be built: " + strings.Join(limitations, "; "),
 		}, nil
 	}
-	if len(m.MandatoryConditions) == 0 {
-		return workflow.Transition{
-			Next:   domain.StateInconclusive,
-			Reason: "exploit model has no mandatory conditions",
-		}, nil
-	}
-	c.Exploit = &m
-	return workflow.Transition{Next: domain.StateCollectEvidence, Reason: "exploit model loaded"}, nil
+	c.EvidenceGraph.Limitations = append(c.EvidenceGraph.Limitations, limitations...)
+	c.Exploit = m
+	return workflow.Transition{Next: domain.StateCollectEvidence, Reason: "exploit model built from root causes"}, nil
 }
 
 type CollectEvidence struct {
@@ -249,15 +263,44 @@ func (h CollectEvidence) runSourceAnalysis(ctx context.Context, c *domain.Analys
 	conds = append(conds, c.Exploit.SupportingFactors...)
 	seen := map[domain.ConditionID]bool{}
 	for _, cond := range conds {
-		if seen[cond.ID] || cond.Subject == nil {
-			continue
-		}
-		if !needsProvenance(cond.Kind) {
+		if seen[cond.ID] || !needsProvenance(cond.Kind) {
 			continue
 		}
 		seen[cond.ID] = true
-		h.collectProvenance(ctx, c, cond)
+		subjects := cond.Subjects
+		if cond.Subject != nil {
+			subjects = append(append([]domain.SymbolRef{}, subjects...), *cond.Subject)
+		}
+		for _, subj := range dedupSubjects(subjects) {
+			h.collectProvenance(ctx, c, cond, subj)
+		}
 	}
+}
+
+func dedupSubjects(in []domain.SymbolRef) []domain.SymbolRef {
+	seen := map[string]bool{}
+	var out []domain.SymbolRef
+	for _, s := range in {
+		k := s.Package + "." + s.Symbol
+		if !seen[k] {
+			seen[k] = true
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// traceArgs traces a single argument (ArgIndex >= 0) or every argument
+// (ArgIndex < 0, when the input parameter is unknown) at a call site.
+func (h CollectEvidence) traceArgs(ctx context.Context, site domain.CallSite, cond domain.Condition) ([]domain.DataFlow, []domain.Evidence, error) {
+	if cond.ArgIndex < 0 {
+		return h.Source.TraceAllArguments(ctx, site)
+	}
+	flow, evs, err := h.Source.TraceArgument(ctx, site, cond.ArgIndex)
+	if err != nil {
+		return nil, nil, err
+	}
+	return []domain.DataFlow{flow}, evs, nil
 }
 
 func needsProvenance(k domain.ConditionKind) bool {
@@ -268,31 +311,37 @@ func needsProvenance(k domain.ConditionKind) bool {
 	return false
 }
 
-func (h CollectEvidence) collectProvenance(ctx context.Context, c *domain.AnalysisCase, cond domain.Condition) {
-	sites, err := h.Source.FindCallers(ctx, *cond.Subject)
+func (h CollectEvidence) collectProvenance(ctx context.Context, c *domain.AnalysisCase, cond domain.Condition, subj domain.SymbolRef) {
+	sites, err := h.Source.FindCallers(ctx, subj)
 	if err != nil {
 		c.EvidenceGraph.ToolLimitations = append(c.EvidenceGraph.ToolLimitations,
-			fmt.Sprintf("find_callers %s.%s: %v", cond.Subject.Package, cond.Subject.Symbol, err))
+			fmt.Sprintf("find_callers %s.%s: %v", subj.Package, subj.Symbol, err))
 		return
 	}
 	if len(sites) == 0 {
 		c.EvidenceGraph.Limitations = append(c.EvidenceGraph.Limitations,
-			fmt.Sprintf("no call sites of %s.%s found in product packages", cond.Subject.Package, cond.Subject.Symbol))
+			fmt.Sprintf("no call sites of %s.%s found in product packages", subj.Package, subj.Symbol))
 		return
 	}
 	for _, site := range sites {
-		flow, evs, err := h.Source.TraceArgument(ctx, site, cond.ArgIndex)
+		flows, evs, err := h.traceArgs(ctx, site, cond)
 		if err != nil {
 			c.EvidenceGraph.ToolLimitations = append(c.EvidenceGraph.ToolLimitations,
 				fmt.Sprintf("trace_argument %s:%d: %v", site.File, site.Line, err))
 			continue
 		}
-		flow.ConditionID = cond.ID
-		c.EvidenceGraph.DataFlows = append(c.EvidenceGraph.DataFlows, flow)
+		for _, flow := range flows {
+			flow.ConditionID = cond.ID
+			c.EvidenceGraph.DataFlows = append(c.EvidenceGraph.DataFlows, flow)
+		}
 		for _, e := range evs {
 			c.EvidenceGraph.AddEvidence(e)
 		}
-		vals, vev, err := h.Source.FindValidations(ctx, site, cond.ArgIndex)
+		argIdx := cond.ArgIndex
+		if argIdx < 0 {
+			argIdx = 0
+		}
+		vals, vev, err := h.Source.FindValidations(ctx, site, argIdx)
 		if err == nil {
 			for _, v := range vals {
 				v.Property = fmt.Sprintf("cond=%s %s", cond.ID, v.Property)
@@ -395,15 +444,14 @@ func (h NegativeCheck) Run(ctx context.Context, c *domain.AnalysisCase) (workflo
 			continue
 		}
 		cond := findCondition(c.Exploit, cl.ConditionID)
-		subject := claimSubject(cond, c)
-		if cond == nil || subject == nil {
+		if cond == nil {
 			cl.NegativeVerification = &domain.NegativeVerification{
 				Status: domain.NegativeInsufficientScope,
-				Notes:  "cannot resolve condition subject for falsification",
+				Notes:  "cannot resolve condition for falsification",
 			}
 			continue
 		}
-		updated := h.Verifier.VerifyFalse(ctx, c, *cl, *cond, *subject)
+		updated := h.Verifier.VerifyFalse(ctx, c, *cl, *cond)
 		if updated.NegativeVerification != nil &&
 			updated.NegativeVerification.Status == domain.NegativeContradicted {
 			// the falsification attempt found a counterexample: the FALSE
@@ -430,17 +478,6 @@ func findCondition(m *domain.ExploitModel, id domain.ConditionID) *domain.Condit
 		if m.SupportingFactors[i].ID == id {
 			return &m.SupportingFactors[i]
 		}
-	}
-	return nil
-}
-
-func claimSubject(cond *domain.Condition, c *domain.AnalysisCase) *domain.SymbolRef {
-	if cond != nil && cond.Subject != nil {
-		return cond.Subject
-	}
-	if c.RootCause != nil && len(c.RootCause.RootCauses) > 0 {
-		rc := c.RootCause.RootCauses[0]
-		return &domain.SymbolRef{Package: rc.Package, Symbol: rc.Symbol}
 	}
 	return nil
 }

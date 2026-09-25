@@ -496,6 +496,120 @@ func (ix *Index) funcDecl(fn *types.Func) (*ast.FuncDecl, *packages.Package) {
 	return nil, nil
 }
 
+// TraceAllArguments classifies every argument of the call site — used when
+// the attacker-controlled parameter index is not known in advance.
+func (ix *Index) TraceAllArguments(ctx context.Context, site domain.CallSite) ([]domain.DataFlow, []domain.Evidence, error) {
+	call, enc, pkg, err := ix.callAt(site)
+	if err != nil {
+		return nil, nil, err
+	}
+	var flows []domain.DataFlow
+	var ev []domain.Evidence
+	src, _ := ix.nodeSource(call)
+	ev = append(ev, domain.Evidence{
+		Kind:    domain.EvidenceSourceSnippet,
+		Quality: domain.QualityStructural,
+		Source:  "ast argument trace",
+		Tool:    "vuln-analyzer/goanalysis",
+		File:    site.File,
+		Content: src,
+	})
+	for i := range call.Args {
+		origin, why := ix.classify(pkg, enc, call.Args[i], 0)
+		flows = append(flows, domain.DataFlow{
+			Sink:    site,
+			Source:  site,
+			Origin:  origin,
+			Summary: fmt.Sprintf("arg%d: %s", i, why),
+		})
+	}
+	return flows, ev, nil
+}
+
+// InputParamIndex heuristically selects the parameter index most likely to
+// carry attacker-controlled data, from the callee's signature: request-like
+// and reader types win over plain data types. Returns -1 when nothing
+// looks like input — callers must treat that as UNKNOWN, never guess.
+func (ix *Index) InputParamIndex(ref domain.SymbolRef) (int, error) {
+	cs, err := ix.FindSymbol(context.Background(), ref)
+	if err != nil {
+		return -1, err
+	}
+	decl, dp, err := ix.funcDeclAt(cs, ref)
+	if err != nil || decl == nil || decl.Type.Params == nil {
+		return -1, fmt.Errorf("signature for %s.%s unavailable", ref.Package, ref.Symbol)
+	}
+	best, bestScore := -1, 0
+	i := 0
+	for _, f := range decl.Type.Params.List {
+		tstr := ""
+		if dp != nil && dp.TypesInfo != nil {
+			if t := dp.TypesInfo.TypeOf(f.Type); t != nil {
+				tstr = t.String()
+			}
+		}
+		for range f.Names {
+			if s := inputScore(tstr); s > bestScore {
+				best, bestScore = i, s
+			}
+			i++
+		}
+	}
+	return best, nil
+}
+
+// funcDeclAt locates the FuncDecl for a symbol — reusing the definition
+// position when available.
+func (ix *Index) funcDeclAt(cs *domain.CallSite, ref domain.SymbolRef) (*ast.FuncDecl, *packages.Package, error) {
+	pkgs := ix.pkgs
+	extra, err := ix.loadExtra(context.Background(), ref.Package)
+	if err == nil {
+		pkgs = append(append([]*packages.Package{}, ix.pkgs...), extra...)
+	}
+	_, wantName := splitSymbol(ref.Symbol)
+	for _, pkg := range pkgs {
+		if pkg.PkgPath != ref.Package {
+			continue
+		}
+		for _, f := range pkg.Syntax {
+			for _, d := range f.Decls {
+				fd, ok := d.(*ast.FuncDecl)
+				if !ok || fd.Name == nil || fd.Name.Name != wantName {
+					continue
+				}
+				pos := ix.fset.Position(fd.Pos())
+				if pos.Filename == cs.File {
+					return fd, pkg, nil
+				}
+			}
+		}
+	}
+	return nil, nil, fmt.Errorf("func decl not found")
+}
+
+// inputScore ranks parameter types by how plausibly they carry attacker
+// input. Ordering matters: request types outrank readers, readers outrank
+// plain strings/bytes.
+func inputScore(t string) int {
+	switch {
+	case strings.Contains(t, "net/http.Request"):
+		return 5
+	case strings.Contains(t, "io.ReadCloser"), strings.Contains(t, "io.Reader"),
+		strings.Contains(t, "http.ResponseWriter"):
+		if strings.Contains(t, "ResponseWriter") {
+			return -1 // output, not input
+		}
+		return 4
+	case t == "[]byte", t == "string", t == "[]rune", strings.HasSuffix(t, "io.Buffer"):
+		return 3
+	case strings.HasPrefix(t, "[]"):
+		return 2
+	case strings.Contains(t, "io.Writer"):
+		return -1
+	}
+	return 0
+}
+
 // knownSourceFuncs maps pkgpath.Func to a data origin. Extend as needed —
 // this is provenance, not pattern matching for verdicts.
 var knownSourceFuncs = map[string]domain.DataOrigin{
