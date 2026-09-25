@@ -1,0 +1,515 @@
+package goanalysis
+
+import (
+	"context"
+	"fmt"
+	"go/ast"
+	"go/token"
+	"go/types"
+	"os"
+	"strconv"
+	"strings"
+
+	"golang.org/x/tools/go/packages"
+
+	"example.com/vuln-analyzer/internal/domain"
+)
+
+// Index is a lazily loaded go/packages view of the analyzed product.
+// It backs the targeted source tools (find_symbol, find_callers,
+// read_function, find_entrypoints, argument provenance).
+type Index struct {
+	Dir     string
+	Build   domain.ProductSnapshot
+	pkgs    []*packages.Package
+	fset    *token.FileSet
+	loaded  bool
+	loadErr error
+}
+
+// buildEnv derives GOOS/GOARCH/CGO env for tool invocations.
+func buildEnv(build domain.ProductSnapshot) []string {
+	var env []string
+	if build.GOOS != "" {
+		env = append(env, "GOOS="+build.GOOS)
+	}
+	if build.GOARCH != "" {
+		env = append(env, "GOARCH="+build.GOARCH)
+	}
+	env = append(env, "CGO_ENABLED="+strconv.FormatBool(build.CGOEnabled))
+	return env
+}
+
+const loadMode = packages.NeedName | packages.NeedFiles | packages.NeedSyntax |
+	packages.NeedTypes | packages.NeedTypesInfo | packages.NeedImports |
+	packages.NeedDeps | packages.NeedModule
+
+func (ix *Index) load(ctx context.Context) error {
+	if ix.loaded {
+		return ix.loadErr
+	}
+	ix.loaded = true
+	ix.fset = token.NewFileSet()
+	cfg := &packages.Config{
+		Mode: loadMode,
+		Dir:  ix.Dir,
+		Fset: ix.fset,
+		Env:  append(os.Environ(), buildEnv(ix.Build)...),
+	}
+	if len(ix.Build.BuildTags) > 0 {
+		cfg.BuildFlags = []string{"-tags", strings.Join(ix.Build.BuildTags, ",")}
+	}
+	ix.pkgs, ix.loadErr = packages.Load(cfg, "./...")
+	if ix.loadErr == nil && packages.PrintErrors(ix.pkgs) > 0 {
+		ix.loadErr = fmt.Errorf("package loading produced errors (incomplete type information)")
+	}
+	return ix.loadErr
+}
+
+// loadExtra loads additional root patterns (e.g. the vulnerable dependency
+// package) into the same fileset so its syntax is available for reading.
+func (ix *Index) loadExtra(ctx context.Context, patterns ...string) ([]*packages.Package, error) {
+	if err := ix.load(ctx); err != nil {
+		return nil, err
+	}
+	cfg := &packages.Config{
+		Mode: loadMode,
+		Dir:  ix.Dir,
+		Fset: ix.fset,
+		Env:  append(os.Environ(), buildEnv(ix.Build)...),
+	}
+	if len(ix.Build.BuildTags) > 0 {
+		cfg.BuildFlags = []string{"-tags", strings.Join(ix.Build.BuildTags, ",")}
+	}
+	return packages.Load(cfg, patterns...)
+}
+
+// Loaded reports whether the index can answer structural queries; if false,
+// callers must treat results as tool failures (UNKNOWN, never FALSE inputs).
+func (ix *Index) Loaded(ctx context.Context) error {
+	return ix.load(ctx)
+}
+
+// FindSymbol locates a symbol (function or method) by package path and name.
+// The name may be "Func" or "Type.Method"/"(*Type).Method".
+func (ix *Index) FindSymbol(ctx context.Context, ref domain.SymbolRef) (*domain.CallSite, error) {
+	if err := ix.load(ctx); err != nil {
+		return nil, err
+	}
+	typeName, meth := splitSymbol(ref.Symbol)
+	for _, pkg := range ix.pkgs {
+		if pkg.Types == nil {
+			continue
+		}
+		if pkg.PkgPath != ref.Package {
+			continue
+		}
+		if cs := findObjectInPkg(ix.fset, pkg, typeName, meth); cs != nil {
+			return cs, nil
+		}
+	}
+	// symbol may live in a dependency that is not a loaded root
+	extra, err := ix.loadExtra(ctx, ref.Package)
+	if err != nil {
+		return nil, err
+	}
+	for _, pkg := range extra {
+		if pkg.PkgPath != ref.Package || pkg.Types == nil {
+			continue
+		}
+		if cs := findObjectInPkg(ix.fset, pkg, typeName, meth); cs != nil {
+			return cs, nil
+		}
+	}
+	return nil, fmt.Errorf("symbol %s.%s not found", ref.Package, ref.Symbol)
+}
+
+func splitSymbol(sym string) (typeName, name string) {
+	s := strings.TrimPrefix(sym, "*")
+	if i := strings.Index(s, "."); i >= 0 {
+		return s[:i], s[i+1:]
+	}
+	return "", sym
+}
+
+func findObjectInPkg(fset *token.FileSet, pkg *packages.Package, typeName, name string) *domain.CallSite {
+	if typeName == "" {
+		if obj := pkg.Types.Scope().Lookup(name); obj != nil {
+			return callSiteFor(fset, pkg, obj)
+		}
+		return nil
+	}
+	tn := pkg.Types.Scope().Lookup(typeName)
+	if tn == nil {
+		return nil
+	}
+	named, ok := tn.(*types.TypeName)
+	if !ok {
+		return nil
+	}
+	for _, obj := range []*types.Named{mustNamed(named)} {
+		if obj == nil {
+			continue
+		}
+		for i := 0; i < obj.NumMethods(); i++ {
+			m := obj.Method(i)
+			if m.Name() == name {
+				return callSiteFor(fset, pkg, m)
+			}
+		}
+	}
+	return nil
+}
+
+func mustNamed(tn *types.TypeName) *types.Named {
+	if n, ok := tn.Type().(*types.Named); ok {
+		return n
+	}
+	return nil
+}
+
+func callSiteFor(fset *token.FileSet, pkg *packages.Package, obj types.Object) *domain.CallSite {
+	pos := fset.Position(obj.Pos())
+	return &domain.CallSite{
+		File:     pos.Filename,
+		Line:     pos.Line,
+		Function: obj.Name(),
+		Package:  pkg.PkgPath,
+	}
+}
+
+// SearchSymbol returns every textual reference to the symbol inside product
+// packages — direct calls as well as value references (assignments,
+// interface satisfaction candidates, etc.).
+func (ix *Index) SearchSymbol(ctx context.Context, ref domain.SymbolRef) ([]domain.CallSite, error) {
+	if err := ix.load(ctx); err != nil {
+		return nil, err
+	}
+	var out []domain.CallSite
+	for _, pkg := range ix.pkgs {
+		info := pkg.TypesInfo
+		if info == nil {
+			continue
+		}
+		for _, f := range pkg.Syntax {
+			var enc *ast.FuncDecl
+			ast.Inspect(f, func(n ast.Node) bool {
+				if fn, ok := n.(*ast.FuncDecl); ok {
+					enc = fn
+				}
+				id, ok := n.(*ast.Ident)
+				if !ok || !symRefIdent(info, id, ref) {
+					return true
+				}
+				site := domain.CallSite{
+					File:    ix.fset.Position(id.Pos()).Filename,
+					Line:    ix.fset.Position(id.Pos()).Line,
+					Package: pkg.PkgPath,
+				}
+				if enc != nil && enc.Name != nil {
+					site.Function = enc.Name.Name
+				}
+				out = append(out, site)
+				return true
+			})
+		}
+	}
+	return out, nil
+}
+
+// CallSiteRef pairs the exported CallSite with its internal AST handle.
+type CallSiteRef struct {
+	Site      domain.CallSite
+	call      *ast.CallExpr
+	enclosing *ast.FuncDecl
+	pkg       *packages.Package
+}
+
+// FindCallers returns statically resolved call sites of the symbol inside
+// the product packages (loaded ./... roots).
+func (ix *Index) FindCallers(ctx context.Context, ref domain.SymbolRef) ([]domain.CallSite, error) {
+	refs, err := ix.findCallSites(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]domain.CallSite, 0, len(refs))
+	for _, r := range refs {
+		out = append(out, r.Site)
+	}
+	return out, nil
+}
+
+func (ix *Index) findCallSites(ctx context.Context, ref domain.SymbolRef) ([]CallSiteRef, error) {
+	if err := ix.load(ctx); err != nil {
+		return nil, err
+	}
+	var out []CallSiteRef
+	for _, pkg := range ix.pkgs {
+		info := pkg.TypesInfo
+		if info == nil {
+			continue
+		}
+		for _, f := range pkg.Syntax {
+			var enc *ast.FuncDecl
+			ast.Inspect(f, func(n ast.Node) bool {
+				if fn, ok := n.(*ast.FuncDecl); ok {
+					enc = fn
+				}
+				call, ok := n.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				if callIsSymbol(info, call.Fun, ref) {
+					site := ix.siteOf(pkg, enc, call)
+					out = append(out, CallSiteRef{Site: site, call: call, enclosing: enc, pkg: pkg})
+				}
+				return true
+			})
+		}
+	}
+	return out, nil
+}
+
+func callIsSymbol(info *types.Info, fun ast.Expr, ref domain.SymbolRef) bool {
+	obj := calleeObject(info, fun)
+	fn, ok := obj.(*types.Func)
+	if !ok || fn.Pkg() == nil {
+		return false
+	}
+	if fn.Pkg().Path() != ref.Package {
+		return false
+	}
+	typeName, name := splitSymbol(ref.Symbol)
+	if fn.Name() != name {
+		return false
+	}
+	if typeName == "" {
+		return true
+	}
+	sig, _ := fn.Type().(*types.Signature)
+	if sig == nil || sig.Recv() == nil {
+		return false
+	}
+	return recvTypeName(sig.Recv().Type()) == typeName
+}
+
+func calleeObject(info *types.Info, fun ast.Expr) types.Object {
+	switch e := fun.(type) {
+	case *ast.Ident:
+		return info.ObjectOf(e)
+	case *ast.SelectorExpr:
+		if sel, ok := info.Selections[e]; ok {
+			return sel.Obj()
+		}
+		return info.ObjectOf(e.Sel)
+	}
+	return nil
+}
+
+func recvTypeName(t types.Type) string {
+	if p, ok := t.(*types.Pointer); ok {
+		t = p.Elem()
+	}
+	if n, ok := t.(*types.Named); ok {
+		return n.Obj().Name()
+	}
+	return ""
+}
+
+func (ix *Index) siteOf(pkg *packages.Package, enc *ast.FuncDecl, call *ast.CallExpr) domain.CallSite {
+	pos := ix.fset.Position(call.Lparen)
+	site := domain.CallSite{
+		File:    pos.Filename,
+		Line:    pos.Line,
+		Column:  pos.Column,
+		Package: pkg.PkgPath,
+	}
+	if enc != nil && enc.Name != nil {
+		site.Function = enc.Name.Name
+	}
+	return site
+}
+
+// ReadFunction returns the source text of the function enclosing pos or
+// matching name in the given file.
+func (ix *Index) ReadFunction(ctx context.Context, file, funcName string) (string, error) {
+	if err := ix.load(ctx); err != nil {
+		return "", err
+	}
+	for _, pkg := range ix.pkgs {
+		for _, f := range pkg.Syntax {
+			fpos := ix.fset.Position(f.Pos())
+			if fpos.Filename != file {
+				continue
+			}
+			for _, decl := range f.Decls {
+				fn, ok := decl.(*ast.FuncDecl)
+				if !ok || (funcName != "" && fn.Name.Name != funcName) {
+					continue
+				}
+				return ix.nodeSource(fn)
+			}
+		}
+	}
+	return "", fmt.Errorf("function %s not found in %s", funcName, file)
+}
+
+func (ix *Index) nodeSource(n ast.Node) (string, error) {
+	start := ix.fset.Position(n.Pos())
+	end := ix.fset.Position(n.End())
+	b, err := os.ReadFile(start.Filename)
+	if err != nil {
+		return "", err
+	}
+	if start.Offset < 0 || end.Offset > len(b) {
+		return "", fmt.Errorf("offsets out of range")
+	}
+	return string(b[start.Offset:end.Offset]), nil
+}
+
+// FindEntrypoints enumerates plausible external entrypoints in product
+// packages: main/init functions and net/http handlers.
+func (ix *Index) FindEntrypoints(ctx context.Context) ([]domain.Entrypoint, error) {
+	if err := ix.load(ctx); err != nil {
+		return nil, err
+	}
+	var out []domain.Entrypoint
+	for _, pkg := range ix.pkgs {
+		for _, f := range pkg.Syntax {
+			for _, decl := range f.Decls {
+				fn, ok := decl.(*ast.FuncDecl)
+				if !ok {
+					continue
+				}
+				kind := entrypointKind(pkg, fn)
+				if kind == "" {
+					continue
+				}
+				pos := ix.fset.Position(fn.Pos())
+				out = append(out, domain.Entrypoint{
+					CallSite: domain.CallSite{
+						File:     pos.Filename,
+						Line:     pos.Line,
+						Function: fn.Name.Name,
+						Package:  pkg.PkgPath,
+					},
+					Kind:    kind,
+					Exposed: ast.IsExported(fn.Name.Name) || kind != "export",
+				})
+			}
+		}
+	}
+	return out, nil
+}
+
+func entrypointKind(pkg *packages.Package, fn *ast.FuncDecl) string {
+	switch {
+	case pkg.Name == "main" && fn.Name.Name == "main":
+		return "main"
+	case fn.Name.Name == "init":
+		return "init"
+	case isHTTPHandler(pkg, fn):
+		return "http"
+	}
+	return ""
+}
+
+func isHTTPHandler(pkg *packages.Package, fn *ast.FuncDecl) bool {
+	if fn.Type.Params == nil || fn.Type.Params.NumFields() != 2 {
+		return false
+	}
+	info := pkg.TypesInfo
+	var sawWriter, sawRequest bool
+	for _, field := range fn.Type.Params.List {
+		t := info.TypeOf(field.Type)
+		if t == nil {
+			continue
+		}
+		s := t.String()
+		if strings.HasSuffix(s, "http.ResponseWriter") {
+			sawWriter = true
+		}
+		if strings.HasSuffix(s, "*http.Request") {
+			sawRequest = true
+		}
+	}
+	return sawWriter && sawRequest
+}
+
+// DynamicMarker describes language features that can bypass static
+// call-graph reasoning: reflect, unsafe, plugins, linkname, function values
+// referencing the analyzed symbol, etc.
+type DynamicMarker struct {
+	domain.CallSite
+	Kind   string `json:"kind"` // reflect|unsafe|plugin|linkname|func_value|goroutine
+	Detail string `json:"detail"`
+}
+
+// ScanDynamic finds dynamic-dispatch risk markers inside product packages.
+func (ix *Index) ScanDynamic(ctx context.Context, ref domain.SymbolRef) ([]DynamicMarker, error) {
+	if err := ix.load(ctx); err != nil {
+		return nil, err
+	}
+	var out []DynamicMarker
+	for _, pkg := range ix.pkgs {
+		for _, f := range pkg.Syntax {
+			pos := func(n ast.Node) domain.CallSite {
+				p := ix.fset.Position(n.Pos())
+				return domain.CallSite{File: p.Filename, Line: p.Line, Package: pkg.PkgPath}
+			}
+			for _, imp := range f.Imports {
+				path := strings.Trim(imp.Path.Value, `"`)
+				switch path {
+				case "reflect":
+					out = append(out, DynamicMarker{CallSite: pos(imp), Kind: "reflect", Detail: "reflect import"})
+				case "unsafe":
+					out = append(out, DynamicMarker{CallSite: pos(imp), Kind: "unsafe", Detail: "unsafe import"})
+				case "plugin":
+					out = append(out, DynamicMarker{CallSite: pos(imp), Kind: "plugin", Detail: "plugin import"})
+				}
+			}
+			callFuns := map[ast.Node]bool{}
+			ast.Inspect(f, func(n ast.Node) bool {
+				if call, ok := n.(*ast.CallExpr); ok {
+					callFuns[call.Fun] = true
+					if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
+						callFuns[sel.Sel] = true
+					}
+				}
+				return true
+			})
+			ast.Inspect(f, func(n ast.Node) bool {
+				switch n := n.(type) {
+				case *ast.Comment:
+					if strings.Contains(n.Text, "go:linkname") {
+						out = append(out, DynamicMarker{CallSite: pos(n), Kind: "linkname", Detail: n.Text})
+					}
+				case *ast.Ident:
+					if callFuns[n] {
+						return true
+					}
+					if symRefIdent(pkg.TypesInfo, n, ref) {
+						out = append(out, DynamicMarker{
+							CallSite: pos(n), Kind: "func_value",
+							Detail: "symbol referenced as value (may be invoked indirectly)",
+						})
+					}
+				}
+				return true
+			})
+		}
+	}
+	return out, nil
+}
+
+// symRefIdent reports whether ident references the target symbol without
+// being part of a call expression fun position (i.e. used as a value).
+func symRefIdent(info *types.Info, id *ast.Ident, ref domain.SymbolRef) bool {
+	obj := info.ObjectOf(id)
+	fn, ok := obj.(*types.Func)
+	if !ok || fn.Pkg() == nil || fn.Pkg().Path() != ref.Package {
+		return false
+	}
+	_, name := splitSymbol(ref.Symbol)
+	return fn.Name() == name
+}

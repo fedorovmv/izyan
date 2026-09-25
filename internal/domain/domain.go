@@ -184,6 +184,7 @@ type Condition struct {
 	Description       string        `json:"description"`
 	Mandatory         bool          `json:"mandatory"`
 	Subject           *SymbolRef    `json:"subject,omitempty"`
+	ArgIndex          int           `json:"arg_index,omitempty"`
 	VerificationHints []string      `json:"verification_hints,omitempty"`
 }
 
@@ -206,6 +207,7 @@ const (
 type NegativeVerification struct {
 	Status      NegativeVerificationStatus `json:"status"`
 	EvidenceIDs []EvidenceID               `json:"evidence_ids,omitempty"`
+	Notes       string                     `json:"notes,omitempty"`
 	Limitations []string                   `json:"limitations,omitempty"`
 }
 
@@ -290,6 +292,7 @@ type Evidence struct {
 type CallSite struct {
 	File     string `json:"file"`
 	Line     int    `json:"line,omitempty"`
+	Column   int    `json:"column,omitempty"`
 	Function string `json:"function"`
 	Package  string `json:"package,omitempty"`
 }

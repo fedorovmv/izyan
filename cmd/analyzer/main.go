@@ -109,6 +109,13 @@ func runAnalyze(args []string) error {
 		return err
 	}
 
+	srcIndex := &goanalysis.Index{
+		Dir: absRepo,
+		Build: domain.ProductSnapshot{
+			GOOS: *goos, GOARCH: *goarch, BuildTags: splitCSV(*tags),
+		},
+	}
+
 	engine := workflow.New(store,
 		states.Created{},
 		states.SnapshotProduct{
@@ -124,9 +131,15 @@ func runAnalyze(args []string) error {
 		states.CheckAffected{Resolver: affected.GoResolver{}},
 		states.ResolveRootCause{Manual: parseRootCauses(rootCauseFlags)},
 		states.BuildExploitModel{ModelPath: *exploitModelPath},
-		states.CollectEvidence{Govulncheck: goanalysis.ExecRunner{}},
-		states.EvaluateConditions{Evaluators: []evaluator.ConditionEvaluator{evaluator.SymbolReachable{}}},
-		states.NegativeCheck{},
+		states.CollectEvidence{
+			Govulncheck: goanalysis.ExecRunner{},
+			Source:      srcIndex,
+		},
+		states.EvaluateConditions{Evaluators: []evaluator.ConditionEvaluator{
+			evaluator.SymbolReachable{},
+			evaluator.ArgumentOrigin{},
+		}},
+		states.NegativeCheck{Verifier: &goanalysis.Verifier{Source: srcIndex}},
 		states.Review{},
 		states.EvaluateVerdict{Evaluator: evaluator.VerdictEvaluator{}},
 		states.BuildReport{Dir: filepath.Join(*caseDir, string(caseID))},

@@ -40,13 +40,48 @@ func initRepo(t *testing.T) string {
 		t.Skip("go toolchain not available")
 	}
 	dir := t.TempDir()
+	return initGit(t, dir)
+}
+
+// initRepoFrom copies a testdata fixture into a temp dir and git-inits it,
+// so the case is bound to a concrete commit as the spec requires.
+func initRepoFrom(t *testing.T, fixture string) string {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go toolchain not available")
+	}
+	src, err := filepath.Abs(filepath.Join("..", "..", "testdata"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	for _, sub := range []string{fixture, "dep"} {
+		fsys := os.DirFS(filepath.Join(src, sub))
+		dst := filepath.Join(dir, sub)
+		if err := os.MkdirAll(dst, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.CopyFS(dst, fsys); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return initGit(t, filepath.Join(dir, fixture))
+}
+
+func initGit(t *testing.T, dir string) string {
+	t.Helper()
 	write := func(name, content string) {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
-	write("go.mod", "module example.com/product\n\ngo 1.23\n")
-	write("main.go", "package main\n\nfunc main() {}\n")
+	if _, err := os.Stat(filepath.Join(dir, "go.mod")); err != nil {
+		write("go.mod", "module example.com/product\n\ngo 1.23\n")
+		write("main.go", "package main\n\nfunc main() {}\n")
+	}
 	for _, args := range [][]string{
 		{"git", "init", "-q"},
 		{"git", "add", "."},
@@ -70,6 +105,7 @@ type engineDeps struct {
 	Model       string
 	CaseDir     string
 	Govulncheck goanalysis.Runner
+	UseSource   bool // wire the go/packages source index + verifier
 }
 
 func runEngine(t *testing.T, d engineDeps) *domain.AnalysisCase {
@@ -87,6 +123,10 @@ func runEngine(t *testing.T, d engineDeps) *domain.AnalysisCase {
 	if err := store.Create(context.Background(), c); err != nil {
 		t.Fatal(err)
 	}
+	var srcIndex *goanalysis.Index
+	if d.UseSource {
+		srcIndex = &goanalysis.Index{Dir: d.RepoPath}
+	}
 	e := workflow.New(store,
 		states.Created{},
 		states.SnapshotProduct{Repo: repository.Service{}, Path: d.RepoPath},
@@ -94,9 +134,12 @@ func runEngine(t *testing.T, d engineDeps) *domain.AnalysisCase {
 		states.CheckAffected{Resolver: d.Resolver},
 		states.ResolveRootCause{Manual: d.ManualRC},
 		states.BuildExploitModel{ModelPath: d.Model},
-		states.CollectEvidence{Govulncheck: d.Govulncheck},
-		states.EvaluateConditions{Evaluators: []evaluator.ConditionEvaluator{evaluator.SymbolReachable{}}},
-		states.NegativeCheck{},
+		states.CollectEvidence{Govulncheck: d.Govulncheck, Source: srcIndex},
+		states.EvaluateConditions{Evaluators: []evaluator.ConditionEvaluator{
+			evaluator.SymbolReachable{},
+			evaluator.ArgumentOrigin{},
+		}},
+		states.NegativeCheck{Verifier: &goanalysis.Verifier{Source: srcIndex}},
 		states.Review{},
 		states.EvaluateVerdict{Evaluator: evaluator.VerdictEvaluator{}},
 		states.BuildReport{Dir: filepath.Join(d.CaseDir, string(c.ID))},
@@ -332,4 +375,150 @@ func (stubResolver) Resolve(context.Context, domain.Vulnerability, domain.Produc
 		PackagePresent:  domain.ClaimTrue,
 		BuildRelevant:   domain.ClaimTrue,
 	}, nil, nil
+}
+
+// Slice 3 golden: the vulnerable symbol IS reachable (govulncheck trace) but
+// the only call site passes a constant argument. ATTACKER_CONTROL goes FALSE,
+// negative verification confirms every call site is non-external, and the
+// verdict is NO_EXPLOIT_PATH_FOUND — the first verified-safe path.
+func TestE2EConstantInputVerifiedFalse(t *testing.T) {
+	repo := initRepoFrom(t, "constprod")
+	dir := t.TempDir()
+	model := `{"impact":"t","mandatory_conditions":[
+		{"id":"C-REACH","kind":"SYMBOL_REACHABLE","mandatory":true,
+		 "subject":{"package":"example.com/dep/vuln","symbol":"Parse"}},
+		{"id":"C-INPUT","kind":"ATTACKER_CONTROL","mandatory":true,
+		 "subject":{"package":"example.com/dep/vuln","symbol":"Parse"},"arg_index":0}
+	]}`
+	mp := filepath.Join(dir, "model.json")
+	if err := os.WriteFile(mp, []byte(model), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	caseDir := filepath.Join(dir, "cases")
+
+	gv := `{"protocol_version":"v1.0.0"}
+{"finding":{"osv":"GO-TEST-1","fixed_version":"v1.2.0","trace":[
+ {"module":"example.com/constprod","package":"example.com/constprod","function":"main","position":{"filename":"main.go","line":9}},
+ {"module":"example.com/dep","package":"example.com/dep/vuln","function":"Parse","position":{"filename":"vuln.go","line":4}}
+]}}`
+
+	c := runEngine(t, engineDeps{
+		RepoPath: repo,
+		VulnSrc: vulnerability.StaticSource{Vulns: map[string]*domain.Vulnerability{
+			"GO-TEST-1": {ID: "GO-TEST-1", Module: "example.com/dep"},
+		}},
+		VulnID:      "GO-TEST-1",
+		Resolver:    stubResolver{},
+		ManualRC:    []domain.RootCause{{Package: "example.com/dep/vuln", Symbol: "Parse"}},
+		Model:       mp,
+		CaseDir:     caseDir,
+		Govulncheck: fakeGovulncheck{out: []byte(gv)},
+		UseSource:   true,
+	})
+
+	if c.Workflow.State != domain.StateCompleted {
+		t.Fatalf("state=%s reason=%s", c.Workflow.State, c.Workflow.Reason)
+	}
+	claim := findClaimT(t, c.Claims, "C-INPUT")
+	if claim.Result != domain.ClaimFalse {
+		t.Fatalf("C-INPUT=%s want FALSE", claim.Result)
+	}
+	if claim.NegativeVerification == nil || claim.NegativeVerification.Status != domain.NegativeVerified {
+		t.Fatalf("neg verification=%+v want VERIFIED", claim.NegativeVerification)
+	}
+	if c.Verdict == nil || c.Verdict.Verdict != domain.VerdictNoExploitPathFound {
+		t.Fatalf("verdict=%+v want NO_EXPLOIT_PATH_FOUND", c.Verdict)
+	}
+	if len(c.EvidenceGraph.DataFlows) == 0 {
+		t.Fatal("expected provenance data flows in evidence graph")
+	}
+}
+
+// External input at the sink argument -> ATTACKER_CONTROL TRUE -> with
+// reachability also TRUE the deterministic verdict is EXPLOITABLE.
+func TestE2EExternalInputTrue(t *testing.T) {
+	repo := initRepoFrom(t, "extprod")
+	dir := t.TempDir()
+	model := `{"impact":"t","mandatory_conditions":[
+		{"id":"C-REACH","kind":"SYMBOL_REACHABLE","mandatory":true,
+		 "subject":{"package":"example.com/dep/vuln","symbol":"Parse"}},
+		{"id":"C-INPUT","kind":"ATTACKER_CONTROL","mandatory":true,
+		 "subject":{"package":"example.com/dep/vuln","symbol":"Parse"},"arg_index":0}
+	]}`
+	mp := filepath.Join(dir, "model.json")
+	if err := os.WriteFile(mp, []byte(model), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	caseDir := filepath.Join(dir, "cases")
+
+	gv := `{"protocol_version":"v1.0.0"}
+{"finding":{"osv":"GO-TEST-1","fixed_version":"v1.2.0","trace":[
+ {"module":"example.com/extprod","package":"example.com/extprod","function":"main","position":{"filename":"main.go","line":10}},
+ {"module":"example.com/dep","package":"example.com/dep/vuln","function":"Parse","position":{"filename":"vuln.go","line":4}}
+]}}`
+
+	c := runEngine(t, engineDeps{
+		RepoPath: repo,
+		VulnSrc: vulnerability.StaticSource{Vulns: map[string]*domain.Vulnerability{
+			"GO-TEST-1": {ID: "GO-TEST-1", Module: "example.com/dep"},
+		}},
+		VulnID:      "GO-TEST-1",
+		Resolver:    stubResolver{},
+		ManualRC:    []domain.RootCause{{Package: "example.com/dep/vuln", Symbol: "Parse"}},
+		Model:       mp,
+		CaseDir:     caseDir,
+		Govulncheck: fakeGovulncheck{out: []byte(gv)},
+		UseSource:   true,
+	})
+
+	claim := findClaimT(t, c.Claims, "C-INPUT")
+	if claim.Result != domain.ClaimTrue {
+		t.Fatalf("C-INPUT=%s want TRUE", claim.Result)
+	}
+	if c.Verdict == nil || c.Verdict.Verdict != domain.VerdictExploitable {
+		t.Fatalf("verdict=%+v want EXPLOITABLE", c.Verdict)
+	}
+}
+
+// Function-value escape: govulncheck reports no call path (FALSE candidate)
+// but ScanDynamic finds `f := vuln.Parse` — the falsification pass demotes
+// FALSE to UNKNOWN and the verdict stays INCONCLUSIVE, honoring the invariant
+// that absence of evidence is not absence of exploitability.
+func TestE2EFuncValueDemotesFalse(t *testing.T) {
+	repo := initRepoFrom(t, "funcvalprod")
+	dir := t.TempDir()
+	model := `{"impact":"t","mandatory_conditions":[
+		{"id":"C-REACH","kind":"SYMBOL_REACHABLE","mandatory":true,
+		 "subject":{"package":"example.com/dep/vuln","symbol":"Parse"}}
+	]}`
+	mp := filepath.Join(dir, "model.json")
+	if err := os.WriteFile(mp, []byte(model), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	caseDir := filepath.Join(dir, "cases")
+
+	c := runEngine(t, engineDeps{
+		RepoPath: repo,
+		VulnSrc: vulnerability.StaticSource{Vulns: map[string]*domain.Vulnerability{
+			"GO-TEST-1": {ID: "GO-TEST-1", Module: "example.com/dep"},
+		}},
+		VulnID:      "GO-TEST-1",
+		Resolver:    stubResolver{},
+		ManualRC:    []domain.RootCause{{Package: "example.com/dep/vuln", Symbol: "Parse"}},
+		Model:       mp,
+		CaseDir:     caseDir,
+		Govulncheck: fakeGovulncheck{out: []byte(`{"protocol_version":"v1.0.0"}`)},
+		UseSource:   true,
+	})
+
+	claim := findClaimT(t, c.Claims, "C-REACH")
+	if claim.Result != domain.ClaimUnknown {
+		t.Fatalf("C-REACH=%s want UNKNOWN after contradiction", claim.Result)
+	}
+	if claim.NegativeVerification == nil || claim.NegativeVerification.Status != domain.NegativeContradicted {
+		t.Fatalf("neg verification=%+v want CONTRADICTED", claim.NegativeVerification)
+	}
+	if c.Verdict == nil || c.Verdict.Verdict != domain.VerdictInconclusive {
+		t.Fatalf("verdict=%+v want INCONCLUSIVE", c.Verdict)
+	}
 }

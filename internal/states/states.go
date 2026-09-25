@@ -151,23 +151,32 @@ func (h BuildExploitModel) Run(_ context.Context, c *domain.AnalysisCase) (workf
 
 type CollectEvidence struct {
 	Govulncheck goanalysis.Runner
+	Source      *goanalysis.Index
 }
 
 func (CollectEvidence) State() domain.WorkflowState { return domain.StateCollectEvidence }
 
 func (h CollectEvidence) Run(ctx context.Context, c *domain.AnalysisCase) (workflow.Transition, error) {
-	if h.Govulncheck == nil {
+	if h.Govulncheck != nil {
+		h.runGovulncheck(ctx, c)
+	}
+	if h.Source != nil {
+		h.runSourceAnalysis(ctx, c)
+	}
+	if h.Govulncheck == nil && h.Source == nil {
 		c.EvidenceGraph.Limitations = append(c.EvidenceGraph.Limitations,
 			"no evidence collectors beyond affected resolution are wired yet")
-		c.EvidenceGraph.ComputeHash()
-		return workflow.Transition{Next: domain.StateEvaluateConditions, Reason: "no collectors configured"}, nil
 	}
+	c.EvidenceGraph.ComputeHash()
+	return workflow.Transition{Next: domain.StateEvaluateConditions, Reason: "deterministic evidence collection complete"}, nil
+}
+
+func (h CollectEvidence) runGovulncheck(ctx context.Context, c *domain.AnalysisCase) {
 	raw, err := h.Govulncheck.RunGovulncheck(ctx, c.Product.Repository, c.Product)
 	if err != nil {
 		c.EvidenceGraph.ToolLimitations = append(c.EvidenceGraph.ToolLimitations,
 			fmt.Sprintf("govulncheck failed: %v", err))
-		c.EvidenceGraph.ComputeHash()
-		return workflow.Transition{Next: domain.StateEvaluateConditions, Reason: "govulncheck failed; recorded as limitation"}, nil
+		return
 	}
 	evID := c.EvidenceGraph.AddEvidence(domain.Evidence{
 		Kind:    domain.EvidenceGovulncheck,
@@ -180,15 +189,84 @@ func (h CollectEvidence) Run(ctx context.Context, c *domain.AnalysisCase) (workf
 	res, err := goanalysis.Parse(raw)
 	if err != nil {
 		c.EvidenceGraph.ToolLimitations = append(c.EvidenceGraph.ToolLimitations, err.Error())
-	} else {
-		for _, f := range res.ForVulnerability(c.Vulnerability) {
-			cp := f.CallPath()
-			cp.EvidenceID = evID
-			c.EvidenceGraph.CallPaths = append(c.EvidenceGraph.CallPaths, cp)
+		return
+	}
+	for _, f := range res.ForVulnerability(c.Vulnerability) {
+		cp := f.CallPath()
+		cp.EvidenceID = evID
+		c.EvidenceGraph.CallPaths = append(c.EvidenceGraph.CallPaths, cp)
+	}
+}
+
+// runSourceAnalysis gathers call sites, argument provenance and validations
+// for conditions that carry a subject symbol.
+func (h CollectEvidence) runSourceAnalysis(ctx context.Context, c *domain.AnalysisCase) {
+	if c.Exploit == nil {
+		return
+	}
+	if err := h.Source.Loaded(ctx); err != nil {
+		c.EvidenceGraph.ToolLimitations = append(c.EvidenceGraph.ToolLimitations,
+			fmt.Sprintf("source index load failed: %v", err))
+		return
+	}
+	conds := append([]domain.Condition{}, c.Exploit.MandatoryConditions...)
+	conds = append(conds, c.Exploit.SupportingFactors...)
+	seen := map[domain.ConditionID]bool{}
+	for _, cond := range conds {
+		if seen[cond.ID] || cond.Subject == nil {
+			continue
+		}
+		if !needsProvenance(cond.Kind) {
+			continue
+		}
+		seen[cond.ID] = true
+		h.collectProvenance(ctx, c, cond)
+	}
+}
+
+func needsProvenance(k domain.ConditionKind) bool {
+	switch k {
+	case domain.ConditionAttackerControl, domain.ConditionInputConstraint, domain.ConditionValidation:
+		return true
+	}
+	return false
+}
+
+func (h CollectEvidence) collectProvenance(ctx context.Context, c *domain.AnalysisCase, cond domain.Condition) {
+	sites, err := h.Source.FindCallers(ctx, *cond.Subject)
+	if err != nil {
+		c.EvidenceGraph.ToolLimitations = append(c.EvidenceGraph.ToolLimitations,
+			fmt.Sprintf("find_callers %s.%s: %v", cond.Subject.Package, cond.Subject.Symbol, err))
+		return
+	}
+	if len(sites) == 0 {
+		c.EvidenceGraph.Limitations = append(c.EvidenceGraph.Limitations,
+			fmt.Sprintf("no call sites of %s.%s found in product packages", cond.Subject.Package, cond.Subject.Symbol))
+		return
+	}
+	for _, site := range sites {
+		flow, evs, err := h.Source.TraceArgument(ctx, site, cond.ArgIndex)
+		if err != nil {
+			c.EvidenceGraph.ToolLimitations = append(c.EvidenceGraph.ToolLimitations,
+				fmt.Sprintf("trace_argument %s:%d: %v", site.File, site.Line, err))
+			continue
+		}
+		flow.ConditionID = cond.ID
+		c.EvidenceGraph.DataFlows = append(c.EvidenceGraph.DataFlows, flow)
+		for _, e := range evs {
+			c.EvidenceGraph.AddEvidence(e)
+		}
+		vals, vev, err := h.Source.FindValidations(ctx, site, cond.ArgIndex)
+		if err == nil {
+			for _, v := range vals {
+				v.Property = fmt.Sprintf("cond=%s %s", cond.ID, v.Property)
+				c.EvidenceGraph.Validations = append(c.EvidenceGraph.Validations, v)
+			}
+			for _, e := range vev {
+				c.EvidenceGraph.AddEvidence(e)
+			}
 		}
 	}
-	c.EvidenceGraph.ComputeHash()
-	return workflow.Transition{Next: domain.StateEvaluateConditions, Reason: "deterministic evidence collection complete"}, nil
 }
 
 type EvaluateConditions struct {
@@ -261,21 +339,74 @@ func allMandatoryTrue(c *domain.AnalysisCase) bool {
 	return true
 }
 
-type NegativeCheck struct{}
+type NegativeCheck struct {
+	Verifier *goanalysis.Verifier
+}
 
 func (NegativeCheck) State() domain.WorkflowState { return domain.StateNegativeCheck }
 
-func (NegativeCheck) Run(_ context.Context, c *domain.AnalysisCase) (workflow.Transition, error) {
+func (h NegativeCheck) Run(ctx context.Context, c *domain.AnalysisCase) (workflow.Transition, error) {
 	for i := range c.Claims {
 		cl := &c.Claims[i]
-		if cl.Result == domain.ClaimFalse && cl.NegativeVerification == nil {
+		if cl.Result != domain.ClaimFalse || cl.NegativeVerification != nil {
+			continue
+		}
+		if h.Verifier == nil {
 			cl.NegativeVerification = &domain.NegativeVerification{
 				Status:      domain.NegativeInsufficientScope,
-				Limitations: []string{"negative verifier not implemented (slice 3)"},
+				Limitations: []string{"negative verifier not configured"},
 			}
+			continue
+		}
+		cond := findCondition(c.Exploit, cl.ConditionID)
+		subject := claimSubject(cond, c)
+		if cond == nil || subject == nil {
+			cl.NegativeVerification = &domain.NegativeVerification{
+				Status: domain.NegativeInsufficientScope,
+				Notes:  "cannot resolve condition subject for falsification",
+			}
+			continue
+		}
+		updated := h.Verifier.VerifyFalse(ctx, c, *cl, *cond, *subject)
+		if updated.NegativeVerification != nil &&
+			updated.NegativeVerification.Status == domain.NegativeContradicted {
+			// the falsification attempt found a counterexample: the FALSE
+			// claim cannot stand; demote it to UNKNOWN with the reason.
+			updated.Limitations = append(updated.Limitations,
+				"false claim contradicted by negative verification")
+		}
+		*cl = updated
+	}
+	c.EvidenceGraph.ComputeHash()
+	return workflow.Transition{Next: domain.StateEvaluateVerdict, Reason: "negative verification applied"}, nil
+}
+
+func findCondition(m *domain.ExploitModel, id domain.ConditionID) *domain.Condition {
+	if m == nil {
+		return nil
+	}
+	for i := range m.MandatoryConditions {
+		if m.MandatoryConditions[i].ID == id {
+			return &m.MandatoryConditions[i]
 		}
 	}
-	return workflow.Transition{Next: domain.StateEvaluateVerdict, Reason: "negative verification unavailable; FALSE claims stay unverified"}, nil
+	for i := range m.SupportingFactors {
+		if m.SupportingFactors[i].ID == id {
+			return &m.SupportingFactors[i]
+		}
+	}
+	return nil
+}
+
+func claimSubject(cond *domain.Condition, c *domain.AnalysisCase) *domain.SymbolRef {
+	if cond != nil && cond.Subject != nil {
+		return cond.Subject
+	}
+	if c.RootCause != nil && len(c.RootCause.RootCauses) > 0 {
+		rc := c.RootCause.RootCauses[0]
+		return &domain.SymbolRef{Package: rc.Package, Symbol: rc.Symbol}
+	}
+	return nil
 }
 
 type Review struct{}

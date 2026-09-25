@@ -42,8 +42,25 @@
 - `NEGATIVE_CHECK` state: без verifier'а размечает FALSE-кандидатов как
   `INSUFFICIENT_SCOPE` → честный `INCONCLUSIVE`.
 
-Не хватает до конца среза: фиксируемые EvidenceKind-контракты для всех
-collectors и golden fixtures из плана §5.
+## Slice 3 — source analysis (done)
+
+- `goanalysis.Index`: `go/packages`-загрузка продукта (`./...`, с типами и
+  build-тегами). `FindSymbol`, `FindCallers`, `ReadFunction`,
+  `FindEntrypoints` (main/init/http-handlers), `SearchSymbol`,
+  `ScanDynamic` (reflect/unsafe/plugin/linkname/func_value маркеры).
+- `TraceArgument`: bounded argument provenance (≤2 caller hops) —
+  классификация origin: CONSTANT / EXTERNAL_UNTRUSTED / CONFIGURATION /
+  GENERATED / UNKNOWN. `FindValidations`: guard-выражения над аргументом
+  до sink.
+- `evaluator.ArgumentOrigin`: `ATTACKER_CONTROL` по `DataFlows` —
+  TRUE при external origin, FALSE-кандидат когда все call sites
+  non-external, UNKNOWN при отсутствии/неразрешимых traces.
+- `goanalysis.Verifier`: negative verification для FALSE-claims —
+  `SearchSymbol` (нет ссылок → VERIFIED для reachability), `ScanDynamic`
+  (func_value/linkname → CONTRADICTED → demote в UNKNOWN; reflect/unsafe/
+  plugin → limitation), для ATTACKER_CONTROL: provenance всех call sites.
+- CollectEvidence собирает DataFlows + Validations + source evidence по
+  provenance-условиям; `EvidenceGraph.ComputeHash` после всех мутаций.
 
 ## Проверено end-to-end
 
@@ -53,27 +70,31 @@ collectors и golden fixtures из плана §5.
   TRUE claim → deterministic verdict.
 - `INCONCLUSIVE`: affected=TRUE, но govulncheck не нашёл call path →
   FALSE-кандидат без negative verification.
+- `NO_EXPLOIT_PATH_FOUND` (живой прогон): вызов `vuln.Parse("hardcoded")`
+  — C-INPUT FALSE-кандидат → verifier: все call sites non-external →
+  VERIFIED → детерминистический вердикт. govulncheck при этом отсутствовал
+  в PATH → C-REACH остался UNKNOWN: tool failure ≠ negative evidence.
 
 ## Тесты
 
 - unit: semver ranges, OSV-маппинг, verdict matrix, affected resolver
-  на fake GoTool.
-- golden e2e (`internal/states`): NOT_AFFECTED через реальные
-  `go list`+git fixture; affected → INCONCLUSIVE; SYMBOL_REACHABLE TRUE;
-  no-path → кандидат-FALSE → INCONCLUSIVE.
+  на fake GoTool; goanalysis: FindSymbol/FindCallers/TraceArgument
+  (constant/external/param-hop)/FindValidations/ScanDynamic/FindEntrypoints.
+- golden e2e (`internal/states`): NOT_AFFECTED; affected → INCONCLUSIVE;
+  SYMBOL_REACHABLE TRUE; no-path → кандидат-FALSE → INCONCLUSIVE;
+  constprod → verified FALSE → NO_EXPLOIT_PATH_FOUND;
+  extprod (os.Args) → ATTACKER_CONTROL TRUE → EXPLOITABLE;
+  funcvalprod (func-value escape) → CONTRADICTED → INCONCLUSIVE.
+- fixtures: `testdata/{constprod,extprod,funcvalprod,validprod,dep}`.
 
-## Следующий вертикальный срез — Slice 3 (source analysis)
+## Следующий вертикальный срез — Slice 4
 
-1. `find_symbol`/`find_callers`/`read_function`/`find_entrypoints` через
-   `go/packages`+AST — targeted tools для условий без govulncheck-покрытия.
-2. `trace_argument` (argument provenance) + `find_validations` для
-   `ATTACKER_CONTROL`/`INPUT_CONSTRAINT`/`VALIDATION` conditions.
-3. Настоящий negative verifier: альтернативные callers, interface
-   implementations, reflection/unsafe markers → `VERIFIED` для FALSE.
-4. Golden fixtures из плана §5: reachable-but-validated,
-   interface/dynamic-path, tool-failure.
+1. FixResolver/PatchProvider — pull fix commits/diffs по advisory.
+2. LLM RootCauseResolver (typed tools поверх `goanalysis.Index`),
+   RootCauseVerifier (символ существует, механизм не расширяется без
+   evidence).
+3. ExploitModelBuilder (Slice 5): паттерны обязательных условий,
+   semantic ConditionEvaluator, gap-driven Planner, Reviewer.
 
-Дальше: Slice 4 (FixResolver/PatchProvider + LLM RootCauseResolver) и
-Slice 5 (ExploitModelBuilder + semantic ConditionEvaluator + Planner)
-подключают LLM через typed tools; оркестратор, бюджеты и persisted state
-уже готовы.
+Дальше: оркестратор, бюджеты и persisted state для LLM-стадий уже готовы;
+вердикт остаётся чистой функцией от claims.
