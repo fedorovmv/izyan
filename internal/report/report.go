@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"golang.org/x/mod/semver"
+
 	"example.com/vuln-analyzer/internal/domain"
 )
 
@@ -81,6 +83,9 @@ func Markdown(c *domain.AnalysisCase) string {
 		}
 		b.WriteString("\n")
 	}
+	if r := remediation(c); r != "" {
+		fmt.Fprintf(&b, "## Remediation\n\n%s\n\n", r)
+	}
 	if lims := allLimitations(c); len(lims) > 0 {
 		b.WriteString("## Limitations\n\n")
 		for _, l := range lims {
@@ -144,6 +149,57 @@ func rationale(c *domain.AnalysisCase) string {
 		return fmt.Sprintf("%s analysis is INCONCLUSIVE for %s@%s: %s. Manual review required.",
 			c.Vulnerability.ID, c.Product.Repository, shortCommit(c.Product.Commit), c.Verdict.Reason)
 	}
+}
+
+// remediation renders a deterministic fix recommendation: the smallest
+// fixed version above the resolved one, plus the go command to apply it.
+// Empty when the component is not affected or no fix is published.
+func remediation(c *domain.AnalysisCase) string {
+	if c.Affected == nil || c.Affected.VersionAffected != domain.ClaimTrue {
+		return ""
+	}
+	mod := c.Vulnerability.Module
+	if mod == "" && len(c.Vulnerability.AffectedPackages) > 0 {
+		mod = c.Vulnerability.AffectedPackages[0].Path
+	}
+	if mod == "" {
+		return ""
+	}
+	resolved := c.Affected.ResolvedVersion
+	var best string
+	for _, f := range c.Vulnerability.FixedVersions {
+		fv := normalizeSemver(f)
+		if fv == "" {
+			continue
+		}
+		if resolved != "" && semver.Compare(fv, normalizeSemver(resolved)) <= 0 {
+			continue
+		}
+		if best == "" || semver.Compare(fv, best) < 0 {
+			best = fv
+		}
+	}
+	if best == "" {
+		return fmt.Sprintf("No fixed version published for `%s` (current: `%s`). "+
+			"Consider pinning an unaffected release or vendoring a patch.", mod, resolved)
+	}
+	return fmt.Sprintf("Update `%s` from `%s` to `%s`:\n\n```\ngo get %s@%s\ngo mod tidy\n```",
+		mod, resolved, best, mod, best)
+}
+
+// normalizeSemver maps "1.2.3"/"v1.2.3" onto canonical semver for compare.
+func normalizeSemver(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return ""
+	}
+	if !strings.HasPrefix(v, "v") {
+		v = "v" + v
+	}
+	if !semver.IsValid(v) {
+		return ""
+	}
+	return v
 }
 
 func shortCommit(s string) string {

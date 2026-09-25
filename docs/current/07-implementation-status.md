@@ -252,3 +252,13 @@ build-tag развёртка), реальный tracker sink, P6 remediation.
   в dep source → AMBIGUOUS → INCONCLUSIVE. Матрица фикстур из плана
   закрыта: constprod/extprod/funcvalprod/validprod/configprod +
   tool-failure + ambiguous-root-cause.
+
+## Remediation (done)
+
+- report.md: секция `## Remediation` — минимальная fixed-версия строго
+  выше resolved (semver compare, нормализация v-prefix), `go get`/`go mod
+  tidy` команда; нет фикса → honest "no fixed version published".
+  Не affected → секция отсутствует. Live: x/net v0.32.0 → v0.38.0.
+- Tracker adapter остаётся generic: `tracker.Sink` интерфейс + `FileSink`
+  (tracker_comment.md); конкретные адаптеры (GitHub Issues, GL, и пр.)
+  добавляются позже без изменения ядра.
