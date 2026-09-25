@@ -6,3 +6,5 @@
 # LLM env files (may contain API keys)
 .env.*
 !.env.example
+analyzer
+vuln-analyzer

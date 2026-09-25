@@ -37,7 +37,17 @@ vuln-analyzer analyze \
   [--exploit-model exploit-model.json] \
   [--deterministic-only] \
   [--case-dir .vuln-analyzer]
+
+vuln-analyzer scan \
+  --repo /src/product \
+  [--max-vulns 50] \
+  [--deterministic-only] \
+  [--case-dir .vuln-analyzer]
 ```
+
+`scan` опрашивает OSV по всем зависимостям (`go list -m all`), дёшево
+отфильтровывает детерминистически-неаффектящие advisory и прогоняет
+выжившие через полный пайплайн. Сводка — `<case-dir>/scan.json`.
 
 Состояние кейса атомарно сохраняется после каждого перехода workflow в
 `--case-dir`; отчёты пишутся в `<case-dir>/<case-id>/report.{json,md}`.

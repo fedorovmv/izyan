@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -27,10 +29,19 @@ import (
 )
 
 func main() {
-	if len(os.Args) < 2 || os.Args[1] != "analyze" {
+	if len(os.Args) < 2 {
 		usage()
 	}
-	if err := runAnalyze(os.Args[2:]); err != nil {
+	var err error
+	switch os.Args[1] {
+	case "analyze":
+		err = runAnalyze(os.Args[2:])
+	case "scan":
+		err = runScan(os.Args[2:])
+	default:
+		usage()
+	}
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
@@ -39,6 +50,7 @@ func main() {
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
   vuln-analyzer analyze --repo <path> --vuln <GO-/CVE-/GHSA-id> [options]
+  vuln-analyzer scan    --repo <path> [options]   # all advisories for all modules
 
 options:
   --vuln-file <path>     load advisory from local OSV JSON instead of api.osv.dev
@@ -57,41 +69,73 @@ type stringList []string
 func (s *stringList) String() string     { return strings.Join(*s, ",") }
 func (s *stringList) Set(v string) error { *s = append(*s, v); return nil }
 
+type analyzeOpts struct {
+	repo          string
+	vulnID        string
+	vulnFile      string
+	osvURL        string
+	caseDir       string
+	goos          string
+	goarch        string
+	tags          string
+	exploitModel  string
+	llmEnv        string
+	detOnly       bool
+	rootCauseArgs []string
+}
+
+// commonFlags registers the flags shared by analyze and scan.
+func commonFlags(fs *flag.FlagSet, o *analyzeOpts) {
+	fs.StringVar(&o.repo, "repo", "", "path to Go repository")
+	fs.StringVar(&o.osvURL, "osv-url", "", "OSV API base URL")
+	fs.StringVar(&o.caseDir, "case-dir", ".vuln-analyzer", "case state directory")
+	fs.StringVar(&o.goos, "goos", "", "target GOOS")
+	fs.StringVar(&o.goarch, "goarch", "", "target GOARCH")
+	fs.StringVar(&o.tags, "build-tags", "", "comma-separated build tags")
+	fs.BoolVar(&o.detOnly, "deterministic-only", false, "disable LLM-backed states")
+	fs.StringVar(&o.llmEnv, "llm-env", "", "path to LLM .env file (default: .env in cwd or repo)")
+}
+
 func runAnalyze(args []string) error {
 	fs := flag.NewFlagSet("analyze", flag.ExitOnError)
-	repo := fs.String("repo", "", "path to Go repository")
-	vulnID := fs.String("vuln", "", "vulnerability id (GO-/CVE-/GHSA-)")
-	vulnFile := fs.String("vuln-file", "", "local OSV JSON file")
-	osvURL := fs.String("osv-url", "", "OSV API base URL")
-	caseDir := fs.String("case-dir", ".vuln-analyzer", "case state directory")
-	goos := fs.String("goos", "", "target GOOS")
-	goarch := fs.String("goarch", "", "target GOARCH")
-	tags := fs.String("build-tags", "", "comma-separated build tags")
-	exploitModelPath := fs.String("exploit-model", "", "manual exploit model JSON")
-	deterministicOnly := fs.Bool("deterministic-only", false, "disable LLM-backed states")
-	llmEnv := fs.String("llm-env", "", "path to LLM .env file (default: .env in cwd or repo)")
+	var o analyzeOpts
+	commonFlags(fs, &o)
+	fs.StringVar(&o.vulnID, "vuln", "", "vulnerability id (GO-/CVE-/GHSA-)")
+	fs.StringVar(&o.vulnFile, "vuln-file", "", "local OSV JSON file")
+	fs.StringVar(&o.exploitModel, "exploit-model", "", "manual exploit model JSON")
 	var rootCauseFlags stringList
 	fs.Var(&rootCauseFlags, "root-cause", "manual root cause as pkg/path.Symbol (repeatable)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *repo == "" || *vulnID == "" {
+	o.rootCauseArgs = rootCauseFlags
+	if o.repo == "" || o.vulnID == "" {
 		usage()
 	}
-	absRepo, err := filepath.Abs(*repo)
+	c, err := analyzeCase(context.Background(), o)
 	if err != nil {
 		return err
 	}
+	printCase(c, o.caseDir)
+	return nil
+}
 
-	var src vulnerability.Source
-	if *vulnFile != "" {
-		src = vulnerability.FileSource{Path: *vulnFile}
-	} else {
-		src = vulnerability.OSVSource{BaseURL: *osvURL}
+// analyzeCase runs the full pipeline for one vulnerability id.
+func analyzeCase(ctx context.Context, o analyzeOpts) (*domain.AnalysisCase, error) {
+	absRepo, err := filepath.Abs(o.repo)
+	if err != nil {
+		return nil, err
 	}
 
-	store := filesystem.New(*caseDir)
-	caseID := domain.CaseID(fmt.Sprintf("%s-%d", sanitizeID(*vulnID), time.Now().Unix()))
+	var src vulnerability.Source
+	if o.vulnFile != "" {
+		src = vulnerability.FileSource{Path: o.vulnFile}
+	} else {
+		src = vulnerability.OSVSource{BaseURL: o.osvURL}
+	}
+
+	store := filesystem.New(o.caseDir)
+	caseID := domain.CaseID(fmt.Sprintf("%s-%d", sanitizeID(o.vulnID), time.Now().Unix()))
 	c := &domain.AnalysisCase{
 		ID: caseID,
 		Workflow: domain.WorkflowStatus{
@@ -108,33 +152,33 @@ func runAnalyze(args []string) error {
 		},
 	}
 	c.EvidenceGraph.Version = "1"
-	if err := store.Create(context.Background(), c); err != nil {
-		return err
+	if err := store.Create(ctx, c); err != nil {
+		return nil, err
 	}
 
 	srcIndex := &goanalysis.Index{
 		Dir: absRepo,
 		Build: domain.ProductSnapshot{
-			GOOS: *goos, GOARCH: *goarch, BuildTags: splitCSV(*tags),
+			GOOS: o.goos, GOARCH: o.goarch, BuildTags: splitCSV(o.tags),
 		},
 	}
 
 	// LLM layer: env file auto-load (explicit --llm-env, else .env in
 	// cwd or repo). LLM adapters only propose; verification stays
 	// deterministic. Without LLM_ENABLED the pure deterministic path runs.
-	loadLLMEnv(*llmEnv, absRepo)
+	loadLLMEnv(o.llmEnv, absRepo)
 	llmCfg := llm.ConfigFromEnv()
 	var rcResolver states.RootCauseResolver = &rootcause.Resolver{Fix: fix.Resolver{}, Patch: fix.HTTPProvider{}}
 	var builder states.ExploitBuilder = &exploit.Builder{Source: srcIndex}
 	reviewers := review.Multi{review.Structural{}}
 	var fallbackEval evaluator.ConditionEvaluator
-	if llmCfg.Enabled && !*deterministicOnly {
+	if llmCfg.Enabled && !o.detOnly {
 		client := llm.NewClient(llmCfg)
 		rcResolver = llm.RootCauseResolver{Client: client, Fallback: rcResolver}
 		builder = llm.ExploitModelBuilder{Client: client, Fallback: builder}
 		reviewers = append(reviewers, llm.Reviewer{Client: client})
 		fallbackEval = llm.ClaimEvaluator{Client: client, Tools: llm.Tools{Source: srcIndex}}
-	} else if *deterministicOnly {
+	} else if o.detOnly {
 		c.EvidenceGraph.Limitations = append(c.EvidenceGraph.Limitations,
 			"deterministic-only mode: LLM adapters disabled")
 	} else if llmCfg.BaseURL != "" {
@@ -148,20 +192,20 @@ func runAnalyze(args []string) error {
 			Repo: repository.Service{},
 			Path: absRepo,
 			Options: repository.SnapshotOptions{
-				GOOS:      *goos,
-				GOARCH:    *goarch,
-				BuildTags: splitCSV(*tags),
+				GOOS:      o.goos,
+				GOARCH:    o.goarch,
+				BuildTags: splitCSV(o.tags),
 			},
 		},
-		states.ResolveVulnerability{Source: src, ID: *vulnID},
+		states.ResolveVulnerability{Source: src, ID: o.vulnID},
 		states.CheckAffected{Resolver: affected.GoResolver{}},
 		states.ResolveRootCause{
-			Manual:   parseRootCauses(rootCauseFlags),
+			Manual:   parseRootCauses(o.rootCauseArgs),
 			Resolver: rcResolver,
 			Verifier: &rootcause.Verifier{Source: srcIndex},
 		},
 		states.BuildExploitModel{
-			ModelPath: *exploitModelPath,
+			ModelPath: o.exploitModel,
 			Builder:   builder,
 		},
 		states.CollectEvidence{
@@ -176,20 +220,22 @@ func runAnalyze(args []string) error {
 		states.NegativeCheck{Verifier: &goanalysis.Verifier{Source: srcIndex}},
 		states.Review{Reviewer: reviewers, Evaluator: evaluator.VerdictEvaluator{}},
 		states.EvaluateVerdict{Evaluator: evaluator.VerdictEvaluator{}},
-		states.BuildReport{Dir: filepath.Join(*caseDir, string(caseID)),
-			Tracker: tracker.FileSink{Dir: filepath.Join(*caseDir, string(caseID))}},
+		states.BuildReport{Dir: filepath.Join(o.caseDir, string(caseID)),
+			Tracker: tracker.FileSink{Dir: filepath.Join(o.caseDir, string(caseID))}},
 	)
 
-	if err := engine.Run(context.Background(), c); err != nil {
-		return fmt.Errorf("workflow: %w", err)
+	if err := engine.Run(ctx, c); err != nil {
+		return c, fmt.Errorf("workflow: %w", err)
 	}
+	return c, nil
+}
 
+func printCase(c *domain.AnalysisCase, caseDir string) {
 	fmt.Printf("case: %s\nstate: %s\n", c.ID, c.Workflow.State)
 	if c.Verdict != nil {
 		fmt.Printf("verdict: %s\nreason: %s\n", c.Verdict.Verdict, c.Verdict.Reason)
 	}
-	fmt.Printf("report: %s\n", filepath.Join(*caseDir, string(caseID), "report.md"))
-	return nil
+	fmt.Printf("report: %s\n", filepath.Join(caseDir, string(c.ID), "report.md"))
 }
 
 // loadLLMEnv loads the LLM dotenv file: explicit --llm-env wins, else it
@@ -250,4 +296,164 @@ func parseRootCauses(flags []string) []domain.RootCause {
 		}
 	}
 	return out
+}
+
+// runScan enumerates the module graph, queries OSV for every dependency
+// module, and deep-analyzes each discovered advisory.
+func runScan(args []string) error {
+	fs := flag.NewFlagSet("scan", flag.ExitOnError)
+	var o analyzeOpts
+	commonFlags(fs, &o)
+	maxVulns := fs.Int("max-vulns", 50, "cap on advisories to deep-analyze")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if o.repo == "" {
+		usage()
+	}
+	absRepo, err := filepath.Abs(o.repo)
+	if err != nil {
+		return err
+	}
+	ctx := context.Background()
+
+	mods, err := listModules(ctx, absRepo)
+	if err != nil {
+		return fmt.Errorf("list modules: %w", err)
+	}
+	fmt.Printf("modules: %d\n", len(mods)-1)
+
+	var vulnIDs []string
+	for _, m := range mods {
+		ids, err := vulnerability.QueryOSV(ctx, o.osvURL, m)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "osv query %s: %v\n", m, err)
+			continue
+		}
+		vulnIDs = dedupeAppend(vulnIDs, ids)
+	}
+	if len(vulnIDs) > *maxVulns {
+		vulnIDs = vulnIDs[:*maxVulns]
+	}
+	fmt.Printf("advisories found: %d\n", len(vulnIDs))
+
+	// Cheap deterministic pre-filter: resolve affectedness without the
+	// full engine. Deterministically-not-affected advisories are recorded
+	// and skipped; survivors get the full pipeline.
+	snap, err := repository.Service{}.Snapshot(ctx, absRepo, repository.SnapshotOptions{
+		GOOS: o.goos, GOARCH: o.goarch, BuildTags: splitCSV(o.tags),
+	})
+	if err != nil {
+		return fmt.Errorf("snapshot: %w", err)
+	}
+	resolver := affected.GoResolver{}
+	src := vulnerability.OSVSource{BaseURL: o.osvURL}
+
+	type row struct {
+		ID      string `json:"id"`
+		State   string `json:"state"`
+		Verdict string `json:"verdict,omitempty"`
+		Reason  string `json:"reason,omitempty"`
+	}
+	var rows []row
+	for _, id := range vulnIDs {
+		v, err := src.Get(ctx, id)
+		if err != nil {
+			rows = append(rows, row{ID: id, State: "ERROR", Reason: "advisory fetch: " + err.Error()})
+			continue
+		}
+		res, _, err := resolver.Resolve(ctx, *v, snap)
+		if err == nil && deterministicallyNotAffected(res) {
+			rows = append(rows, row{ID: id, State: "FILTERED", Verdict: "NOT_AFFECTED",
+				Reason: notAffectedReason(res)})
+			fmt.Printf("%-18s NOT_AFFECTED (prefilter)\n", id)
+			continue
+		}
+
+		co := o
+		co.vulnID = id
+		c, err := analyzeCase(ctx, co)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%s: %v\n", id, err)
+			rows = append(rows, row{ID: id, State: "ERROR", Reason: err.Error()})
+			continue
+		}
+		r := row{ID: id, State: string(c.Workflow.State)}
+		if c.Verdict != nil {
+			r.Verdict = string(c.Verdict.Verdict)
+			r.Reason = c.Verdict.Reason
+		}
+		rows = append(rows, r)
+		fmt.Printf("%-18s %s %s\n", id, r.Verdict, r.Reason)
+	}
+	b, _ := json.MarshalIndent(rows, "", "  ")
+	out := filepath.Join(o.caseDir, "scan.json")
+	if err := os.MkdirAll(o.caseDir, 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(out, b, 0o644); err != nil {
+		return err
+	}
+	fmt.Printf("scan report: %s\n", out)
+	return nil
+}
+
+// listModules returns the module paths in the repository's module graph,
+// excluding the main module itself.
+func listModules(ctx context.Context, repo string) ([]string, error) {
+	cmd := exec.CommandContext(ctx, "go", "list", "-m", "all")
+	cmd.Dir = repo
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+	var mods []string
+	for i, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if i == 0 {
+			continue // main module
+		}
+		if f := strings.Fields(line); len(f) > 0 {
+			mods = append(mods, f[0])
+		}
+	}
+	return mods, nil
+}
+
+// dedupeAppend adds ids not already present, preserving order.
+func dedupeAppend(dst, ids []string) []string {
+	seen := map[string]bool{}
+	for _, id := range dst {
+		seen[id] = true
+	}
+	for _, id := range ids {
+		if !seen[id] {
+			seen[id] = true
+			dst = append(dst, id)
+		}
+	}
+	return dst
+}
+
+// deterministicallyNotAffected mirrors the verdict rule: any single
+// deterministic FALSE on the affected chain means the component cannot
+// be present at all.
+func deterministicallyNotAffected(r domain.AffectedResult) bool {
+	return r.ModulePresent == domain.ClaimFalse ||
+		r.VersionAffected == domain.ClaimFalse ||
+		r.PackagePresent == domain.ClaimFalse ||
+		r.BuildRelevant == domain.ClaimFalse
+}
+
+func notAffectedReason(r domain.AffectedResult) string {
+	switch {
+	case r.ModulePresent == domain.ClaimFalse:
+		return "vulnerable module is not part of the product dependency graph"
+	case r.VersionAffected == domain.ClaimFalse:
+		return "resolved dependency version is outside affected range"
+	case r.PackagePresent == domain.ClaimFalse:
+		return "affected package is not imported by the product build"
+	case r.BuildRelevant == domain.ClaimFalse:
+		return "affected package excluded by GOOS/GOARCH/build tags"
+	}
+	return ""
 }

@@ -262,3 +262,22 @@ build-tag развёртка), реальный tracker sink, P6 remediation.
 - Tracker adapter остаётся generic: `tracker.Sink` интерфейс + `FileSink`
   (tracker_comment.md); конкретные адаптеры (GitHub Issues, GL, и пр.)
   добавляются позже без изменения ядра.
+
+## Batch scan (done)
+
+- `vuln-analyzer scan --repo <path>`: `go list -m all` → OSV `/v1/query`
+  по каждому зависимому модулю (ecosystem Go) → dedupe → пер-advisory
+  полный пайплайн → `scan.json` рядом с кейсами. `--max-vulns` cap
+  (default 50), `--deterministic-only`, все общие флаги.
+- Дешёвый pre-filter перед полным движком: `affected.GoResolver` по
+  снапшоту — любой детерминистический FALSE в цепочке
+  module/version/package/build → строка `FILTERED` + `NOT_AFFECTED`
+  в отчёте без запуска движка. Выжившие идут через `analyzeCase`
+  целиком (LLM-агент, ревью, вердикт, per-case reports).
+- Per-advisory сбой → `ERROR` строка, не крашит скан и не даёт ложный
+  вердикт.
+- Live: product на x/net v0.32.0 → 100+ advisories, ~96 отфильтрованы
+  дешёво, 4 выживших прошли полный анализ (GO-2025-3595 →
+  NO_EXPLOIT_PATH_FOUND).
+- Тесты: QueryOSV (body shape, ids, error status, empty), dedupeAppend,
+  deterministicallyNotAffected для каждого звена цепочки.
