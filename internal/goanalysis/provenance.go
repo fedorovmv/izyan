@@ -268,8 +268,11 @@ func (ix *Index) classifyCall(pkg *packages.Package, enc *ast.FuncDecl, call *as
 		if sig, ok2 := fn.Type().(*types.Signature); ok2 && sig.Recv() != nil && isHTTPRequest(sig.Recv().Type()) {
 			return domain.OriginExternalUntrusted, "method on *http.Request"
 		}
-		if passthroughFuncs[key] {
-			return ix.mergeArgs(pkg, enc, call, depth)
+		// Not a named source: trace into the callee body — if its result is
+		// derived purely from parameters/constants, the caller's argument
+		// origins propagate. Unresolvable bodies stay UNKNOWN.
+		if o, why, ok := ix.traceCallee(fn, call, ix.topEval(pkg, enc), depth); ok {
+			return o, why
 		}
 		return domain.OriginUnknown, fmt.Sprintf("opaque call %s", key)
 	}
@@ -280,39 +283,217 @@ func (ix *Index) classifyCall(pkg *packages.Package, enc *ast.FuncDecl, call *as
 	return domain.OriginUnknown, "unresolvable call"
 }
 
-// mergeArgs merges the origins of all call arguments — used for pure
-// transformations whose output derives only from inputs.
-func (ix *Index) mergeArgs(pkg *packages.Package, enc *ast.FuncDecl, call *ast.CallExpr, depth int) (domain.DataOrigin, string) {
-	if len(call.Args) == 0 {
-		return domain.OriginConstant, "pure call without args"
+// exprEval evaluates an expression in the frame where it syntactically
+// lives (caller argument at the top level, or a callee body during
+// forward tracing).
+type exprEval func(e ast.Expr, depth int) (domain.DataOrigin, string)
+
+// topEval adapts classify for call-site arguments in the caller's frame.
+func (ix *Index) topEval(pkg *packages.Package, enc *ast.FuncDecl) exprEval {
+	return func(e ast.Expr, depth int) (domain.DataOrigin, string) {
+		return ix.classify(pkg, enc, e, depth)
 	}
-	merged := domain.OriginConstant
-	var whys []string
-	for _, a := range call.Args {
-		o, w := ix.classify(pkg, enc, a, depth+1)
-		whys = append(whys, w)
-		merged = mergeOrigin(merged, o)
-	}
-	return merged, "via " + strings.Join(whys, " | ")
 }
 
-// passthroughFuncs are well-known stdlib pure transformations: their return
-// value derives solely from the argument(s), so argument origin propagates.
-// Anything not listed stays UNKNOWN — no guessing.
-var passthroughFuncs = map[string]bool{
-	"strings.NewReader":     true,
-	"strings.NewReplacer":   true,
-	"bytes.NewReader":       true,
-	"bytes.NewBuffer":       true,
-	"bytes.NewBufferString": true,
-	"fmt.Sprintf":           true,
-	"fmt.Sprint":            true,
-	"fmt.Sprintln":          true,
-	"fmt.Errorf":            true,
-	"errors.New":            true,
-	"strconv.Itoa":          true,
-	"io.NopCloser":          true,
-	"strings.Join":          true,
+// traceCallee attempts to prove that fn's result derives only from its
+// parameters and constants. Returns ok=false when the body is unavailable,
+// contaminated by external sources, or too complex to resolve — the caller
+// then yields UNKNOWN rather than guessing.
+func (ix *Index) traceCallee(fn *types.Func, call *ast.CallExpr, evalArg exprEval, depth int) (domain.DataOrigin, string, bool) {
+	if depth >= maxTraceHops {
+		return "", "", false
+	}
+	decl, dp := ix.funcDecl(fn)
+	if decl == nil || decl.Body == nil || dp == nil || dp.TypesInfo == nil {
+		return "", "", false
+	}
+	if bodyContaminated(dp, decl) {
+		return "", "", false
+	}
+	// map callee parameter name -> index into the call's argument list
+	paramIdx := map[string]int{}
+	i := 0
+	if decl.Type.Params != nil {
+		for _, f := range decl.Type.Params.List {
+			for _, n := range f.Names {
+				paramIdx[n.Name] = i
+				i++
+			}
+		}
+	}
+	argAt := func(name string) (ast.Expr, bool) {
+		j, ok := paramIdx[name]
+		if !ok || j >= len(call.Args) {
+			return nil, false
+		}
+		return call.Args[j], true
+	}
+	var out domain.DataOrigin
+	nret := 0
+	ast.Inspect(decl.Body, func(n ast.Node) bool {
+		rs, ok := n.(*ast.ReturnStmt)
+		if !ok {
+			return true
+		}
+		for _, re := range rs.Results {
+			nret++
+			o, _ := ix.evalCalleeExpr(dp, decl, re, argAt, evalArg, depth)
+			out = mergeOrigin(out, o)
+		}
+		return true
+	})
+	if nret == 0 || out == "" {
+		return "", "", false
+	}
+	return out, fmt.Sprintf("traced %s.%s body", fn.Pkg().Path(), fn.Name()), true
+}
+
+// evalCalleeExpr classifies an expression inside a callee body: parameters
+// resolve through argAt+evalArg (the caller's frame), locals through their
+// dominating assignment, everything else conservatively UNKNOWN.
+func (ix *Index) evalCalleeExpr(dp *packages.Package, decl *ast.FuncDecl, e ast.Expr,
+	argAt func(string) (ast.Expr, bool), evalArg exprEval, depth int) (domain.DataOrigin, string) {
+
+	switch v := e.(type) {
+	case *ast.BasicLit:
+		return domain.OriginConstant, "literal"
+	case *ast.CompositeLit:
+		out := domain.OriginConstant
+		for _, el := range v.Elts {
+			if kv, ok := el.(*ast.KeyValueExpr); ok {
+				el = kv.Value
+			}
+			o, _ := ix.evalCalleeExpr(dp, decl, el, argAt, evalArg, depth)
+			out = mergeOrigin(out, o)
+		}
+		return out, "composite literal"
+	case *ast.Ident:
+		switch v.Name {
+		case "nil", "true", "false", "iota":
+			return domain.OriginConstant, "builtin"
+		}
+		if arg, ok := argAt(v.Name); ok {
+			o, w := evalArg(arg, depth+1)
+			return o, "param " + v.Name + " <- " + w
+		}
+		if rhs := findLocalAssign(decl, dp.TypesInfo.ObjectOf(v)); rhs != nil {
+			return ix.evalCalleeExpr(dp, decl, rhs, argAt, evalArg, depth)
+		}
+		return domain.OriginUnknown, "unresolvable ident " + v.Name
+	case *ast.ParenExpr:
+		return ix.evalCalleeExpr(dp, decl, v.X, argAt, evalArg, depth)
+	case *ast.UnaryExpr:
+		return ix.evalCalleeExpr(dp, decl, v.X, argAt, evalArg, depth)
+	case *ast.BinaryExpr:
+		xo, _ := ix.evalCalleeExpr(dp, decl, v.X, argAt, evalArg, depth)
+		yo, _ := ix.evalCalleeExpr(dp, decl, v.Y, argAt, evalArg, depth)
+		return mergeOrigin(xo, yo), "binary expr"
+	case *ast.IndexExpr, *ast.IndexListExpr, *ast.SliceExpr:
+		return ix.evalCalleeExpr(dp, decl, childExpr(v), argAt, evalArg, depth)
+	case *ast.CallExpr:
+		obj := calleeObject(dp.TypesInfo, v.Fun)
+		if _, isType := obj.(*types.TypeName); isType && len(v.Args) == 1 {
+			return ix.evalCalleeExpr(dp, decl, v.Args[0], argAt, evalArg, depth)
+		}
+		if fn2, ok := obj.(*types.Func); ok && fn2.Pkg() != nil {
+			key := fn2.Pkg().Path() + "." + fn2.Name()
+			if o, ok := knownSourceFuncs[key]; ok {
+				return o, key
+			}
+			inner := func(a ast.Expr, d int) (domain.DataOrigin, string) {
+				return ix.evalCalleeExpr(dp, decl, a, argAt, evalArg, d)
+			}
+			if o, w, ok2 := ix.traceCallee(fn2, v, inner, depth+1); ok2 {
+				return o, w
+			}
+		}
+		return domain.OriginUnknown, "nested opaque call"
+	}
+	return domain.OriginUnknown, fmt.Sprintf("unsupported callee expr %T", e)
+}
+
+// bodyContaminated reports whether the callee body reads any external data
+// source itself. If it does, we cannot prove the output is input-derived,
+// so the result must stay UNKNOWN.
+func bodyContaminated(dp *packages.Package, decl *ast.FuncDecl) bool {
+	bad := false
+	ast.Inspect(decl.Body, func(n ast.Node) bool {
+		switch v := n.(type) {
+		case *ast.SelectorExpr:
+			if obj := dp.TypesInfo.ObjectOf(v.Sel); obj != nil {
+				if b, ok := obj.(*types.Var); ok && b.Pkg() != nil &&
+					b.Pkg().Path() == "os" && b.Name() == "Args" {
+					bad = true
+				}
+			}
+			if sel, ok := dp.TypesInfo.Selections[v]; ok && isHTTPRequest(sel.Recv()) {
+				bad = true
+			}
+		case *ast.CallExpr:
+			if fn, ok := calleeObject(dp.TypesInfo, v.Fun).(*types.Func); ok && fn.Pkg() != nil {
+				if o, ok := knownSourceFuncs[fn.Pkg().Path()+"."+fn.Name()]; ok &&
+					o != domain.OriginConstant {
+					bad = true
+				}
+			}
+		}
+		return !bad
+	})
+	return bad
+}
+
+// funcDecl finds the FuncDecl and package for a function object — product
+// package first, then a dependency loaded on demand.
+func (ix *Index) funcDecl(fn *types.Func) (*ast.FuncDecl, *packages.Package) {
+	find := func(pkg *packages.Package) *ast.FuncDecl {
+		var recvName string
+		if sig, ok := fn.Type().(*types.Signature); ok && sig.Recv() != nil {
+			recvName = recvTypeName(sig.Recv().Type())
+		}
+		for _, f := range pkg.Syntax {
+			for _, d := range f.Decls {
+				fd, ok := d.(*ast.FuncDecl)
+				if !ok || fd.Name == nil || fd.Name.Name != fn.Name() {
+					continue
+				}
+				// types.Func objects differ between loads; match by name +
+				// receiver type instead of object identity.
+				if recvName == "" {
+					if fd.Recv == nil || len(fd.Recv.List) == 0 {
+						return fd
+					}
+					continue
+				}
+				if fd.Recv == nil || len(fd.Recv.List) == 0 {
+					continue
+				}
+				t := pkg.TypesInfo.TypeOf(fd.Recv.List[0].Type)
+				if t != nil && recvTypeName(t) == recvName {
+					return fd
+				}
+			}
+		}
+		return nil
+	}
+	for _, pkg := range ix.pkgs {
+		if pkg.PkgPath == fn.Pkg().Path() {
+			if d := find(pkg); d != nil {
+				return d, pkg
+			}
+		}
+	}
+	extra, err := ix.loadExtra(context.Background(), fn.Pkg().Path())
+	if err != nil {
+		return nil, nil
+	}
+	for _, pkg := range extra {
+		if pkg.PkgPath == fn.Pkg().Path() {
+			if d := find(pkg); d != nil {
+				return d, pkg
+			}
+		}
+	}
+	return nil, nil
 }
 
 // knownSourceFuncs maps pkgpath.Func to a data origin. Extend as needed —

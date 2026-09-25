@@ -77,9 +77,11 @@
   Alternatives; все отвергнуты → AMBIGUOUS → INCONCLUSIVE.
 - `states.ResolveRootCause`: `--root-cause` → manual с верификацией;
   иначе авто-пайплайн; RESOLVED → продолжение, остальное → INCONCLUSIVE.
-- provenance: whitelist pure-функций stdlib (strings.NewReader,
-  fmt.Sprintf, strconv.Itoa, ...) — origin аргументов пропагирует через
-  них; неизвестные вызовы по-прежнему UNKNOWN.
+- provenance: forward tracing в тело callee — opaque call резолвится до
+  FuncDecl (включая stdlib/deps через on-demand load), результат
+  доказывается выведенным из параметров/констант; тело с чтением внешних
+  источников (os.Args, http.Request, known source funcs) → UNKNOWN.
+  Whitelist имён не используется — «pure» доказывается структурно.
 
 ## Проверено end-to-end
 
