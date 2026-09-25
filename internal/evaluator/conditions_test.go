@@ -77,3 +77,52 @@ func TestSymbolReachableWrongReceiverNoMatch(t *testing.T) {
 		t.Fatalf("got %s, want FALSE candidate: receiver mismatch", claim.Result)
 	}
 }
+
+func serverCase(frames []domain.CallSite) *domain.AnalysisCase {
+	c := &domain.AnalysisCase{}
+	c.Vulnerability = domain.Vulnerability{ID: "GO-T", Module: "lib/grpc"}
+	c.EvidenceGraph.AddEvidence(domain.Evidence{Kind: domain.EvidenceGovulncheck})
+	c.EvidenceGraph.AddCallPath(domain.CallPath{Frames: frames})
+	return c
+}
+
+func TestServerTransportInputTrueOnServerFrame(t *testing.T) {
+	c := serverCase([]domain.CallSite{
+		{Package: "lib/grpc/internal/transport", Function: "HandleStreams", Receiver: "*http2Server"},
+		{Package: "prod", Function: "Start", Receiver: "*Consumer"},
+	})
+	claim := ServerTransportInput{}.Evaluate(domain.Condition{
+		ID: "C-ATTACK", Kind: domain.ConditionAttackerControl,
+	}, c)
+	if claim.Result != domain.ClaimTrue {
+		t.Fatalf("got %s, want TRUE: server transport reached", claim.Result)
+	}
+	if len(claim.Limitations) == 0 {
+		t.Fatal("expected exposure-scope limitation")
+	}
+}
+
+func TestServerTransportInputIgnoresClientFrames(t *testing.T) {
+	c := serverCase([]domain.CallSite{
+		{Package: "lib/grpc/internal/transport", Function: "newStream", Receiver: "*http2Client"},
+		{Package: "prod", Function: "Call"},
+	})
+	claim := ServerTransportInput{}.Evaluate(domain.Condition{
+		ID: "C-ATTACK", Kind: domain.ConditionAttackerControl,
+	}, c)
+	if claim.Result != domain.ClaimUnknown {
+		t.Fatalf("got %s, want UNKNOWN: client-side path only", claim.Result)
+	}
+}
+
+func TestServerTransportInputIgnoresProductServe(t *testing.T) {
+	c := serverCase([]domain.CallSite{
+		{Package: "prod/api", Function: "Serve", Receiver: "*Gateway"},
+	})
+	claim := ServerTransportInput{}.Evaluate(domain.Condition{
+		ID: "C-ATTACK", Kind: domain.ConditionAttackerControl,
+	}, c)
+	if claim.Result != domain.ClaimUnknown {
+		t.Fatalf("got %s, want UNKNOWN: product Serve is not vuln-module transport", claim.Result)
+	}
+}

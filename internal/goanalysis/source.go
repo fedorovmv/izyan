@@ -482,6 +482,82 @@ func isHTTPHandler(pkg *packages.Package, fn *ast.FuncDecl) bool {
 	return sawWriter && sawRequest
 }
 
+// listenerPrimitives are calls that make the product accept inbound network
+// connections. A product function containing one is a "listener" entrypoint:
+// bytes consumed by a reachable server-side transport originate from remote
+// peers, not from product code.
+var listenerPrimitives = []domain.SymbolRef{
+	{Package: "net", Symbol: "Listen"},
+	{Package: "net", Symbol: "ListenTCP"},
+	{Package: "net", Symbol: "ListenUDP"},
+	{Package: "net", Symbol: "Listener.Accept"},
+	{Package: "net/http", Symbol: "ListenAndServe"},
+	{Package: "net/http", Symbol: "ListenAndServeTLS"},
+	{Package: "net/http", Symbol: "Server.Serve"},
+	{Package: "net/http", Symbol: "Server.ListenAndServe"},
+	{Package: "google.golang.org/grpc", Symbol: "NewServer"},
+	{Package: "google.golang.org/grpc", Symbol: "Server.Serve"},
+	{Package: "google.golang.org/grpc", Symbol: "Server.ServeHTTP"},
+}
+
+// FindListeners reports product functions that start network listeners or
+// servers — i.e. functions whose body calls a listener primitive.
+func (ix *Index) FindListeners(ctx context.Context) ([]domain.Entrypoint, error) {
+	ix.mu.Lock()
+	defer ix.mu.Unlock()
+	if err := ix.load(ctx); err != nil {
+		return nil, err
+	}
+	var out []domain.Entrypoint
+	for _, pkg := range ix.pkgs {
+		info := pkg.TypesInfo
+		if info == nil {
+			continue
+		}
+		for _, f := range pkg.Syntax {
+			for _, decl := range f.Decls {
+				fn, ok := decl.(*ast.FuncDecl)
+				if !ok || fn.Body == nil {
+					continue
+				}
+				matched := ""
+				ast.Inspect(fn.Body, func(n ast.Node) bool {
+					if matched != "" {
+						return false
+					}
+					call, ok := n.(*ast.CallExpr)
+					if !ok {
+						return true
+					}
+					for _, prim := range listenerPrimitives {
+						if callIsSymbol(info, call.Fun, prim) {
+							matched = prim.Package + "." + prim.Symbol
+							return false
+						}
+					}
+					return true
+				})
+				if matched == "" {
+					continue
+				}
+				pos := ix.fset.Position(fn.Pos())
+				out = append(out, domain.Entrypoint{
+					CallSite: domain.CallSite{
+						File:     pos.Filename,
+						Line:     pos.Line,
+						Function: fn.Name.Name,
+						Package:  pkg.PkgPath,
+					},
+					Kind:    "listener",
+					Detail:  matched,
+					Exposed: true,
+				})
+			}
+		}
+	}
+	return out, nil
+}
+
 // DynamicMarker describes language features that can bypass static
 // call-graph reasoning: reflect, unsafe, plugins, linkname, function values
 // referencing the analyzed symbol, etc.

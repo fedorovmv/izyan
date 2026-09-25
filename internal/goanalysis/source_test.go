@@ -130,3 +130,17 @@ func TestFindEntrypoints(t *testing.T) {
 		t.Fatalf("entrypoints=%+v", eps)
 	}
 }
+
+func TestFindListeners(t *testing.T) {
+	ix := fixture(t, "srvprod")
+	eps, err := ix.FindListeners(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(eps) != 1 {
+		t.Fatalf("listeners=%+v", eps)
+	}
+	if eps[0].Kind != "listener" || eps[0].Function != "serve" {
+		t.Fatalf("got %+v", eps[0])
+	}
+}

@@ -96,6 +96,7 @@ type ProductSnapshot struct {
 	Repository        string             `json:"repository"`
 	Commit            string             `json:"commit"`
 	GoVersion         string             `json:"go_version"`
+	GoModDirective    string             `json:"go_mod_directive,omitempty"`
 	GOOS              string             `json:"goos"`
 	GOARCH            string             `json:"goarch"`
 	BuildTags         []string           `json:"build_tags,omitempty"`
@@ -318,6 +319,7 @@ type DataFlow struct {
 type Entrypoint struct {
 	CallSite
 	Kind    string `json:"kind,omitempty"`
+	Detail  string `json:"detail,omitempty"`
 	Exposed bool   `json:"exposed"`
 }
 
@@ -401,6 +403,12 @@ func (g *EvidenceGraph) AddCallPath(cp CallPath) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.CallPaths = append(g.CallPaths, cp)
+}
+
+func (g *EvidenceGraph) AddEntrypoints(eps ...Entrypoint) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.Entrypoints = append(g.Entrypoints, eps...)
 }
 
 // EvidenceList returns a copy of the evidence slice for safe iteration

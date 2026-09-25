@@ -231,6 +231,7 @@ func analyzeCase(ctx context.Context, o analyzeOpts) (*domain.AnalysisCase, erro
 		},
 		states.EvaluateConditions{Evaluators: []evaluator.ConditionEvaluator{
 			evaluator.SymbolReachable{},
+			evaluator.ServerTransportInput{},
 			evaluator.ArgumentOrigin{},
 			evaluator.Validation{},
 		}, Fallback: fallbackEval},

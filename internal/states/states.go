@@ -251,9 +251,15 @@ func (h CollectEvidence) Run(ctx context.Context, c *domain.AnalysisCase) (workf
 	}
 	if h.Source != nil {
 		h.runSourceAnalysis(ctx, c)
+		h.runListenerScan(ctx, c)
 	}
 	if h.Govulncheck == nil && h.Source == nil {
 		c.EvidenceGraph.AddLimitation("no evidence collectors beyond affected resolution are wired yet")
+	}
+	if isStdlibModule(c.Vulnerability.Module) {
+		c.EvidenceGraph.AddLimitation(fmt.Sprintf(
+			"stdlib advisory: applicability depends on the toolchain that built the release binary, not the source tree; analysis used %s, go.mod declares go %s — verify with `go version -m <binary>`",
+			c.Product.GoVersion, c.Product.GoModDirective))
 	}
 	c.EvidenceGraph.ComputeHash()
 	return workflow.Transition{Next: domain.StateEvaluateConditions, Reason: "deterministic evidence collection complete"}, nil
@@ -283,6 +289,42 @@ func (h CollectEvidence) runGovulncheck(ctx context.Context, c *domain.AnalysisC
 		cp.EvidenceID = evID
 		c.EvidenceGraph.AddCallPath(cp)
 	}
+}
+
+// isStdlibModule reports whether the module path is a Go standard library
+// package (first path element has no dot — "net/http", "crypto/tls") or the
+// toolchain pseudo-module.
+func isStdlibModule(module string) bool {
+	if module == "std" || module == "toolchain" || module == "cmd" {
+		return true
+	}
+	first := module
+	if i := strings.IndexByte(module, '/'); i >= 0 {
+		first = module[:i]
+	}
+	return !strings.Contains(first, ".")
+}
+
+// runListenerScan records product functions that open network listeners or
+// start servers. For server-side transport vulnerabilities this evidence lets
+// conditions resolve input provenance as remote-peer-controlled.
+func (h CollectEvidence) runListenerScan(ctx context.Context, c *domain.AnalysisCase) {
+	lst, err := h.Source.FindListeners(ctx)
+	if err != nil {
+		c.EvidenceGraph.AddToolLimitation(fmt.Sprintf("listener scan failed: %v", err))
+		return
+	}
+	if len(lst) == 0 {
+		return
+	}
+	c.EvidenceGraph.AddEntrypoints(lst...)
+	c.EvidenceGraph.AddEvidence(domain.Evidence{
+		Kind:    domain.EvidenceEntrypoint,
+		Quality: domain.QualityDeterministic,
+		Source:  "source index: network listener scan",
+		Tool:    "goanalysis.Index.FindListeners",
+		Content: fmt.Sprintf("product opens %d network listener/server entrypoint(s)", len(lst)),
+	})
 }
 
 // runSourceAnalysis gathers call sites, argument provenance and validations
