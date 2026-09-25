@@ -25,7 +25,7 @@ type Resolver struct {
 // ambiguous — a giant refactor diff does not pinpoint a root cause.
 const maxPatchFiles = 8
 
-func (r Resolver) Resolve(ctx context.Context, v domain.Vulnerability) (*domain.RootCauseModel, []domain.Evidence, error) {
+func (r Resolver) Resolve(ctx context.Context, _ *domain.AnalysisCase, v domain.Vulnerability) (*domain.RootCauseModel, []domain.Evidence, error) {
 	model := &domain.RootCauseModel{Status: domain.RootCauseNotFound}
 	var evs []domain.Evidence
 

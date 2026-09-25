@@ -15,6 +15,7 @@ import (
 	"example.com/vuln-analyzer/internal/exploit"
 	"example.com/vuln-analyzer/internal/fix"
 	"example.com/vuln-analyzer/internal/goanalysis"
+	"example.com/vuln-analyzer/internal/llm"
 	"example.com/vuln-analyzer/internal/persistence/filesystem"
 	"example.com/vuln-analyzer/internal/repository"
 	"example.com/vuln-analyzer/internal/review"
@@ -68,6 +69,7 @@ func runAnalyze(args []string) error {
 	tags := fs.String("build-tags", "", "comma-separated build tags")
 	exploitModelPath := fs.String("exploit-model", "", "manual exploit model JSON")
 	deterministicOnly := fs.Bool("deterministic-only", false, "disable LLM-backed states")
+	llmEnv := fs.String("llm-env", "", "path to LLM .env file (default: .env in cwd or repo)")
 	var rootCauseFlags stringList
 	fs.Var(&rootCauseFlags, "root-cause", "manual root cause as pkg/path.Symbol (repeatable)")
 	if err := fs.Parse(args); err != nil {
@@ -106,10 +108,6 @@ func runAnalyze(args []string) error {
 		},
 	}
 	c.EvidenceGraph.Version = "1"
-	if *deterministicOnly {
-		c.EvidenceGraph.Limitations = append(c.EvidenceGraph.Limitations,
-			"deterministic-only mode: LLM-backed states resolve to INCONCLUSIVE")
-	}
 	if err := store.Create(context.Background(), c); err != nil {
 		return err
 	}
@@ -119,6 +117,27 @@ func runAnalyze(args []string) error {
 		Build: domain.ProductSnapshot{
 			GOOS: *goos, GOARCH: *goarch, BuildTags: splitCSV(*tags),
 		},
+	}
+
+	// LLM layer: env file auto-load (explicit --llm-env, else .env in
+	// cwd or repo). LLM adapters only propose; verification stays
+	// deterministic. Without LLM_ENABLED the pure deterministic path runs.
+	loadLLMEnv(*llmEnv, absRepo)
+	llmCfg := llm.ConfigFromEnv()
+	var rcResolver states.RootCauseResolver = &rootcause.Resolver{Fix: fix.Resolver{}, Patch: fix.HTTPProvider{}}
+	var builder states.ExploitBuilder = &exploit.Builder{Source: srcIndex}
+	reviewers := review.Multi{review.Structural{}}
+	if llmCfg.Enabled && !*deterministicOnly {
+		client := llm.NewClient(llmCfg)
+		rcResolver = llm.RootCauseResolver{Client: client, Fallback: rcResolver}
+		builder = llm.ExploitModelBuilder{Client: client, Fallback: builder}
+		reviewers = append(reviewers, llm.Reviewer{Client: client})
+	} else if *deterministicOnly {
+		c.EvidenceGraph.Limitations = append(c.EvidenceGraph.Limitations,
+			"deterministic-only mode: LLM adapters disabled")
+	} else if llmCfg.BaseURL != "" {
+		c.EvidenceGraph.Limitations = append(c.EvidenceGraph.Limitations,
+			"llm configured but LLM_ENABLED is off")
 	}
 
 	engine := workflow.New(store,
@@ -136,12 +155,12 @@ func runAnalyze(args []string) error {
 		states.CheckAffected{Resolver: affected.GoResolver{}},
 		states.ResolveRootCause{
 			Manual:   parseRootCauses(rootCauseFlags),
-			Resolver: &rootcause.Resolver{Fix: fix.Resolver{}, Patch: fix.HTTPProvider{}},
+			Resolver: rcResolver,
 			Verifier: &rootcause.Verifier{Source: srcIndex},
 		},
 		states.BuildExploitModel{
 			ModelPath: *exploitModelPath,
-			Builder:   &exploit.Builder{Source: srcIndex},
+			Builder:   builder,
 		},
 		states.CollectEvidence{
 			Govulncheck: goanalysis.ExecRunner{},
@@ -152,7 +171,7 @@ func runAnalyze(args []string) error {
 			evaluator.ArgumentOrigin{},
 		}},
 		states.NegativeCheck{Verifier: &goanalysis.Verifier{Source: srcIndex}},
-		states.Review{Reviewer: review.Structural{}, Evaluator: evaluator.VerdictEvaluator{}},
+		states.Review{Reviewer: reviewers, Evaluator: evaluator.VerdictEvaluator{}},
 		states.EvaluateVerdict{Evaluator: evaluator.VerdictEvaluator{}},
 		states.BuildReport{Dir: filepath.Join(*caseDir, string(caseID)),
 			Tracker: tracker.FileSink{Dir: filepath.Join(*caseDir, string(caseID))}},
@@ -168,6 +187,26 @@ func runAnalyze(args []string) error {
 	}
 	fmt.Printf("report: %s\n", filepath.Join(*caseDir, string(caseID), "report.md"))
 	return nil
+}
+
+// loadLLMEnv loads the LLM dotenv file: explicit --llm-env wins, else it
+// probes .env in the working directory and the analyzed repo.
+// Missing files are ignored; malformed lines are skipped.
+func loadLLMEnv(explicit, repo string) {
+	candidates := []string{explicit}
+	if explicit == "" {
+		candidates = []string{".env", filepath.Join(repo, ".env")}
+	}
+	for _, p := range candidates {
+		if p == "" {
+			continue
+		}
+		if _, err := os.Stat(p); err != nil {
+			continue
+		}
+		_ = llm.LoadDotEnv(p)
+		return
+	}
 }
 
 func sanitizeID(id string) string {

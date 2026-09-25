@@ -17,6 +17,25 @@ type Reviewer interface {
 	Review(c *domain.AnalysisCase, proposed domain.VerdictResult) domain.Review
 }
 
+// Multi runs several reviewers and merges their findings. REVISE wins
+// over ACCEPT; finding lists are concatenated.
+type Multi []Reviewer
+
+func (m Multi) Review(c *domain.AnalysisCase, proposed domain.VerdictResult) domain.Review {
+	out := domain.Review{Result: domain.ReviewAccept}
+	for _, r := range m {
+		if r == nil {
+			continue
+		}
+		sub := r.Review(c, proposed)
+		out.Findings = append(out.Findings, sub.Findings...)
+		if sub.Result == domain.ReviewRevise {
+			out.Result = domain.ReviewRevise
+		}
+	}
+	return out
+}
+
 // Structural is the deterministic reviewer — no LLM.
 type Structural struct{}
 

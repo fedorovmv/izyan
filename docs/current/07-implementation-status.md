@@ -167,3 +167,37 @@ adapter.
 
 Не входит: LLM-Reviewer поверх `review.Reviewer` интерфейса, реальный
 tracker API sink.
+
+## LLM layer — adapters over deterministic core (done)
+
+- `internal/llm`: OpenAI-compatible client (`POST /chat/completions`,
+  temperature=0, max_tokens/timeout/insecure-TLS из env), `LoadDotEnv`
+  (`.env`: --llm-env, cwd или repo), `ExtractJSON` толерантен к
+  ```json-фенсам. Две модели: LLM_BUILD_MODEL (генерация структур) и
+  LLM_ANALYZE_MODEL (рассуждения/review).
+- `llm.RootCauseResolver`: deterministic resolver сначала; LLM propose
+  candidates только при NOT_FOUND/AMBIGUOUS → каждый проходит
+  rootcause.Verifier по dep source (непроверенные → alternatives/
+  limitations). Префикс `pkgname.` в symbol нормализуется.
+- `llm.ExploitModelBuilder`: LLM предлагает условия → валидация
+  (kind ∈ enum, subjects ⊆ root-cause sinks) → merge с детерминистической
+  базой (C-REACH/C-INPUT гарантированы) → при любой ошибке fallback.
+- `llm.Reviewer` + `review.Multi`: LLM аудит пакета, findings сливаются со
+  Structural; REVISE любого источника → bounded repair.
+- Бюджеты: `Usage.LLMCalls` инкрементится на каждый вызов,
+  `MaxLLMCalls` (<=0 = без явного лимита; CLI ставит 32).
+  `--deterministic-only` гасит LLM-слой полностью.
+- Инвариант сохранён: LLM-текст не evidence; все LLM-результаты проходят
+  детерминистическую верификацию до влияния на вердикт.
+
+### Live-проверка (Qwen, api.ai.sbt)
+
+- GO-2025-3595 full-auto: build-модель добавила `C-CONSTRAINT`
+  (INPUT_CONSTRAINT — unquoted attr + `/` → self-closing; реальная
+  механика CVE) к детерминистическим C-REACH/C-INPUT → NO_EXPLOIT_PATH_FOUND.
+- Advisory без symbols: LLM предложил Parse/ParseFragment/Tokenizer.Read →
+  verifier подтвердил 2/3 (Tokenizer.Read не существует → limitation) →
+  полный пайплайн → вердикт корректный.
+- Analyze-модель 404 (не развёрнута на инфре): honest low-severity finding
+  в review, пайплайн не ломается.
+- Unit: mock-сервер, 8 кейсов llm-пакета.

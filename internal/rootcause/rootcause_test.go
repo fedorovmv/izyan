@@ -28,7 +28,7 @@ func depVuln() domain.Vulnerability {
 }
 
 func TestResolveFromAdvisorySymbols(t *testing.T) {
-	m, evs, err := Resolver{}.Resolve(context.Background(), depVuln())
+	m, evs, err := Resolver{}.Resolve(context.Background(), &domain.AnalysisCase{}, depVuln())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +67,7 @@ index 1..2 100644
 +	return s, nil
 `}
 	r := Resolver{Patch: p}
-	m, evs, err := r.Resolve(context.Background(), v)
+	m, evs, err := r.Resolve(context.Background(), &domain.AnalysisCase{}, v)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +90,7 @@ index 1..2 100644
 }
 
 func TestResolveNotFound(t *testing.T) {
-	m, _, err := Resolver{}.Resolve(context.Background(), domain.Vulnerability{ID: "X"})
+	m, _, err := Resolver{}.Resolve(context.Background(), &domain.AnalysisCase{}, domain.Vulnerability{ID: "X"})
 	if err != nil {
 		t.Fatal(err)
 	}

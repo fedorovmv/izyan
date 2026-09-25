@@ -13,7 +13,6 @@ import (
 	"example.com/vuln-analyzer/internal/affected"
 	"example.com/vuln-analyzer/internal/domain"
 	"example.com/vuln-analyzer/internal/evaluator"
-	"example.com/vuln-analyzer/internal/exploit"
 	"example.com/vuln-analyzer/internal/goanalysis"
 	"example.com/vuln-analyzer/internal/report"
 	"example.com/vuln-analyzer/internal/repository"
@@ -97,9 +96,15 @@ func (h CheckAffected) Run(ctx context.Context, c *domain.AnalysisCase) (workflo
 	return workflow.Transition{Next: domain.StateResolveRootCause, Reason: "affected chain not refuted"}, nil
 }
 
+// RootCauseResolver produces a root cause model — deterministic or
+// LLM-assisted. LLM proposals still pass through Verifier.
+type RootCauseResolver interface {
+	Resolve(ctx context.Context, c *domain.AnalysisCase, v domain.Vulnerability) (*domain.RootCauseModel, []domain.Evidence, error)
+}
+
 type ResolveRootCause struct {
 	Manual   []domain.RootCause
-	Resolver *rootcause.Resolver
+	Resolver RootCauseResolver
 	Verifier *rootcause.Verifier
 }
 
@@ -132,7 +137,7 @@ func (h ResolveRootCause) Run(ctx context.Context, c *domain.AnalysisCase) (work
 			Reason: "root cause unresolved: no resolver configured and --root-cause not provided",
 		}, nil
 	}
-	model, evs, err := h.Resolver.Resolve(ctx, c.Vulnerability)
+	model, evs, err := h.Resolver.Resolve(ctx, c, c.Vulnerability)
 	if err != nil {
 		return workflow.Transition{}, fmt.Errorf("root cause resolve: %w", err)
 	}
@@ -154,14 +159,19 @@ func (h ResolveRootCause) Run(ctx context.Context, c *domain.AnalysisCase) (work
 	return workflow.Transition{Next: domain.StateBuildExploitModel, Reason: "root cause resolved from advisory/fix evidence"}, nil
 }
 
+// ExploitBuilder builds an exploit model from a resolved root cause.
+type ExploitBuilder interface {
+	Build(ctx context.Context, c *domain.AnalysisCase, v domain.Vulnerability, rc *domain.RootCauseModel) (*domain.ExploitModel, []string)
+}
+
 type BuildExploitModel struct {
 	ModelPath string
-	Builder   *exploit.Builder
+	Builder   ExploitBuilder
 }
 
 func (BuildExploitModel) State() domain.WorkflowState { return domain.StateBuildExploitModel }
 
-func (h BuildExploitModel) Run(_ context.Context, c *domain.AnalysisCase) (workflow.Transition, error) {
+func (h BuildExploitModel) Run(ctx context.Context, c *domain.AnalysisCase) (workflow.Transition, error) {
 	if h.ModelPath != "" {
 		b, err := os.ReadFile(h.ModelPath)
 		if err != nil {
@@ -189,7 +199,7 @@ func (h BuildExploitModel) Run(_ context.Context, c *domain.AnalysisCase) (workf
 			Reason: "no exploit model: provide --exploit-model or configure a builder",
 		}, nil
 	}
-	m, limitations := h.Builder.Build(c.Vulnerability, c.RootCause)
+	m, limitations := h.Builder.Build(ctx, c, c.Vulnerability, c.RootCause)
 	if m == nil {
 		return workflow.Transition{
 			Next:   domain.StateInconclusive,

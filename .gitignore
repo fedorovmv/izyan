@@ -2,3 +2,7 @@
 .vuln-analyzer/
 # built binary
 /vuln-analyzer
+
+# LLM env files (may contain API keys)
+.env.*
+!.env.example
