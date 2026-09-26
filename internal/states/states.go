@@ -1016,8 +1016,26 @@ func (h Review) Run(_ context.Context, c *domain.AnalysisCase) (workflow.Transit
 	if rev.Result != domain.ReviewRevise {
 		return workflow.Transition{Next: domain.StateEvaluateVerdict, Reason: "review ACCEPT"}, nil
 	}
-	// Repair: demote claims flagged high-severity to UNKNOWN. This is the
-	// bounded repair — it only removes unsupported strength, never adds.
+	// REVISE routes through the repair state; after bounded repair the case
+	// re-enters REVIEW so the reviewer audits the repaired claim set.
+	return workflow.Transition{Next: domain.StateRepairAnalysis, Reason: "review REVISE"}, nil
+}
+
+// RepairAnalysis applies the bounded repair for the latest review's
+// findings: high-severity claim findings demote the claim to UNKNOWN.
+// Repairs only remove unsupported strength — never add evidence or
+// promote a claim. A repaired case goes back to REVIEW so the reviewer
+// sees the repaired claim set; an unrepairable finding (model/verdict
+// targets) falls through to the verdict.
+type RepairAnalysis struct{}
+
+func (RepairAnalysis) State() domain.WorkflowState { return domain.StateRepairAnalysis }
+
+func (RepairAnalysis) Run(_ context.Context, c *domain.AnalysisCase) (workflow.Transition, error) {
+	if len(c.Reviews) == 0 {
+		return workflow.Transition{Next: domain.StateEvaluateVerdict, Reason: "repair without a review"}, nil
+	}
+	rev := c.Reviews[len(c.Reviews)-1]
 	repaired := false
 	for _, f := range rev.Findings {
 		if f.TargetType != "claim" || f.Severity != "high" {
@@ -1044,11 +1062,12 @@ func (h Review) Run(_ context.Context, c *domain.AnalysisCase) (workflow.Transit
 			repaired = true
 		}
 	}
-	reason := "review REVISE: repaired claims"
 	if !repaired {
-		reason = "review REVISE: no repairable claims"
+		return workflow.Transition{Next: domain.StateEvaluateVerdict,
+			Reason: "review REVISE: no repairable claims"}, nil
 	}
-	return workflow.Transition{Next: domain.StateEvaluateVerdict, Reason: reason}, nil
+	return workflow.Transition{Next: domain.StateReview,
+		Reason: "repaired claims; re-review"}, nil
 }
 
 // claimHasDeterministicEvidence reports whether any evidence attached to the

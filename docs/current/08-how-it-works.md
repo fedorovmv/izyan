@@ -18,6 +18,7 @@
 CREATED → SNAPSHOT_PRODUCT → RESOLVE_VULNERABILITY → CHECK_AFFECTED
   → RESOLVE_ROOT_CAUSE → BUILD_EXPLOIT_MODEL → COLLECT_EVIDENCE
   → EVALUATE_CONDITIONS → NEGATIVE_CHECK → REVIEW
+    ↕ REVISE → REPAIR_ANALYSIS → REVIEW (bounded: MaxReviewIterations)
   → EVALUATE_VERDICT → BUILD_REPORT → COMPLETED
 ```
 
@@ -38,6 +39,7 @@ CREATED → SNAPSHOT_PRODUCT → RESOLVE_VULNERABILITY → CHECK_AFFECTED
 | GAP_ANALYSIS | hypothesis loop: `TraceArgumentBound`, `ScanDynamic`, `InterfaceDispatchSites`+`GatedRefs` | `Hypothesis` OPEN→CONFIRMED/REJECTED/UNRESOLVED; новые flows → re-evaluate |
 | NEGATIVE_CHECK | `goanalysis.Verifier` | FALSE-кандидат → VERIFIED/CONTRADICTED/INSUFFICIENT_SCOPE |
 | REVIEW | Structural + LLM reviewer | findings → bounded repair (только демоция в UNKNOWN) |
+| REPAIR_ANALYSIS | demotion-only repair по high-severity findings | только понижает claim до UNKNOWN → re-REVIEW |
 | EVALUATE_VERDICT | `VerdictEvaluator` | вердикт |
 | BUILD_REPORT | — | `report.{json,md}` + `tracker_comment.md` |
 

@@ -289,6 +289,7 @@ func analyzeCase(ctx context.Context, o analyzeOpts) (*domain.AnalysisCase, erro
 		states.GapAnalysis{Source: srcIndex, Evaluators: conditionEvaluators},
 		states.NegativeCheck{Verifier: &goanalysis.Verifier{Source: srcIndex}},
 		states.Review{Reviewer: reviewers, Evaluator: evaluator.VerdictEvaluator{}},
+		states.RepairAnalysis{},
 		states.EvaluateVerdict{Evaluator: evaluator.VerdictEvaluator{}},
 		states.BuildReport{Dir: filepath.Join(o.caseDir, string(caseID)),
 			Tracker: tracker.FileSink{Dir: filepath.Join(o.caseDir, string(caseID))}},

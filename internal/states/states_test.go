@@ -168,6 +168,7 @@ func runEngine(t *testing.T, d engineDeps) *domain.AnalysisCase {
 		}},
 		states.NegativeCheck{Verifier: &goanalysis.Verifier{Source: srcIndex}},
 		states.Review{Reviewer: review.Structural{}, Evaluator: evaluator.VerdictEvaluator{}},
+		states.RepairAnalysis{},
 		states.EvaluateVerdict{Evaluator: evaluator.VerdictEvaluator{}},
 		states.BuildReport{Dir: filepath.Join(d.CaseDir, string(c.ID))},
 	)
@@ -710,11 +711,22 @@ func TestReviewDemotesUnsupportedTrue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if tr.Next != domain.StateEvaluateVerdict {
-		t.Fatalf("next = %s", tr.Next)
+	if tr.Next != domain.StateRepairAnalysis {
+		t.Fatalf("next = %s, want REPAIR_ANALYSIS", tr.Next)
 	}
 	if len(c.Reviews) != 1 || c.Reviews[0].Result != domain.ReviewRevise {
 		t.Fatalf("reviews: %+v", c.Reviews)
+	}
+	// The claim is still TRUE until the repair state runs.
+	if c.Claims[0].Result != domain.ClaimTrue {
+		t.Fatalf("claim demoted inside REVIEW, before repair: %s", c.Claims[0].Result)
+	}
+	tr, err = states.RepairAnalysis{}.Run(context.Background(), c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tr.Next != domain.StateReview {
+		t.Fatalf("next = %s, want re-REVIEW after repair", tr.Next)
 	}
 	if c.Claims[0].Result != domain.ClaimUnknown {
 		t.Fatalf("claim not demoted: %s", c.Claims[0].Result)
@@ -1365,5 +1377,47 @@ func TestE2EPartialCallerGuardStaysUnknown(t *testing.T) {
 	}
 	if c.Verdict == nil || c.Verdict.Verdict != domain.VerdictInconclusive {
 		t.Fatalf("verdict=%+v want INCONCLUSIVE", c.Verdict)
+	}
+}
+
+// The REVIEW->REPAIR->REVIEW loop converges: the demoted claim resolves
+// the high-severity finding, the second review ACCEPTs, and the case
+// proceeds to the verdict computed on the repaired claim set.
+func TestReviewRepairLoopConverges(t *testing.T) {
+	c := &domain.AnalysisCase{
+		Exploit: &domain.ExploitModel{
+			MandatoryConditions: []domain.Condition{{ID: "C-1", Kind: domain.ConditionSymbolReachable}},
+		},
+		RootCause: &domain.RootCauseModel{Status: domain.RootCauseResolved},
+		Claims: []domain.Claim{{
+			ID: "CL-1", ConditionID: "C-1", Result: domain.ClaimTrue,
+		}},
+	}
+	h := states.Review{Reviewer: review.Structural{}, Evaluator: evaluator.VerdictEvaluator{}}
+	rp := states.RepairAnalysis{}
+
+	tr, err := h.Run(context.Background(), c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tr.Next != domain.StateRepairAnalysis {
+		t.Fatalf("next=%s want REPAIR_ANALYSIS", tr.Next)
+	}
+	tr, err = rp.Run(context.Background(), c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tr.Next != domain.StateReview {
+		t.Fatalf("next=%s want re-REVIEW", tr.Next)
+	}
+	tr, err = h.Run(context.Background(), c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tr.Next != domain.StateEvaluateVerdict {
+		t.Fatalf("next=%s want EVALUATE_VERDICT after ACCEPT", tr.Next)
+	}
+	if len(c.Reviews) != 2 || c.Reviews[1].Result != domain.ReviewAccept {
+		t.Fatalf("second review should accept the repaired claim set: %+v", c.Reviews)
 	}
 }
