@@ -558,6 +558,201 @@ func (ix *Index) FindListeners(ctx context.Context) ([]domain.Entrypoint, error)
 	return out, nil
 }
 
+// ModuleUsage reports product call sites into any package of the given
+// module ("github.com/rabbitmq/amqp091-go" covers ".../amqp091-go/spec091"
+// too). When a vulnerability's sinks are library internals that only execute
+// while the library handles peer input, module usage is evidence that the
+// vulnerable code paths run — product code can never name the unexported
+// symbols directly.
+func (ix *Index) ModuleUsage(ctx context.Context, module string) ([]domain.CallSite, error) {
+	ix.mu.Lock()
+	defer ix.mu.Unlock()
+	if err := ix.load(ctx); err != nil {
+		return nil, err
+	}
+	var out []domain.CallSite
+	for _, pkg := range ix.pkgs {
+		info := pkg.TypesInfo
+		if info == nil {
+			continue
+		}
+		for _, f := range pkg.Syntax {
+			var enc *ast.FuncDecl
+			ast.Inspect(f, func(n ast.Node) bool {
+				if fn, ok := n.(*ast.FuncDecl); ok {
+					enc = fn
+				}
+				call, ok := n.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				obj := calleeObject(info, call.Fun)
+				fn, ok := obj.(*types.Func)
+				if !ok || fn.Pkg() == nil {
+					return true
+				}
+				p := fn.Pkg().Path()
+				if p != module && !strings.HasPrefix(p, module+"/") {
+					return true
+				}
+				site := ix.siteOf(pkg, enc, call)
+				site.Callee = p + "." + fn.Name()
+				if sig, ok := fn.Type().(*types.Signature); ok && sig.Recv() != nil {
+					rn := strings.TrimPrefix(sig.Recv().Type().String(), "*")
+					if i := strings.LastIndexByte(rn, '.'); i >= 0 {
+						rn = rn[i+1:]
+					}
+					site.Callee = p + "." + rn + "." + fn.Name()
+				}
+				out = append(out, site)
+				return true
+			})
+		}
+	}
+	return out, nil
+}
+
+// ModuleInternalReach resolves which of the given subjects are reachable from
+// the entry symbols (module API functions the product calls) through call
+// edges inside the vendored module source. Returns subject key ("pkg.Symbol")
+// to the discovered call chain (entry → ... → subject). Type-resolved: method
+// calls match the subject only when the receiver type is the subject's.
+func (ix *Index) ModuleInternalReach(ctx context.Context, module string, entries []string, subjects []domain.SymbolRef) (map[string][]string, error) {
+	fset := token.NewFileSet()
+	cfg := &packages.Config{
+		Mode: loadMode,
+		Dir:  ix.Dir,
+		Fset: fset,
+		Env:  append(os.Environ(), buildEnv(ix.Build)...),
+	}
+	pkgs, err := packages.Load(cfg, module+"/...")
+	if err != nil {
+		return nil, err
+	}
+
+	// caller-qualified-name -> set of callee-qualified-names within the module.
+	edges := map[string]map[string]bool{}
+	for _, pkg := range pkgs {
+		info := pkg.TypesInfo
+		if info == nil {
+			continue
+		}
+		for _, f := range pkg.Syntax {
+			var caller string
+			ast.Inspect(f, func(n ast.Node) bool {
+				if fn, ok := n.(*ast.FuncDecl); ok && fn.Name != nil {
+					caller = fn.Name.Name
+					if fn.Recv != nil && len(fn.Recv.List) > 0 {
+						caller = recvDeclName(fn.Recv.List[0].Type) + "." + fn.Name.Name
+					}
+					return true
+				}
+				call, ok := n.(*ast.CallExpr)
+				if !ok || caller == "" {
+					return true
+				}
+				obj := calleeObject(info, call.Fun)
+				fn, ok := obj.(*types.Func)
+				if !ok || fn.Pkg() == nil {
+					return true
+				}
+				p := fn.Pkg().Path()
+				if p != module && !strings.HasPrefix(p, module+"/") {
+					return true
+				}
+				callee := p + "." + fn.Name()
+				if sig, ok := fn.Type().(*types.Signature); ok && sig.Recv() != nil {
+					callee = p + "." + recvTypeName(sig.Recv().Type()) + "." + fn.Name()
+				}
+				key := pkg.PkgPath + "." + caller
+				if edges[key] == nil {
+					edges[key] = map[string]bool{}
+				}
+				edges[key][callee] = true
+				return true
+			})
+		}
+	}
+
+	out := map[string][]string{}
+	for _, subj := range subjects {
+		target := subj.Package + "." + subj.Symbol
+		for _, e := range entries {
+			if chain := bfsChain(edges, e, target); chain != nil {
+				out[target] = chain
+				break
+			}
+		}
+	}
+	return out, nil
+}
+
+func recvDeclName(expr ast.Expr) string {
+	switch t := expr.(type) {
+	case *ast.StarExpr:
+		return recvDeclName(t.X)
+	case *ast.Ident:
+		return t.Name
+	case *ast.SelectorExpr:
+		return t.Sel.Name
+	case *ast.IndexExpr, *ast.IndexListExpr:
+		// generic receivers
+		if x := ast.Unparen(expr); x != nil {
+			if id, ok := baseIdent(x); ok {
+				return id.Name
+			}
+		}
+	}
+	return ""
+}
+
+func baseIdent(e ast.Expr) (*ast.Ident, bool) {
+	switch t := e.(type) {
+	case *ast.Ident:
+		return t, true
+	case *ast.StarExpr:
+		return baseIdent(t.X)
+	case *ast.IndexExpr:
+		return baseIdent(t.X)
+	case *ast.IndexListExpr:
+		return baseIdent(t.X)
+	case *ast.SelectorExpr:
+		return t.Sel, true
+	}
+	return nil, false
+}
+
+// bfsChain finds a caller->...->target chain in the intra-module call graph.
+func bfsChain(edges map[string]map[string]bool, start, target string) []string {
+	type node struct {
+		name string
+		prev *node
+	}
+	seen := map[string]bool{start: true}
+	queue := []*node{{name: start}}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		if cur.name == target {
+			var chain []string
+			for n := cur; n != nil; n = n.prev {
+				chain = append(chain, n.name)
+			}
+			for i, j := 0, len(chain)-1; i < j; i, j = i+1, j-1 {
+				chain[i], chain[j] = chain[j], chain[i]
+			}
+			return chain
+		}
+		for next := range edges[cur.name] {
+			if !seen[next] {
+				seen[next] = true
+				queue = append(queue, &node{name: next, prev: cur})
+			}
+		}
+	}
+	return nil
+}
+
 // DynamicMarker describes language features that can bypass static
 // call-graph reasoning: reflect, unsafe, plugins, linkname, function values
 // referencing the analyzed symbol, etc.

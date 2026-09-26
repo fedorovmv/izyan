@@ -181,3 +181,84 @@ func TestVersionFactUnaffectedStaysUnknown(t *testing.T) {
 		t.Fatalf("got %s, want UNKNOWN without proven affectedness", claim.Result)
 	}
 }
+
+func rabbitCase() *domain.AnalysisCase {
+	c := &domain.AnalysisCase{}
+	c.Vulnerability = domain.Vulnerability{
+		ID:     "GHSA-test",
+		Module: "mod/amqp",
+		AffectedSymbols: []domain.SymbolRef{
+			{Package: "mod/amqp", Symbol: "readLongstr"},
+		},
+	}
+	c.GovulncheckCoverage = "not_in_db"
+	c.EvidenceGraph.AddEvidence(domain.Evidence{Kind: domain.EvidenceGovulncheck})
+	return c
+}
+
+func TestReachableNotInDBModuleUsedUnexported(t *testing.T) {
+	c := rabbitCase()
+	c.EvidenceGraph.AddModuleUsages(domain.CallSite{
+		Package: "prod/amqp", Function: "DialTLS",
+	})
+	claim := SymbolReachable{}.Evaluate(domain.Condition{
+		ID: "C-REACH", Kind: domain.ConditionSymbolReachable,
+	}, c)
+	if claim.Result != domain.ClaimTrue {
+		t.Fatalf("got %s, want TRUE: unexported sink + module usage", claim.Result)
+	}
+}
+
+func TestReachableNotInDBNoUsageFalse(t *testing.T) {
+	c := rabbitCase()
+	claim := SymbolReachable{}.Evaluate(domain.Condition{
+		ID: "C-REACH", Kind: domain.ConditionSymbolReachable,
+	}, c)
+	if claim.Result != domain.ClaimFalse {
+		t.Fatalf("got %s, want FALSE: module never called", claim.Result)
+	}
+}
+
+func TestReachableNotInDBExportedUnknown(t *testing.T) {
+	c := rabbitCase()
+	c.Vulnerability.AffectedSymbols = []domain.SymbolRef{
+		{Package: "mod/amqp", Symbol: "URI.String"},
+	}
+	c.EvidenceGraph.AddModuleUsages(domain.CallSite{
+		Package: "prod/amqp", Function: "DialTLS",
+	})
+	claim := SymbolReachable{}.Evaluate(domain.Condition{
+		ID: "C-REACH", Kind: domain.ConditionSymbolReachable,
+	}, c)
+	if claim.Result != domain.ClaimUnknown {
+		t.Fatalf("got %s, want UNKNOWN: exported sink needs per-symbol trace", claim.Result)
+	}
+}
+
+func TestServerTransportClientSidePeerInput(t *testing.T) {
+	c := rabbitCase()
+	c.EvidenceGraph.AddModuleUsages(domain.CallSite{
+		Package: "prod/amqp", Function: "DialTLS",
+	})
+	claim := ServerTransportInput{}.Evaluate(domain.Condition{
+		ID: "C-ATTACK", Kind: domain.ConditionAttackerControl,
+		Description: "A malicious or compromised AMQP server/broker sends crafted frames.",
+	}, c)
+	if claim.Result != domain.ClaimTrue {
+		t.Fatalf("got %s, want TRUE: peer controls broker frames", claim.Result)
+	}
+}
+
+func TestServerTransportClientSideNonRemoteStaysUnknown(t *testing.T) {
+	c := rabbitCase()
+	c.EvidenceGraph.AddModuleUsages(domain.CallSite{
+		Package: "prod/amqp", Function: "DialTLS",
+	})
+	claim := ServerTransportInput{}.Evaluate(domain.Condition{
+		ID: "C-FMT", Kind: domain.ConditionInputConstraint,
+		Description: "The field value must exceed the maximum allowed length.",
+	}, c)
+	if claim.Result != domain.ClaimUnknown {
+		t.Fatalf("got %s, want UNKNOWN: no remote-input signal", claim.Result)
+	}
+}

@@ -3,6 +3,7 @@ package goanalysis
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"example.com/vuln-analyzer/internal/domain"
 )
@@ -48,6 +49,14 @@ func (v Verifier) VerifyFalse(ctx context.Context, c *domain.AnalysisCase, claim
 	}
 
 	allSites := map[string][]domain.CallSite{}
+	anyExported := false
+	for _, s := range subjects {
+		if symbolExported(s) {
+			anyExported = true
+		}
+	}
+	dynSeen := map[string]bool{}
+	var strayLinkname int
 	for _, subj := range subjects {
 		sites, err := v.Source.SearchSymbol(ctx, subj)
 		if err != nil {
@@ -65,7 +74,6 @@ func (v Verifier) VerifyFalse(ctx context.Context, c *domain.AnalysisCase, claim
 				Notes:  "dynamic scan failed: " + err.Error(),
 			})
 		}
-		dynSeen := map[string]bool{}
 		for _, m := range markers {
 			evID := c.EvidenceGraph.AddEvidence(domain.Evidence{
 				Kind:    domain.EvidenceSourceSnippet,
@@ -76,19 +84,36 @@ func (v Verifier) VerifyFalse(ctx context.Context, c *domain.AnalysisCase, claim
 			})
 			nv.EvidenceIDs = append(nv.EvidenceIDs, evID)
 			switch m.Kind {
-			case "func_value", "linkname":
+			case "func_value":
 				nv.Status = domain.NegativeContradicted
 				nv.Notes = fmt.Sprintf("symbol %s escapes static call graph via %s at %s:%d",
 					subj.Package+"."+subj.Symbol, m.Kind, m.File, m.Line)
 				return setNeg(claim, nv)
+			case "linkname":
+				// go:linkname contradicts only when it targets this symbol —
+				// an unrelated pragma cannot invoke it.
+				if strings.Contains(m.Detail, subj.Package) || linknameNames(m.Detail, subj) {
+					nv.Status = domain.NegativeContradicted
+					nv.Notes = fmt.Sprintf("symbol %s escapes static call graph via go:linkname at %s:%d",
+						subj.Package+"."+subj.Symbol, m.File, m.Line)
+					return setNeg(claim, nv)
+				}
+				strayLinkname++
 			case "reflect", "unsafe", "plugin":
-				if !dynSeen[m.Kind] {
+				// reflect/plugin can only look up *exported* identifiers; an
+				// unexported sink is unreachable to them. unsafe alone calls
+				// nothing — it matters through linkname/func_value, which are
+				// checked per-symbol above.
+				if anyExported && !dynSeen[m.Kind] {
 					dynSeen[m.Kind] = true
 					nv.Limitations = append(nv.Limitations,
 						m.Kind+" usage in product widens the call graph; static negative verification is weaker")
 				}
 			}
 		}
+	}
+	if strayLinkname > 0 {
+		nv.Notes += fmt.Sprintf(" %d unrelated go:linkname pragma(s) ignored", strayLinkname)
 	}
 
 	switch cond.Kind {
@@ -195,4 +220,19 @@ func setNeg(cl domain.Claim, nv *domain.NegativeVerification) domain.Claim {
 		cl.Explanation += " | negative verification contradicted: " + nv.Notes
 	}
 	return cl
+}
+
+// symbolExported reports whether the subject name is an exported identifier
+// (receiver-qualified subjects are split on the last dot).
+func symbolExported(s domain.SymbolRef) bool {
+	name := s.Symbol
+	if i := strings.LastIndexByte(name, '.'); i >= 0 {
+		name = name[i+1:]
+	}
+	return name != "" && name[0] >= 'A' && name[0] <= 'Z'
+}
+
+// linknameNames reports whether a go:linkname pragma targets the subject.
+func linknameNames(detail string, s domain.SymbolRef) bool {
+	return strings.Contains(detail, s.Symbol)
 }

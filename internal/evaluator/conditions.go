@@ -65,12 +65,125 @@ func (SymbolReachable) Evaluate(cond domain.Condition, c *domain.AnalysisCase) d
 		claim.Explanation = "govulncheck produced call path(s) to the affected symbol(s)"
 		return claim
 	}
+
+	// govulncheck silence only means something when the advisory was in its
+	// database. If the DB lacks this advisory entirely, reachability was never
+	// evaluated — fall back to module-usage evidence.
+	if c.GovulncheckCoverage == "not_in_db" {
+		return libraryUsageVerdict(claim, c, symbols)
+	}
+
 	claim.EvidenceIDs = nil
 	claim.Result = domain.ClaimFalse
 	claim.Explanation = fmt.Sprintf("govulncheck found no call path to any of %d affected symbol(s)", len(symbols))
 	claim.Limitations = append(claim.Limitations,
 		"FALSE is a candidate: interfaces/reflection/plugins may bypass static reachability")
 	return claim
+}
+
+// libraryUsageVerdict decides reachability when govulncheck could not evaluate
+// the advisory. Unexported library internals cannot be referenced by product
+// code — they execute inside the library's peer-driven path, so real evidence
+// is whether the product calls the module's API at all.
+func libraryUsageVerdict(claim domain.Claim, c *domain.AnalysisCase, subjects []domain.SymbolRef) domain.Claim {
+	usages := c.EvidenceGraph.ModuleUsages
+	if len(usages) == 0 {
+		claim.Result = domain.ClaimFalse
+		claim.Explanation = "advisory absent from govulncheck DB and product makes no calls into the vulnerable module"
+		claim.Limitations = append(claim.Limitations,
+			"FALSE is a candidate: module API usage is measured from product call sites, not vendored internals")
+		return claim
+	}
+	if allUnexported(subjects) {
+		claim.Result = domain.ClaimTrue
+		claim.EvidenceIDs = moduleUsageEvidence(c)
+		claim.Explanation = fmt.Sprintf(
+			"product calls the vulnerable module's API at %d site(s); unexported sinks execute inside its peer-driven path (advisory absent from govulncheck DB)",
+			len(usages))
+		claim.Limitations = append(claim.Limitations,
+			"transitive reach inferred from module API usage, not traced to the sink")
+		return claim
+	}
+	// Exported sinks: TRUE when proven reachable — either directly invoked by
+	// product code, or through a traced intra-module call chain from an API
+	// the product uses.
+	for _, subj := range subjects {
+		want := subj.Package + "." + subj.Symbol
+		if chain, ok := c.EvidenceGraph.ModuleReachable[want]; ok {
+			claim.Result = domain.ClaimTrue
+			claim.EvidenceIDs = moduleUsageEvidence(c)
+			claim.Explanation = fmt.Sprintf(
+				"advisory absent from govulncheck DB; %s reachable through module internals: %s",
+				want, strings.Join(chain, " -> "))
+			return claim
+		}
+		for _, u := range usages {
+			if u.Callee == want {
+				claim.Result = domain.ClaimTrue
+				claim.EvidenceIDs = moduleUsageEvidence(c)
+				claim.Explanation = fmt.Sprintf(
+					"advisory absent from govulncheck DB; product directly calls %s at %s:%d",
+					want, u.File, u.Line)
+				return claim
+			}
+		}
+	}
+	// FALSE only when the intra-module call graph was actually checked —
+	// without it, absence is unknown, not negative.
+	if !moduleReachChecked(c) {
+		claim.Limitations = append(claim.Limitations,
+			"advisory absent from govulncheck DB; module is used but exported sinks were not reachability-checked")
+		return claim
+	}
+	claim.Result = domain.ClaimFalse
+	claim.Explanation = fmt.Sprintf(
+		"advisory absent from govulncheck DB; none of %d exported subject(s) is invoked by product code nor reachable through the module API it uses",
+		len(subjects))
+	claim.Limitations = append(claim.Limitations,
+		"FALSE is a candidate: implicit interface dispatch (e.g. fmt.Stringer) may hide calls",
+		"module-internal reachability was checked in vendored source only")
+	return claim
+}
+
+// moduleReachChecked reports whether the intra-module reachability scan ran
+// (its evidence record is written even when no chain was found).
+func moduleReachChecked(c *domain.AnalysisCase) bool {
+	for _, e := range c.EvidenceGraph.Evidence {
+		if e.Tool == "goanalysis.Index.ModuleInternalReach" && strings.Contains(e.Source, "reachability check") {
+			return true
+		}
+	}
+	return false
+}
+
+// moduleUsageEvidence returns the IDs of the module-usage evidence collected
+// during evidence collection, so derived claims satisfy provenance.
+func moduleUsageEvidence(c *domain.AnalysisCase) []domain.EvidenceID {
+	var ids []domain.EvidenceID
+	for _, e := range c.EvidenceGraph.Evidence {
+		if e.Tool == "goanalysis.Index.ModuleUsage" {
+			ids = append(ids, e.ID)
+		}
+	}
+	return ids
+}
+
+// allUnexported reports whether every subject symbol is package-internal —
+// product code (and reflect/plugin lookups) cannot name them directly.
+func allUnexported(subjects []domain.SymbolRef) bool {
+	if len(subjects) == 0 {
+		return false
+	}
+	for _, s := range subjects {
+		name := s.Symbol
+		if i := strings.LastIndexByte(name, '.'); i >= 0 {
+			name = name[i+1:]
+		}
+		if name == "" || name[0] < 'a' || name[0] > 'z' {
+			return false
+		}
+	}
+	return true
 }
 
 func reachabilitySubjects(cond domain.Condition, c *domain.AnalysisCase) []domain.SymbolRef {

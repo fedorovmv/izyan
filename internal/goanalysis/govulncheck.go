@@ -80,6 +80,36 @@ func (r ExecRunner) RunGovulncheck(ctx context.Context, dir string, build domain
 	return stdout.Bytes(), nil
 }
 
+// DBInformer is an optional Runner capability: it reports the local
+// vulnerability database's identity/timestamp so a not-covered advisory can
+// be explained ("DB snapshot older than the advisory").
+type DBInformer interface {
+	DBInfo(ctx context.Context) (string, error)
+}
+
+// DBInfo runs `govulncheck -version` and returns the vulndb lines.
+func (r ExecRunner) DBInfo(ctx context.Context) (string, error) {
+	bin := r.Bin
+	if bin == "" {
+		bin = "govulncheck"
+	}
+	cmd := exec.CommandContext(ctx, bin, "-version")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	var db []string
+	for _, ln := range strings.Split(string(out), "\n") {
+		if strings.Contains(strings.ToLower(ln), "vulndb") || strings.Contains(strings.ToLower(ln), "updated") {
+			db = append(db, strings.TrimSpace(ln))
+		}
+	}
+	if len(db) == 0 {
+		return strings.TrimSpace(string(out)), nil
+	}
+	return strings.Join(db, "; "), nil
+}
+
 // Finding is the subset of the govulncheck -json finding message we use.
 type Finding struct {
 	OSV          string       `json:"osv"`
@@ -102,12 +132,33 @@ type TraceFrame struct {
 
 type Result struct {
 	Findings []Finding
+	// KnownOSVs is the set of advisory ids (and aliases) present in the
+	// vulnerability database govulncheck used. An advisory absent here was
+	// never evaluated — silence is not evidence of no path.
+	KnownOSVs map[string]bool
 }
 
-// Parse decodes the govulncheck -json stream, keeping only findings.
+// Covers reports whether the vulnerability was in govulncheck's DB.
+func (r Result) Covers(v domain.Vulnerability) bool {
+	if r.KnownOSVs == nil {
+		return false
+	}
+	if r.KnownOSVs[v.ID] {
+		return true
+	}
+	for _, a := range v.Aliases {
+		if r.KnownOSVs[a] {
+			return true
+		}
+	}
+	return false
+}
+
+// Parse decodes the govulncheck -json stream, keeping findings and the set
+// of advisories the embedded database knows.
 func Parse(raw []byte) (Result, error) {
 	dec := json.NewDecoder(bytes.NewReader(raw))
-	var res Result
+	res := Result{KnownOSVs: map[string]bool{}}
 	for dec.More() {
 		var msg map[string]json.RawMessage
 		if err := dec.Decode(&msg); err != nil {
@@ -119,6 +170,20 @@ func Parse(raw []byte) (Result, error) {
 				return res, fmt.Errorf("decode finding: %w", err)
 			}
 			res.Findings = append(res.Findings, finding)
+			res.KnownOSVs[finding.OSV] = true
+			continue
+		}
+		if o, ok := msg["osv"]; ok {
+			var doc struct {
+				ID      string   `json:"id"`
+				Aliases []string `json:"aliases"`
+			}
+			if err := json.Unmarshal(o, &doc); err == nil {
+				res.KnownOSVs[doc.ID] = true
+				for _, a := range doc.Aliases {
+					res.KnownOSVs[a] = true
+				}
+			}
 		}
 	}
 	return res, nil

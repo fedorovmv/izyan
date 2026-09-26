@@ -252,6 +252,7 @@ func (h CollectEvidence) Run(ctx context.Context, c *domain.AnalysisCase) (workf
 	if h.Source != nil {
 		h.runSourceAnalysis(ctx, c)
 		h.runListenerScan(ctx, c)
+		h.runModuleUsage(ctx, c)
 	}
 	if h.Govulncheck == nil && h.Source == nil {
 		c.EvidenceGraph.AddLimitation("no evidence collectors beyond affected resolution are wired yet")
@@ -289,6 +290,18 @@ func (h CollectEvidence) runGovulncheck(ctx context.Context, c *domain.AnalysisC
 	if err != nil {
 		c.EvidenceGraph.AddToolLimitation(err.Error())
 		return
+	}
+	if res.Covers(c.Vulnerability) {
+		c.GovulncheckCoverage = "covered"
+	} else {
+		c.GovulncheckCoverage = "not_in_db"
+		lim := "govulncheck emitted no findings referencing this advisory; reachability was not evaluated (silence is not evidence of no path)"
+		if informer, ok := h.Govulncheck.(goanalysis.DBInformer); ok {
+			if info, err := informer.DBInfo(ctx); err == nil && info != "" {
+				lim += fmt.Sprintf(" (local DB: %s; advisory modified: %s)", info, orUnknown(c.Vulnerability.Modified))
+			}
+		}
+		c.EvidenceGraph.AddLimitation(lim)
 	}
 	for _, f := range res.ForVulnerability(c.Vulnerability) {
 		cp := f.CallPath()
@@ -331,6 +344,91 @@ func (h CollectEvidence) runListenerScan(ctx context.Context, c *domain.Analysis
 		Tool:    "goanalysis.Index.FindListeners",
 		Content: fmt.Sprintf("product opens %d network listener/server entrypoint(s)", len(lst)),
 	})
+}
+
+// runModuleUsage records product call sites into the vulnerable module's API.
+// For library-internal sinks (unexported, peer-driven) module usage — not a
+// direct symbol reference — is what makes the vulnerable code run.
+func (h CollectEvidence) runModuleUsage(ctx context.Context, c *domain.AnalysisCase) {
+	module := c.Vulnerability.Module
+	if module == "" || isStdlibModule(module) {
+		return
+	}
+	sites, err := h.Source.ModuleUsage(ctx, module)
+	if err != nil {
+		c.EvidenceGraph.AddToolLimitation(fmt.Sprintf("module usage scan failed: %v", err))
+		return
+	}
+	if len(sites) == 0 {
+		return
+	}
+	c.EvidenceGraph.AddModuleUsages(sites...)
+	c.EvidenceGraph.AddEvidence(domain.Evidence{
+		Kind:    domain.EvidenceSourceSnippet,
+		Quality: domain.QualityDeterministic,
+		Source:  "source index: module usage",
+		Tool:    "goanalysis.Index.ModuleUsage",
+		Content: fmt.Sprintf("product calls into %s at %d site(s), e.g. %s.%s (%s:%d)",
+			module, len(sites), sites[0].Package, sites[0].Function, sites[0].File, sites[0].Line),
+	})
+
+	// For affected symbols not invoked directly, trace call edges inside the
+	// vendored module: product-used API → ... → sink.
+	entries := map[string]bool{}
+	for _, s := range sites {
+		if s.Callee != "" {
+			entries[s.Callee] = true
+		}
+	}
+	var subjects []domain.SymbolRef
+	for _, sym := range c.Vulnerability.AffectedSymbols {
+		if strings.HasPrefix(sym.Package, module) {
+			subjects = append(subjects, sym)
+		}
+	}
+	if c.RootCause != nil {
+		for _, rc := range c.RootCause.RootCauses {
+			if strings.HasPrefix(rc.Package, module) {
+				subjects = append(subjects, domain.SymbolRef{Package: rc.Package, Symbol: rc.Symbol})
+			}
+		}
+	}
+	var entryList []string
+	for e := range entries {
+		entryList = append(entryList, e)
+	}
+	if len(subjects) == 0 || len(entryList) == 0 {
+		return
+	}
+	reach, err := h.Source.ModuleInternalReach(ctx, module, entryList, subjects)
+	if err != nil {
+		c.EvidenceGraph.AddToolLimitation(fmt.Sprintf("module internal reach scan failed: %v", err))
+		return
+	}
+	// Record the check itself: its presence distinguishes "verified no chain"
+	// from "never attempted" for evaluators.
+	checked := make([]string, 0, len(subjects))
+	for _, s := range subjects {
+		checked = append(checked, s.Package+"."+s.Symbol)
+	}
+	c.EvidenceGraph.AddEvidence(domain.Evidence{
+		Kind:    domain.EvidenceSourceSnippet,
+		Quality: domain.QualityDeterministic,
+		Source:  "source index: module-internal reachability check",
+		Tool:    "goanalysis.Index.ModuleInternalReach",
+		Content: fmt.Sprintf("checked %d subject(s) against %d product-used API entr(ies): %s",
+			len(subjects), len(entryList), strings.Join(checked, ", ")),
+	})
+	for key, chain := range reach {
+		c.EvidenceGraph.AddModuleReachable(key, chain)
+		c.EvidenceGraph.AddEvidence(domain.Evidence{
+			Kind:    domain.EvidenceSourceSnippet,
+			Quality: domain.QualityDeterministic,
+			Source:  "source index: module-internal call chain",
+			Tool:    "goanalysis.Index.ModuleInternalReach",
+			Content: fmt.Sprintf("%s reached from product-used API via: %s", key, strings.Join(chain, " -> ")),
+		})
+	}
 }
 
 // runSourceAnalysis gathers call sites, argument provenance and validations
@@ -744,4 +842,11 @@ func (h BuildReport) Run(ctx context.Context, c *domain.AnalysisCase) (workflow.
 		}
 	}
 	return workflow.Transition{Next: domain.StateCompleted, Reason: "report written to " + h.Dir}, nil
+}
+
+func orUnknown(s string) string {
+	if s == "" {
+		return "unknown"
+	}
+	return s
 }

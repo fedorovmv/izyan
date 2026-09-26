@@ -65,6 +65,7 @@ type Vulnerability struct {
 	Summary          string            `json:"summary,omitempty"`
 	Description      string            `json:"description,omitempty"`
 	CWE              []string          `json:"cwe,omitempty"`
+	Modified         string            `json:"modified,omitempty"`
 	References       []Reference       `json:"references,omitempty"`
 	Provenance       map[string]string `json:"provenance,omitempty"`
 }
@@ -305,6 +306,9 @@ type CallSite struct {
 	Function string `json:"function"`
 	Receiver string `json:"receiver,omitempty"`
 	Package  string `json:"package,omitempty"`
+	// Callee names the invoked symbol (e.g. "amqp.DialTLS") when the site is
+	// recorded for module-usage evidence rather than as an enclosing function.
+	Callee string `json:"callee,omitempty"`
 }
 
 type CallPath struct {
@@ -347,6 +351,11 @@ type EvidenceGraph struct {
 	CallPaths       []CallPath   `json:"call_paths,omitempty"`
 	DataFlows       []DataFlow   `json:"data_flows,omitempty"`
 	Entrypoints     []Entrypoint `json:"entrypoints,omitempty"`
+	ModuleUsages    []CallSite   `json:"module_usages,omitempty"`
+	// ModuleReachable maps an affected symbol ("pkg.Symbol") to the
+	// intra-module call chain (product-used API → ... → subject) proven by
+	// vendored-source analysis.
+	ModuleReachable map[string][]string `json:"module_reachable,omitempty"`
 	Validations     []Validation `json:"validations,omitempty"`
 	Configuration   []ConfigItem `json:"configuration,omitempty"`
 	Runtime         []EvidenceID `json:"runtime,omitempty"`
@@ -409,6 +418,21 @@ func (g *EvidenceGraph) AddCallPath(cp CallPath) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.CallPaths = append(g.CallPaths, cp)
+}
+
+func (g *EvidenceGraph) AddModuleUsages(sites ...CallSite) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.ModuleUsages = append(g.ModuleUsages, sites...)
+}
+
+func (g *EvidenceGraph) AddModuleReachable(key string, chain []string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.ModuleReachable == nil {
+		g.ModuleReachable = map[string][]string{}
+	}
+	g.ModuleReachable[key] = chain
 }
 
 func (g *EvidenceGraph) AddEntrypoints(eps ...Entrypoint) {
@@ -514,7 +538,11 @@ type AnalysisCase struct {
 	Claims        []Claim         `json:"claims,omitempty"`
 	Reviews       []Review        `json:"reviews,omitempty"`
 	Verdict       *VerdictResult  `json:"verdict,omitempty"`
-	Workflow      WorkflowStatus  `json:"workflow"`
+	// GovulncheckCoverage: "" unknown | "covered" the advisory exists in the
+	// govulncheck DB | "not_in_db" it was never evaluated — silence is not
+	// evidence of no path.
+	GovulncheckCoverage string         `json:"govulncheck_coverage,omitempty"`
+	Workflow            WorkflowStatus `json:"workflow"`
 }
 
 // Usage counter helpers — the only safe writers under parallelism.

@@ -2,6 +2,7 @@ package evaluator
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"example.com/vuln-analyzer/internal/domain"
@@ -46,7 +47,22 @@ func (ServerTransportInput) Evaluate(cond domain.Condition, c *domain.AnalysisCa
 		}
 	}
 	if len(frames) == 0 {
-		// Not a server-transport vulnerability — defer to argument provenance.
+		// Client side: the product calls the vulnerable module's API, so
+		// unexported internals run inside its peer-driven read path — input
+		// is controlled by the remote peer (broker/server), not product code.
+		// Only applies when the condition describes remote input.
+		if len(c.EvidenceGraph.ModuleUsages) > 0 && describesRemoteInput(cond, c.Vulnerability) &&
+			reachabilitySubjects(cond, c) != nil && allUnexported(reachabilitySubjects(cond, c)) {
+			claim.Result = domain.ClaimTrue
+			claim.EvidenceIDs = moduleUsageEvidence(c)
+			claim.Explanation = fmt.Sprintf(
+				"product calls the vulnerable module's API at %d site(s); unexported transport internals consume peer-controlled input",
+				len(c.EvidenceGraph.ModuleUsages))
+			claim.Limitations = append(claim.Limitations,
+				"peer identity/trust is a deployment property — TRUE assumes the remote endpoint is attacker-influenced")
+			return claim
+		}
+		// Not a transport vulnerability — defer to argument provenance.
 		return ArgumentOrigin{}.Evaluate(cond, c)
 	}
 	for _, e := range c.EvidenceGraph.Entrypoints {
@@ -80,6 +96,16 @@ func isServerTransportFrame(fr domain.CallSite, module string) bool {
 		return true
 	}
 	return false
+}
+
+// remoteInputRe hints that the condition is about peer/network-controlled
+// input — required for the client-transport rule to fire.
+var remoteInputRe = regexp.MustCompile(`(?i)remote|peer|server|broker|network|unauthenticated|frame|packet|malformed`)
+
+func describesRemoteInput(cond domain.Condition, v domain.Vulnerability) bool {
+	return remoteInputRe.MatchString(cond.Description) ||
+		remoteInputRe.MatchString(v.Summary) ||
+		remoteInputRe.MatchString(v.Description)
 }
 
 func frameName(fr domain.CallSite) string {
