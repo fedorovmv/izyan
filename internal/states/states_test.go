@@ -351,12 +351,11 @@ func TestE2ENoPathStaysInconclusive(t *testing.T) {
 		},
 	})
 
+	// No module-usage scan is configured in this engine, so the absence of
+	// call sites is not evidence: C-REACH stays UNKNOWN, never FALSE.
 	claim := findClaimT(t, c.Claims, "C-REACH")
-	if claim.Result != domain.ClaimFalse {
-		t.Fatalf("C-REACH=%s want candidate FALSE", claim.Result)
-	}
-	if claim.NegativeVerification == nil || claim.NegativeVerification.Status != domain.NegativeInsufficientScope {
-		t.Fatalf("neg verification=%+v want INSUFFICIENT_SCOPE", claim.NegativeVerification)
+	if claim.Result != domain.ClaimUnknown {
+		t.Fatalf("C-REACH=%s want UNKNOWN (no usage scan ran)", claim.Result)
 	}
 	if c.Verdict == nil || c.Verdict.Verdict != domain.VerdictInconclusive {
 		t.Fatalf("verdict=%+v want INCONCLUSIVE", c.Verdict)
@@ -708,8 +707,10 @@ func TestReviewBudgetExhausted(t *testing.T) {
 	}
 }
 
-// Tool failure is never negative evidence: a govulncheck error must leave
-// the reachability claim UNKNOWN and the case INCONCLUSIVE — not FALSE.
+// Tool failure is never negative evidence: a govulncheck error must not
+// fabricate a FALSE on C-REACH. Positive evidence still counts though —
+// extprod directly calls the sink, so module-usage evidence produces TRUE
+// with a limitation even when govulncheck itself failed.
 func TestE2EGovulncheckFailureStaysInconclusive(t *testing.T) {
 	// extprod passes os.Args into the sink: C-INPUT is TRUE, so the only
 	// path to a non-INCONCLUSIVE verdict would be a fabricated FALSE on
@@ -744,8 +745,14 @@ func TestE2EGovulncheckFailureStaysInconclusive(t *testing.T) {
 			t.Fatal("tool failure produced a FALSE claim")
 		}
 	}
-	if c.Verdict == nil || c.Verdict.Verdict != domain.VerdictInconclusive {
-		t.Fatalf("verdict=%+v", c.Verdict)
+	// Module-usage evidence made C-REACH legitimately TRUE — with C-INPUT
+	// also TRUE the verdict is EXPLOITABLE despite the govulncheck failure.
+	reach := findClaimT(t, c.Claims, "C-REACH")
+	if reach.Result != domain.ClaimTrue {
+		t.Fatalf("C-REACH=%s want TRUE via module usage", reach.Result)
+	}
+	if c.Verdict == nil || c.Verdict.Verdict != domain.VerdictExploitable {
+		t.Fatalf("verdict=%+v want EXPLOITABLE", c.Verdict)
 	}
 }
 

@@ -1,0 +1,16 @@
+{
+  "id": "GO-EVAL-PARSE",
+  "summary": "Out-of-bounds write in dep/vuln.Parse when parsing peer-supplied wire frames",
+  "details": "The frame parser writes past a fixed buffer while decoding malformed input from a remote peer.",
+  "affected": [
+    {
+      "package": {"name": "example.com/dep", "ecosystem": "Go"},
+      "ranges": [{"type": "SEMVER", "events": [{"introduced": "0"}, {"fixed": "1.0.1"}]}],
+      "ecosystem_specific": {
+        "imports": [{"path": "example.com/dep/vuln", "symbols": ["Parse"]}]
+      }
+    }
+  ],
+  "database_specific": {"cwe_ids": ["CWE-787"]},
+  "references": [{"type": "ADVISORY", "url": "https://example.com/adv/GO-EVAL-PARSE"}]
+}

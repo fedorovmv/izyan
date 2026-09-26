@@ -16,6 +16,7 @@
 | `current/11-exposure-facts-plan.md` | done | Deployment/exposure facts: listeners, dial-sites, `C-EXPOSURE` |
 | `current/12-negative-coverage-plan.md` | done | NV scope: build-tag-excluded files + interface dispatch |
 | `current/13-config-reading-plan.md` | done | Configuration reading: `config_flag`/`config_key`, `C-TLS-VERIFY` |
+| `current/14-eval-harness-plan.md` | done | Eval harness: корпус, метрики, false-safe; `analyzer eval` |
 | `history/01-initial-architecture.md` | исторический | Исходная архитектура до разбора OSS |
 | `history/README.md` | исторический | Что изменилось и почему |
 

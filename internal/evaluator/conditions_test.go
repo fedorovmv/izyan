@@ -193,6 +193,9 @@ func rabbitCase() *domain.AnalysisCase {
 	}
 	c.GovulncheckCoverage = "not_in_db"
 	c.EvidenceGraph.AddEvidence(domain.Evidence{Kind: domain.EvidenceGovulncheck})
+	// CollectEvidence always records the usage-scan marker when Source is
+	// configured — even when zero call sites were found.
+	c.EvidenceGraph.AddEvidence(domain.Evidence{Tool: "goanalysis.Index.ModuleUsage"})
 	return c
 }
 

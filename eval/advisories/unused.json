@@ -1,0 +1,15 @@
+{
+  "id": "GO-EVAL-UNUSED",
+  "summary": "Buffer overflow in example.com/unused",
+  "details": "A module the product does not depend on.",
+  "affected": [
+    {
+      "package": {"name": "example.com/unused", "ecosystem": "Go"},
+      "ranges": [{"type": "SEMVER", "events": [{"introduced": "0"}, {"fixed": "1.0.1"}]}],
+      "ecosystem_specific": {
+        "imports": [{"path": "example.com/unused/vuln", "symbols": ["Parse"]}]
+      }
+    }
+  ],
+  "references": [{"type": "ADVISORY", "url": "https://example.com/adv/GO-EVAL-UNUSED"}]
+}

@@ -51,8 +51,9 @@ func (SymbolReachable) Evaluate(cond domain.Condition, c *domain.AnalysisCase) d
 	}
 
 	if !govulncheckRan(c) {
-		claim.Limitations = append(claim.Limitations, "govulncheck did not run or failed")
-		return claim
+		claim.Limitations = append(claim.Limitations,
+			"govulncheck did not run or failed; reachability inferred from module-usage evidence only")
+		return libraryUsageVerdict(claim, c, symbols)
 	}
 
 	matched := map[string]bool{}
@@ -96,6 +97,11 @@ func (SymbolReachable) Evaluate(cond domain.Condition, c *domain.AnalysisCase) d
 func libraryUsageVerdict(claim domain.Claim, c *domain.AnalysisCase, subjects []domain.SymbolRef) domain.Claim {
 	usages := c.EvidenceGraph.ModuleUsages
 	if len(usages) == 0 {
+		if !moduleUsageChecked(c) {
+			claim.Limitations = append(claim.Limitations,
+				"module-usage scan did not run; absence of call sites is no evidence")
+			return claim
+		}
 		claim.Result = domain.ClaimFalse
 		claim.Explanation = "advisory absent from govulncheck DB and product makes no calls into the vulnerable module"
 		claim.Limitations = append(claim.Limitations,

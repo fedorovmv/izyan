@@ -1,0 +1,16 @@
+{
+  "id": "GO-EVAL-CRED",
+  "summary": "Cleartext storage of credentials in dep connection config",
+  "details": "vuln.Dial retains the credential in the exported PlainAuth.Password field; a product-side reader can observe it.",
+  "affected": [
+    {
+      "package": {"name": "example.com/dep", "ecosystem": "Go"},
+      "ranges": [{"type": "SEMVER", "events": [{"introduced": "0"}, {"fixed": "1.0.1"}]}],
+      "ecosystem_specific": {
+        "imports": [{"path": "example.com/dep/vuln", "symbols": ["Dial", "PlainAuth", "PlainAuth.Password"]}]
+      }
+    }
+  ],
+  "database_specific": {"cwe_ids": ["CWE-316"]},
+  "references": [{"type": "ADVISORY", "url": "https://example.com/adv/GO-EVAL-CRED"}]
+}

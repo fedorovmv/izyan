@@ -1,0 +1,16 @@
+{
+  "id": "GO-EVAL-URI",
+  "summary": "URI round-trip confusion: URI.String output re-parsed by ParseURI loses the password",
+  "details": "Serializing a URI and parsing it back drops fields, so security decisions made on the re-parsed URI differ.",
+  "affected": [
+    {
+      "package": {"name": "example.com/dep", "ecosystem": "Go"},
+      "ranges": [{"type": "SEMVER", "events": [{"introduced": "0"}, {"fixed": "1.0.1"}]}],
+      "ecosystem_specific": {
+        "imports": [{"path": "example.com/dep/vuln", "symbols": ["URI.String", "ParseURI"]}]
+      }
+    }
+  ],
+  "database_specific": {"cwe_ids": ["CWE-20"]},
+  "references": [{"type": "ADVISORY", "url": "https://example.com/adv/GO-EVAL-URI"}]
+}

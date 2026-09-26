@@ -97,7 +97,11 @@ advisory `affected_symbols`); `CallSite` хранит receiver, matching
 понимает `Type.Method` ↔ `*T M`. OSVSource при пустых symbols
 дотягивает GO-* алиас-документы (у GHSA symbols часто нет).
 
-**Fallback при `not_in_db`** (reachability без govulncheck):
+**Fallback без govulncheck.** Когда govulncheck не смог оценить advisory —
+`not_in_db` **или бинарь вообще не запустился** — reachability решается по
+module-usage evidence (`libraryUsageVerdict`). Отказ инструмента не
+фабрикует ни FALSE (требуется маркер «usage scan ran»), ни потерю
+позитивного evidence: прямой вызов sink из продукта → TRUE с limitation.
 
 | Случай | Результат |
 |---|---|
@@ -172,7 +176,7 @@ composite-literal ключи матчатся по declaring struct); `sequence=
 
 | Evaluator | Обрабатывает | Логика |
 |---|---|---|
-| `SymbolReachable` | `SYMBOL_REACHABLE` | govulncheck-трейсы → TRUE; `not_in_db` → module-usage fallback; covered+нет пути → FALSE-кандидат. Param-ветки: `direction=read` → product-refs из `SymbolRefs` (INFO_LEAK); `sequence=a->b` → все члены пары вызваны (URI_CONFUSION) |
+| `SymbolReachable` | `SYMBOL_REACHABLE` | govulncheck-трейсы → TRUE; `not_in_db` или govulncheck не запустился → module-usage fallback; covered+нет пути → FALSE-кандидат. Param-ветки: `direction=read` → product-refs из `SymbolRefs` (INFO_LEAK); `sequence=a->b` → все члены пары вызваны (URI_CONFUSION) |
 | `ServerTransportInput` | `ATTACKER_CONTROL`, `INPUT_CONSTRAINT` | server-фреймы уязвимого модуля в трейсе + listener-entrypoints → TRUE; client-side: module usage + unexported subjects + peer-input → TRUE (`input_source=peer` в params или remote-input в тексте); `input_source=arg/config` — сразу `ArgumentOrigin` |
 | `ArgumentOrigin` | `ATTACKER_CONTROL` | `DataFlows`: external origin → TRUE; все non-external → FALSE-кандидат |
 | `Validation` | `INPUT_CONSTRAINT` | `FindValidations` — guard-выражения до sink |
@@ -288,7 +292,30 @@ stdlib-advisory записывается явный limitation.
   равно дошёл до вердикта).
 - `--deterministic-only` гасит слой полностью.
 
-## 11. Чего не хватает (известные границы)
+## 11. Eval harness — регрессионный корпус
+
+`vuln-analyzer eval --corpus eval/corpus.json` прогоняет кейсы через
+полный пайплайн и считает метрики из спеки §9. Корпус — JSON:
+`cases[]` с `vuln`/`vuln_file`, `repo`, `root_causes`, `expect`
+(допустимые вердикты — диапазон легитимен, INCONCLUSIVE часто правильный
+ответ) и `expect_claims` (per-condition утверждения).
+
+| Метрика | Смысл |
+|---|---|
+| `false_safe` | safe-вердикт при недопускающем его ожидании — стоп-критерий, должен быть 0 |
+| `expect_pass/fail` | вердикт в/вне допустимого списка |
+| `claims_fail` | claim-ассерты не сошлись — регрессия внутри вердикта |
+| `inconclusive` | доля неопределённости (распределение, не провал) |
+| `errors` | кейсы, завершившиеся ошибкой пайплайна |
+
+Exit code 1 при любом false-safe/expect-fail/claims-fail/error —
+пригодно для CI. `--out`/`--json` пишут markdown/JSON-отчёт; case-state
+по умолчанию уходит в temp dir (`--case-dir` для отладки падения).
+Пути в корпусе — относительно файла корпуса. Синтетические advisory
+`eval/advisories/` покрывают механизмы фикстур `testdata/`; живой корпус
+на реальных GHSA — следующий слой (`09-gap-analysis` §3.7).
+
+## 12. Чего не хватает (известные границы)
 
 - `ModuleInternalReach` работает по vendored-исходникам; без `vendor/`
   внутримодульные цепочки не проверяются → UNKNOWN вместо FALSE.

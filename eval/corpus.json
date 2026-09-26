@@ -1,0 +1,94 @@
+{
+  "cases": [
+    {
+      "id": "unused-module",
+      "vuln": "GO-EVAL-UNUSED",
+      "vuln_file": "advisories/unused.json",
+      "repo": "../testdata/constprod",
+      "expect": ["NOT_AFFECTED"]
+    },
+    {
+      "id": "const-arg-safe",
+      "vuln": "GO-EVAL-PARSE",
+      "vuln_file": "advisories/dep-parse.json",
+      "repo": "../testdata/constprod",
+      "root_causes": ["example.com/dep/vuln.Parse"],
+      "expect": ["NO_EXPLOIT_PATH_FOUND"],
+      "expect_claims": {"C-REACH": "TRUE", "C-PEER-INPUT": "FALSE"}
+    },
+    {
+      "id": "osargs-attacker",
+      "vuln": "GO-EVAL-PARSE",
+      "vuln_file": "advisories/dep-parse.json",
+      "repo": "../testdata/extprod",
+      "root_causes": ["example.com/dep/vuln.Parse"],
+      "expect": ["EXPLOITABLE"]
+    },
+    {
+      "id": "flag-input-unknown",
+      "vuln": "GO-EVAL-PARSE",
+      "vuln_file": "advisories/dep-parse.json",
+      "repo": "../testdata/configprod",
+      "root_causes": ["example.com/dep/vuln.Parse"],
+      "expect": ["INCONCLUSIVE"]
+    },
+    {
+      "id": "funcval-unsafe-false",
+      "vuln": "GO-EVAL-PARSE",
+      "vuln_file": "advisories/dep-parse.json",
+      "repo": "../testdata/funcvalprod",
+      "root_causes": ["example.com/dep/vuln.Parse"],
+      "expect": ["EXPLOITABLE", "INCONCLUSIVE"]
+    },
+    {
+      "id": "gated-scope",
+      "vuln": "GO-EVAL-PARSE",
+      "vuln_file": "advisories/dep-parse.json",
+      "repo": "../testdata/gatedprod",
+      "root_causes": ["example.com/dep/vuln.Parse"],
+      "expect": ["INCONCLUSIVE"]
+    },
+    {
+      "id": "cred-no-reader",
+      "vuln": "GO-EVAL-CRED",
+      "vuln_file": "advisories/dep-cred.json",
+      "repo": "../testdata/leakprod",
+      "root_causes": ["example.com/dep/vuln.Dial"],
+      "expect": ["NO_EXPLOIT_PATH_FOUND", "INCONCLUSIVE"]
+    },
+    {
+      "id": "cred-reader",
+      "vuln": "GO-EVAL-CRED",
+      "vuln_file": "advisories/dep-cred.json",
+      "repo": "../testdata/leakread",
+      "root_causes": ["example.com/dep/vuln.Dial"],
+      "expect": ["EXPLOITABLE"]
+    },
+    {
+      "id": "tls-insecure-flag",
+      "vuln": "GO-EVAL-PARSE",
+      "vuln_file": "advisories/dep-parse.json",
+      "repo": "../testdata/tlsprod",
+      "root_causes": ["example.com/dep/vuln.Parse"],
+      "expect": ["INCONCLUSIVE", "EXPLOITABLE"],
+      "expect_claims": {"C-TLS-VERIFY": "TRUE"}
+    },
+    {
+      "id": "tls-safe-flag",
+      "vuln": "GO-EVAL-PARSE",
+      "vuln_file": "advisories/dep-parse.json",
+      "repo": "../testdata/tlssafe",
+      "root_causes": ["example.com/dep/vuln.Parse"],
+      "expect": ["INCONCLUSIVE", "EXPLOITABLE", "NO_EXPLOIT_PATH_FOUND"],
+      "expect_claims": {"C-TLS-VERIFY": "FALSE"}
+    },
+    {
+      "id": "iface-dispatch",
+      "vuln": "GO-EVAL-URI",
+      "vuln_file": "advisories/dep-uri.json",
+      "repo": "../testdata/ifaceprod",
+      "root_causes": [{"package": "example.com/dep/vuln", "symbol": "URI.String", "role": "SINK"}],
+      "expect": ["INCONCLUSIVE", "NO_EXPLOIT_PATH_FOUND"]
+    }
+  ]
+}

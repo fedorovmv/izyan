@@ -126,12 +126,20 @@ unexported+peer-driven, но не настоящим trace).
 файлится ли продукт. Сейчас таких evidence нет; при build failure
 govulncheck-адаптер просто отдаёт tool limitation.
 
-### 3.7 Метрики / eval harness
+### 3.7 Метрики / eval harness — `done` (первый слой)
 
 Спека §9 плана: root-cause accuracy, FALSE precision, **false-safe
 count** (стоп-критерий), INCONCLUSIVE rate, evidence reproducibility.
-Нет ни фикстур-корпуса сверх unit-тестов, ни подсчёта этих метрик на
-реальном наборе advisory.
+
+Реализовано (`14-eval-harness-plan.md`): `internal/eval` + сабкоманда
+`eval --corpus`: корпус кейсов (`eval/corpus.json` на фикстурах
+`testdata/` + синтетические OSV), метрики total/errors/expect/
+inconclusive/claims_fail/**false_safe**, markdown+JSON отчёты, exit 1
+при false-safe/expect-fail. Первый прогон: 11 кейсов, 0 false-safe.
+
+Не закрыто: размеченный ground truth для root-cause accuracy и FALSE
+precision; живой корпус на реальных advisory; репроусибельность
+evidence (hash-сравнение графов между прогонами).
 
 ### 3.8 VEX/OpenVEX/CycloneDX экспорт
 
@@ -168,6 +176,7 @@ Issues/Jira) — deferred by design.
    для не-HTTP источников.
 6. **Недостающие 10 typed tools** — нужны полноценному hypothesis loop.
 7. **Hypothesis/gap-analysis loop** — каркас, который все это связывает.
-8. **Eval harness + false-safe metric** — без неё регрессии неизмеримы.
+8. ~~Eval harness + false-safe metric~~ — `done` (первый слой, §3.7);
+   далее — живой корпус и ground-truth метрики.
 9. **tool_executions/ToolVersion** — аудит-полнота, дёшево.
 10. **VEX-экспорт** — интеграционная ценность, дёшево (openvex уже есть в govulncheck).

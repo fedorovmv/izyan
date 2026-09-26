@@ -40,6 +40,8 @@ func main() {
 		err = runAnalyze(os.Args[2:])
 	case "scan":
 		err = runScan(os.Args[2:])
+	case "eval":
+		err = runEval(os.Args[2:])
 	default:
 		usage()
 	}
@@ -53,6 +55,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
   vuln-analyzer analyze --repo <path> --vuln <GO-/CVE-/GHSA-id> [options]
   vuln-analyzer scan    --repo <path> [options]   # all advisories for all modules
+  vuln-analyzer eval    --corpus <path> --repo <path> [options]  # corpus regression run
 
 options:
   --vuln-file <path>     load advisory from local OSV JSON instead of api.osv.dev
@@ -86,6 +89,9 @@ type analyzeOpts struct {
 	llmEnv        string
 	detOnly       bool
 	rootCauseArgs []string
+	// manualRC carries already-parsed root causes (eval corpus entries
+	// support the object form, which rootCauseArgs strings cannot express).
+	manualRC []domain.RootCause
 	// Shared across advisories in scan mode; nil in single analyze.
 	srcIndex *goanalysis.Index
 	goTool   affected.GoTool
@@ -223,7 +229,7 @@ func analyzeCase(ctx context.Context, o analyzeOpts) (*domain.AnalysisCase, erro
 		states.ResolveVulnerability{Source: src, ID: o.vulnID},
 		states.CheckAffected{Resolver: affected.GoResolver{Tool: goTool}},
 		states.ResolveRootCause{
-			Manual:   parseRootCauses(o.rootCauseArgs),
+			Manual:   append(o.manualRC, parseRootCauses(o.rootCauseArgs)...),
 			Resolver: rcResolver,
 			Verifier: &rootcause.Verifier{Source: srcIndex},
 		},
