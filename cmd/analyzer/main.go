@@ -90,6 +90,7 @@ type analyzeOpts struct {
 	exploitModel  string
 	llmEnv        string
 	detOnly       bool
+	allowExec     bool
 	rootCauseArgs []string
 	// manualRC carries already-parsed root causes (eval corpus entries
 	// support the object form, which rootCauseArgs strings cannot express).
@@ -115,6 +116,7 @@ func commonFlags(fs *flag.FlagSet, o *analyzeOpts) {
 	fs.StringVar(&o.binary, "binary", "", "release-built Go binary: govulncheck -mode binary + embedded toolchain")
 	fs.StringVar(&o.releaseGo, "release-go-version", "", "toolchain version that built the release (e.g. from the ticket)")
 	fs.BoolVar(&o.detOnly, "deterministic-only", false, "disable LLM-backed states")
+	fs.BoolVar(&o.allowExec, "allow-exec", false, "permit agent tools that execute repository code (run_build/run_tests)")
 	fs.StringVar(&o.llmEnv, "llm-env", "", "path to LLM .env file (default: .env in cwd or repo)")
 }
 
@@ -238,7 +240,14 @@ func analyzeCase(ctx context.Context, o analyzeOpts) (*domain.AnalysisCase, erro
 		rcResolver = &llm.RootCauseResolver{Client: client, Fallback: rcResolver}
 		builder = llm.ExploitModelBuilder{Client: client, Fallback: builder}
 		reviewers = append(reviewers, llm.Reviewer{Client: client})
-		fallbackEval = llm.ClaimEvaluator{Client: client, Tools: llm.Tools{Source: srcIndex}}
+		fallbackEval = llm.ClaimEvaluator{Client: client, Tools: llm.Tools{
+			Source:      srcIndex,
+			Vuln:        src,
+			Patch:       fix.HTTPProvider{},
+			Govulncheck: gvRunner,
+			GoTool:      goTool,
+			AllowExec:   o.allowExec,
+		}}
 	} else if o.detOnly {
 		c.EvidenceGraph.Limitations = append(c.EvidenceGraph.Limitations,
 			"deterministic-only mode: LLM adapters disabled")

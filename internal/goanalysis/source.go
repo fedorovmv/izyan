@@ -7,6 +7,7 @@ import (
 	"go/token"
 	"go/types"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -456,6 +457,91 @@ func (ix *Index) nodeSource(n ast.Node) (string, error) {
 		return "", fmt.Errorf("offsets out of range")
 	}
 	return string(b[start.Offset:end.Offset]), nil
+}
+
+// ReadSource returns lines [start,end] (1-based, inclusive; 0 = whole
+// file) of a file inside the analyzed repository. Paths are confined to
+// ix.Dir — the agent must not read outside the product tree.
+func (ix *Index) ReadSource(_ context.Context, file string, start, end int) (string, error) {
+	clean := filepath.Clean(file)
+	abs := clean
+	if !filepath.IsAbs(clean) {
+		abs = filepath.Join(ix.Dir, clean)
+	}
+	base, err := filepath.Abs(ix.Dir)
+	if err != nil {
+		return "", err
+	}
+	full, err := filepath.Abs(abs)
+	if err != nil {
+		return "", err
+	}
+	rel, err := filepath.Rel(base, full)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return "", fmt.Errorf("path %s escapes the analyzed repository", file)
+	}
+	b, err := os.ReadFile(full)
+	if err != nil {
+		return "", err
+	}
+	lines := strings.Split(string(b), "\n")
+	if start <= 0 {
+		start = 1
+	}
+	if end <= 0 || end > len(lines) {
+		end = len(lines)
+	}
+	if start > len(lines) {
+		return "", fmt.Errorf("start line %d beyond file length %d", start, len(lines))
+	}
+	return strings.Join(lines[start-1:end], "\n"), nil
+}
+
+const maxSearchMatches = 64
+
+// SearchSource regex-searches the product's own Go files (files outside
+// ix.Dir — vendored deps, module cache — are excluded). Returns up to
+// maxSearchMatches "file:line: text" matches; a bad regex is an error.
+func (ix *Index) SearchSource(ctx context.Context, pattern string) ([]string, error) {
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return nil, fmt.Errorf("bad pattern: %w", err)
+	}
+	ix.mu.Lock()
+	defer ix.mu.Unlock()
+	if err := ix.load(ctx); err != nil {
+		return nil, err
+	}
+	base, _ := filepath.Abs(ix.Dir)
+	seen := map[string]bool{}
+	var out []string
+	for _, pkg := range ix.pkgs {
+		for _, f := range pkg.Syntax {
+			fpos := ix.fset.Position(f.Pos())
+			name := fpos.Filename
+			if seen[name] {
+				continue
+			}
+			seen[name] = true
+			rel, err := filepath.Rel(base, name)
+			if err != nil || strings.HasPrefix(rel, "..") {
+				continue // dependency source outside the product tree
+			}
+			data, err := os.ReadFile(name)
+			if err != nil {
+				continue
+			}
+			for i, ln := range strings.Split(string(data), "\n") {
+				if re.MatchString(ln) {
+					out = append(out, fmt.Sprintf("%s:%d: %s", name, i+1, strings.TrimSpace(ln)))
+					if len(out) >= maxSearchMatches {
+						return out, nil
+					}
+				}
+			}
+		}
+	}
+	return out, nil
 }
 
 // FindEntrypoints enumerates plausible external entrypoints in product

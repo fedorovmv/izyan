@@ -61,7 +61,7 @@ func (r GoResolver) Resolve(ctx context.Context, vuln domain.Vulnerability, prod
 		Command: modSource,
 		Content: string(modRaw),
 	})
-	mods, err := decodeModules(modRaw)
+	mods, err := DecodeModules(modRaw)
 	if err != nil {
 		res.Limitations = append(res.Limitations, fmt.Sprintf("decode module list: %v", err))
 		return res, ev, nil

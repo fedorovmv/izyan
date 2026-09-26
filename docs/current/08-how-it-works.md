@@ -306,6 +306,13 @@ stdlib-advisory записывается явный limitation.
   в отчёте (видно в прогонах: `llm exploit model failed` → кейс всё
   равно дошёл до вердикта).
 - `--deterministic-only` гасит слой полностью.
+- LLM-агент работает через 17 typed tools (§17,
+  `internal/llm/tools.go`): advisory/фикс-документы, module graph,
+  govulncheck, source read/search, exec-инструменты. Каждый вызов
+  ограничен `MaxToolCalls`, результат — evidence в графе; tool miss —
+  ошибка модели, не «фактов нет». `run_build`/`run_tests` исполняют код
+  репозитория и требуют явного `--allow-exec`; вызовы проходят через
+  toolaudit и видны в `tool_executions`.
 
 ## 11. Eval harness — регрессионный корпус
 

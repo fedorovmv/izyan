@@ -125,7 +125,8 @@ func runGo(ctx context.Context, bin, version, dir string, env []string, args ...
 	return stdout, nil
 }
 
-func decodeModules(b []byte) ([]Module, error) {
+// DecodeModules parses the `go list -m -json` stream into modules.
+func DecodeModules(b []byte) ([]Module, error) {
 	dec := json.NewDecoder(bytes.NewReader(b))
 	var out []Module
 	for dec.More() {
