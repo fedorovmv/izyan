@@ -69,6 +69,13 @@ func (Service) Snapshot(ctx context.Context, path string, opts SnapshotOptions) 
 	}, nil
 }
 
+// BinaryGoVersion reports the toolchain version embedded in a Go binary —
+// used to select the analysis toolchain when --binary is provided without
+// an explicit --release-go-version.
+func BinaryGoVersion(ctx context.Context, bin string) (string, error) {
+	return binaryGoVersion(ctx, bin)
+}
+
 // binaryGoVersion extracts the toolchain embedded in a Go binary via
 // `go version -m`: the first line ends with the toolchain version.
 func binaryGoVersion(ctx context.Context, bin string) (string, error) {

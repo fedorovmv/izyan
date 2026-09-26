@@ -25,6 +25,7 @@ import (
 	"example.com/vuln-analyzer/internal/review"
 	"example.com/vuln-analyzer/internal/rootcause"
 	"example.com/vuln-analyzer/internal/states"
+	"example.com/vuln-analyzer/internal/toolchain"
 	"example.com/vuln-analyzer/internal/tracker"
 	"example.com/vuln-analyzer/internal/vulnerability"
 	"example.com/vuln-analyzer/internal/workflow"
@@ -92,6 +93,10 @@ type analyzeOpts struct {
 	// manualRC carries already-parsed root causes (eval corpus entries
 	// support the object form, which rootCauseArgs strings cannot express).
 	manualRC []domain.RootCause
+	// toolchain is the resolved target Go toolchain; zero value = local.
+	toolchain toolchain.Toolchain
+	// tcLims carries resolution notes into the case's limitations.
+	tcLims []string
 	// Shared across advisories in scan mode; nil in single analyze.
 	srcIndex *goanalysis.Index
 	goTool   affected.GoTool
@@ -172,10 +177,23 @@ func analyzeCase(ctx context.Context, o analyzeOpts) (*domain.AnalysisCase, erro
 		return nil, err
 	}
 
+	tc := o.toolchain
+	if tc.GoBin == "" {
+		var lims []string
+		tc, lims = resolveToolchain(ctx, o)
+		o.tcLims = lims
+	}
+	for _, l := range o.tcLims {
+		c.EvidenceGraph.AddLimitation(l)
+	}
+	c.EvidenceGraph.AddLimitation(fmt.Sprintf(
+		"analysis toolchain: go%s (%s)", tc.Version, tc.Mode))
+
 	srcIndex := o.srcIndex
 	if srcIndex == nil {
 		srcIndex = &goanalysis.Index{
 			Dir: absRepo,
+			Env: tc.Env,
 			Build: domain.ProductSnapshot{
 				GOOS: o.goos, GOARCH: o.goarch, BuildTags: splitCSV(o.tags),
 			},
@@ -183,11 +201,11 @@ func analyzeCase(ctx context.Context, o analyzeOpts) (*domain.AnalysisCase, erro
 	}
 	goTool := o.goTool
 	if goTool == nil {
-		goTool = affected.ExecGoTool{}
+		goTool = affected.ExecGoTool{Bin: tc.GoBin, Env: tc.Env}
 	}
 	gvRunner := o.gvRunner
 	if gvRunner == nil {
-		gvRunner = goanalysis.ExecRunner{}
+		gvRunner = goanalysis.ExecRunner{Env: tc.Env}
 	}
 
 	// LLM layer: env file auto-load (explicit --llm-env, else .env in
@@ -325,6 +343,22 @@ func splitCSV(s string) []string {
 	return parts
 }
 
+// resolveToolchain picks the analysis toolchain for this run. The release
+// binary's embedded build info wins (it is the ground truth of what
+// compiled the artifact), then --release-go-version; empty means local.
+func resolveToolchain(ctx context.Context, o analyzeOpts) (toolchain.Toolchain, []string) {
+	want := ""
+	if o.binary != "" {
+		if v, err := repository.BinaryGoVersion(ctx, o.binary); err == nil {
+			want = v
+		}
+	}
+	if want == "" {
+		want = o.releaseGo
+	}
+	return toolchain.Resolve(ctx, want)
+}
+
 // parseRootCauses accepts "pkg/path.Symbol" entries; the last dot separates
 // the symbol from its package path.
 func parseRootCauses(flags []string) []domain.RootCause {
@@ -369,12 +403,16 @@ func runScan(args []string) error {
 	}
 	ctx := context.Background()
 
+	// Resolve the target toolchain once — shared tools run under it.
+	o.toolchain, o.tcLims = resolveToolchain(ctx, o)
+
 	// Shared per-scan resources: one source index, one go list, one
 	// govulncheck run — repeated per-advisory otherwise.
-	o.goTool = affected.CachingTool(affected.ExecGoTool{})
-	o.gvRunner = goanalysis.CachingRunner(goanalysis.ExecRunner{})
+	o.goTool = affected.CachingTool(affected.ExecGoTool{Bin: o.toolchain.GoBin, Env: o.toolchain.Env})
+	o.gvRunner = goanalysis.CachingRunner(goanalysis.ExecRunner{Env: o.toolchain.Env})
 	o.srcIndex = &goanalysis.Index{
 		Dir: absRepo,
+		Env: o.toolchain.Env,
 		Build: domain.ProductSnapshot{
 			GOOS: o.goos, GOARCH: o.goarch, BuildTags: splitCSV(o.tags),
 		},

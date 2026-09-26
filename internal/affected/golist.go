@@ -55,11 +55,24 @@ type GoTool interface {
 	ListPackages(ctx context.Context, dir string, build domain.ProductSnapshot) ([]byte, error)
 }
 
-type ExecGoTool struct{}
+// ExecGoTool runs `go` subprocesses. Bin overrides the go binary and Env
+// carries toolchain env (PATH/GOTOOLCHAIN) so checks execute under the
+// target toolchain, not whatever happens to be in PATH.
+type ExecGoTool struct {
+	Bin string
+	Env []string
+}
 
-func (ExecGoTool) ListModules(ctx context.Context, dir string, _ domain.ProductSnapshot) ([]byte, string, error) {
+func (t ExecGoTool) bin() string {
+	if t.Bin != "" {
+		return t.Bin
+	}
+	return "go"
+}
+
+func (t ExecGoTool) ListModules(ctx context.Context, dir string, _ domain.ProductSnapshot) ([]byte, string, error) {
 	const goList = "go list -m -json all"
-	raw, err := runGo(ctx, dir, nil, "list", "-m", "-json", "all")
+	raw, err := runGo(ctx, t.bin(), dir, t.Env, "list", "-m", "-json", "all")
 	if err == nil {
 		return raw, goList, nil
 	}
@@ -81,13 +94,13 @@ func (ExecGoTool) ListModules(ctx context.Context, dir string, _ domain.ProductS
 	return buf.Bytes(), "vendor/modules.txt", nil
 }
 
-func (ExecGoTool) ListPackages(ctx context.Context, dir string, build domain.ProductSnapshot) ([]byte, error) {
+func (t ExecGoTool) ListPackages(ctx context.Context, dir string, build domain.ProductSnapshot) ([]byte, error) {
 	args := []string{"list", "-deps", "-test", "-json"}
 	if len(build.BuildTags) > 0 {
 		args = append(args, "-tags", strings.Join(build.BuildTags, ","))
 	}
 	args = append(args, "./...")
-	return runGo(ctx, dir, buildEnv(build), args...)
+	return runGo(ctx, t.bin(), dir, append(buildEnv(build), t.Env...), args...)
 }
 
 func buildEnv(build domain.ProductSnapshot) []string {
@@ -102,8 +115,8 @@ func buildEnv(build domain.ProductSnapshot) []string {
 	return env
 }
 
-func runGo(ctx context.Context, dir string, env []string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "go", args...)
+func runGo(ctx context.Context, bin, dir string, env []string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = dir
 	if len(env) > 0 {
 		cmd.Env = append(cmd.Environ(), env...)

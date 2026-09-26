@@ -17,6 +17,7 @@
 | `current/12-negative-coverage-plan.md` | done | NV scope: build-tag-excluded files + interface dispatch |
 | `current/13-config-reading-plan.md` | done | Configuration reading: `config_flag`/`config_key`, `C-TLS-VERIFY` |
 | `current/14-eval-harness-plan.md` | done | Eval harness: корпус, метрики, false-safe; `analyzer eval` |
+| `current/15-toolchain-plan.md` | done | Target Go toolchain: SDK/GOTOOLCHAIN/docker, toolchain provenance |
 | `history/01-initial-architecture.md` | исторический | Исходная архитектура до разбора OSS |
 | `history/README.md` | исторический | Что изменилось и почему |
 

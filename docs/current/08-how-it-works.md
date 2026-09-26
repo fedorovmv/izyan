@@ -315,7 +315,27 @@ Exit code 1 при любом false-safe/expect-fail/claims-fail/error —
 `eval/advisories/` покрывают механизмы фикстур `testdata/`; живой корпус
 на реальных GHSA — следующий слой (`09-gap-analysis` §3.7).
 
-## 12. Чего не хватает (известные границы)
+## 12. Target Go toolchain
+
+Релизный бинарь собран конкретной версией Go — для `std`/`toolchain`/`cmd`
+адвизори анализ обязан резолвить исходники **той** версии, а не локальной:
+
+- Версия берётся по цепочке: build info бинаря (`--binary`) →
+  `--release-go-version` → `corpus.go_version` (eval). Пусто → local.
+- `internal/toolchain.Resolve`: local-match → `~/sdk/go<ver>` (dl SDK,
+  оффлайн) → `GOTOOLCHAIN=go<ver>` (Go ≥1.21 скачивает в module cache).
+  Недоступно → `Mismatch` + limitation; молчаливого чужого GOROOT нет.
+- `Toolchain.Env` (PATH/GOTOOLCHAIN) протягивается во все subprocess'ы
+  (`ExecGoTool`, `ExecRunner`) и `packages.Load` через `Index.Env` —
+  stdlib-символы резолвятся под целевым GOROOT.
+- Кейс фиксирует `analysis toolchain: go<ver> (<mode>)` в limitations.
+- Docker — режим запуска, не toolchain: `eval/Dockerfile` собирает
+  `golang:<target>` + бинарь анализатора; внутри `go` и есть целевая
+  версия (toolchain сборки анализатора роли не играет).
+- Важная граница: toolchain старше `go`-директивы модуля не загружает
+  репо → честный `INCONCLUSIVE`, а не анализ по другой версии.
+
+## 13. Чего не хватает (известные границы)
 
 - `ModuleInternalReach` работает по vendored-исходникам; без `vendor/`
   внутримодульные цепочки не проверяются → UNKNOWN вместо FALSE.

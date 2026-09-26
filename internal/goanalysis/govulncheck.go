@@ -22,6 +22,9 @@ type Runner interface {
 
 type ExecRunner struct {
 	Bin string
+	// Env carries the target toolchain (PATH/GOTOOLCHAIN) into the
+	// govulncheck subprocess and, for source mode, the `go` it spawns.
+	Env []string
 }
 
 // CachingRunner runs govulncheck once per (repo, build) — its output
@@ -48,6 +51,9 @@ func (r ExecRunner) RunGovulncheck(ctx context.Context, dir string, build domain
 	if bin == "" {
 		bin = "govulncheck"
 	}
+	// r.Env carries the target toolchain (PATH/GOTOOLCHAIN): govulncheck
+	// source mode loads stdlib through the `go` it finds in PATH.
+	extraEnv := r.Env
 	var args []string
 	if build.BinaryPath != "" {
 		// Binary mode reads the release artifact's embedded build info: the
@@ -70,6 +76,7 @@ func (r ExecRunner) RunGovulncheck(ctx context.Context, dir string, build domain
 		env = append(env, "GOARCH="+build.GOARCH)
 	}
 	env = append(env, fmt.Sprintf("CGO_ENABLED=%t", build.CGOEnabled))
+	env = append(env, extraEnv...)
 	cmd.Env = append(cmd.Environ(), env...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

@@ -28,6 +28,10 @@ type Case struct {
 	// cannot split package path from symbol name.
 	RootCauses   []RootCauseRef `json:"root_causes,omitempty"`
 	ExploitModel string         `json:"exploit_model,omitempty"`
+	// GoVersion requests the target toolchain ("1.21.13" or "go1.21.13") —
+	// the version the release was built with. Resolved via SDK/GOTOOLCHAIN;
+	// unavailability records a limitation, never a silent wrong-version run.
+	GoVersion string `json:"go_version,omitempty"`
 	// Expect lists acceptable verdicts; empty means informational only
 	// (the case still counts toward distribution metrics).
 	Expect []string `json:"expect,omitempty"`

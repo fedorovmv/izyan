@@ -21,8 +21,12 @@ import (
 // It backs the targeted source tools (find_symbol, find_callers,
 // read_function, find_entrypoints, argument provenance).
 type Index struct {
-	Dir     string
-	Build   domain.ProductSnapshot
+	Dir   string
+	Build domain.ProductSnapshot
+	// Env carries the target toolchain (PATH/GOTOOLCHAIN) into package
+	// loading, so stdlib symbols resolve under the release's GOROOT, not
+	// the local toolchain's.
+	Env     []string
 	mu      sync.Mutex // serializes queries; shared across cases in scan mode
 	pkgs    []*packages.Package
 	fset    *token.FileSet
@@ -57,7 +61,7 @@ func (ix *Index) load(ctx context.Context) error {
 		Mode: loadMode,
 		Dir:  ix.Dir,
 		Fset: ix.fset,
-		Env:  append(os.Environ(), buildEnv(ix.Build)...),
+		Env:  append(os.Environ(), append(buildEnv(ix.Build), ix.Env...)...),
 	}
 	if len(ix.Build.BuildTags) > 0 {
 		cfg.BuildFlags = []string{"-tags", strings.Join(ix.Build.BuildTags, ",")}
@@ -79,7 +83,7 @@ func (ix *Index) loadExtra(ctx context.Context, patterns ...string) ([]*packages
 		Mode: loadMode,
 		Dir:  ix.Dir,
 		Fset: ix.fset,
-		Env:  append(os.Environ(), buildEnv(ix.Build)...),
+		Env:  append(os.Environ(), append(buildEnv(ix.Build), ix.Env...)...),
 	}
 	if len(ix.Build.BuildTags) > 0 {
 		cfg.BuildFlags = []string{"-tags", strings.Join(ix.Build.BuildTags, ",")}
@@ -663,7 +667,7 @@ func (ix *Index) ModuleInternalReach(ctx context.Context, module string, entries
 		Mode: loadMode,
 		Dir:  ix.Dir,
 		Fset: fset,
-		Env:  append(os.Environ(), buildEnv(ix.Build)...),
+		Env:  append(os.Environ(), append(buildEnv(ix.Build), ix.Env...)...),
 	}
 	pkgs, err := packages.Load(cfg, module+"/...")
 	if err != nil {
