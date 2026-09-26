@@ -25,6 +25,7 @@ import (
 	"example.com/vuln-analyzer/internal/review"
 	"example.com/vuln-analyzer/internal/rootcause"
 	"example.com/vuln-analyzer/internal/states"
+	"example.com/vuln-analyzer/internal/toolaudit"
 	"example.com/vuln-analyzer/internal/toolchain"
 	"example.com/vuln-analyzer/internal/tracker"
 	"example.com/vuln-analyzer/internal/vulnerability"
@@ -176,6 +177,9 @@ func analyzeCase(ctx context.Context, o analyzeOpts) (*domain.AnalysisCase, erro
 	if err := store.Create(ctx, c); err != nil {
 		return nil, err
 	}
+	// Every external tool run under this ctx lands in the case's audit
+	// trail — including toolchain probes and the product snapshot below.
+	ctx = toolaudit.WithRecorder(ctx, &toolaudit.Recorder{Sink: c.EvidenceGraph.AddToolExecution})
 
 	tc := o.toolchain
 	if tc.GoBin == "" {
@@ -201,7 +205,7 @@ func analyzeCase(ctx context.Context, o analyzeOpts) (*domain.AnalysisCase, erro
 	}
 	goTool := o.goTool
 	if goTool == nil {
-		goTool = affected.ExecGoTool{Bin: tc.GoBin, Env: tc.Env}
+		goTool = affected.ExecGoTool{Bin: tc.GoBin, Env: tc.Env, Version: tc.Version}
 	}
 	gvRunner := o.gvRunner
 	if gvRunner == nil {

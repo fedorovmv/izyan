@@ -483,9 +483,29 @@ type EvidenceGraph struct {
 	Validations      []Validation      `json:"validations,omitempty"`
 	Configuration    []ConfigItem      `json:"configuration,omitempty"`
 	Runtime          []EvidenceID      `json:"runtime,omitempty"`
-	ToolLimitations  []string          `json:"tool_limitations,omitempty"`
-	Limitations      []string          `json:"limitations,omitempty"`
-	Hash             string            `json:"hash,omitempty"`
+	// ToolExecutions is the audit trail of external tool invocations
+	// (spec §22): which tool ran, with what arguments, exit code and
+	// output hashes — so every claim can be traced to a concrete run.
+	ToolExecutions  []ToolExecution `json:"tool_executions,omitempty"`
+	ToolLimitations []string        `json:"tool_limitations,omitempty"`
+	Limitations     []string        `json:"limitations,omitempty"`
+	Hash            string          `json:"hash,omitempty"`
+}
+
+// ToolExecution is one external tool invocation (spec §22). Stdout/stderr
+// are hashed rather than stored — large outputs (govulncheck -json) are
+// already persisted as evidence content; the hash pins the record to it.
+type ToolExecution struct {
+	ID           string   `json:"id"`
+	Tool         string   `json:"tool"`
+	Version      string   `json:"version,omitempty"`
+	Dir          string   `json:"dir,omitempty"`
+	Args         []string `json:"args,omitempty"`
+	ExitCode     int      `json:"exit_code"`
+	StdoutSHA256 string   `json:"stdout_sha256,omitempty"`
+	StderrSHA256 string   `json:"stderr_sha256,omitempty"`
+	DurationMs   int64    `json:"duration_ms"`
+	Error        string   `json:"error,omitempty"`
 }
 
 // AddEvidence appends e to the graph, assigning an ID when empty, and
@@ -499,6 +519,16 @@ func (g *EvidenceGraph) AddEvidence(e Evidence) EvidenceID {
 	}
 	g.Evidence = append(g.Evidence, e)
 	return e.ID
+}
+
+// AddToolExecution appends an audit record, assigning a TX-id.
+func (g *EvidenceGraph) AddToolExecution(t ToolExecution) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if t.ID == "" {
+		t.ID = fmt.Sprintf("TX-%03d", len(g.ToolExecutions)+1)
+	}
+	g.ToolExecutions = append(g.ToolExecutions, t)
 }
 
 // AddLimitation appends a limitation, skipping exact duplicates — the

@@ -6,5 +6,5 @@
 # LLM env files (may contain API keys)
 .env.*
 !.env.example
-analyzer
-vuln-analyzer
+# built binaries at repo root (bare "analyzer" would ignore cmd/analyzer/)
+/analyzer

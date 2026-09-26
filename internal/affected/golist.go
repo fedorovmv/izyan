@@ -6,12 +6,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 
 	"example.com/vuln-analyzer/internal/domain"
+	"example.com/vuln-analyzer/internal/toolaudit"
 )
 
 // Module mirrors the `go list -m -json` output subset we rely on.
@@ -57,10 +57,12 @@ type GoTool interface {
 
 // ExecGoTool runs `go` subprocesses. Bin overrides the go binary and Env
 // carries toolchain env (PATH/GOTOOLCHAIN) so checks execute under the
-// target toolchain, not whatever happens to be in PATH.
+// target toolchain, not whatever happens to be in PATH. Version tags
+// audit records with the resolved toolchain version.
 type ExecGoTool struct {
-	Bin string
-	Env []string
+	Bin     string
+	Env     []string
+	Version string
 }
 
 func (t ExecGoTool) bin() string {
@@ -72,7 +74,7 @@ func (t ExecGoTool) bin() string {
 
 func (t ExecGoTool) ListModules(ctx context.Context, dir string, _ domain.ProductSnapshot) ([]byte, string, error) {
 	const goList = "go list -m -json all"
-	raw, err := runGo(ctx, t.bin(), dir, t.Env, "list", "-m", "-json", "all")
+	raw, err := runGo(ctx, t.bin(), t.Version, dir, t.Env, "list", "-m", "-json", "all")
 	if err == nil {
 		return raw, goList, nil
 	}
@@ -100,7 +102,7 @@ func (t ExecGoTool) ListPackages(ctx context.Context, dir string, build domain.P
 		args = append(args, "-tags", strings.Join(build.BuildTags, ","))
 	}
 	args = append(args, "./...")
-	return runGo(ctx, t.bin(), dir, append(buildEnv(build), t.Env...), args...)
+	return runGo(ctx, t.bin(), t.Version, dir, append(buildEnv(build), t.Env...), args...)
 }
 
 func buildEnv(build domain.ProductSnapshot) []string {
@@ -115,19 +117,12 @@ func buildEnv(build domain.ProductSnapshot) []string {
 	return env
 }
 
-func runGo(ctx context.Context, bin, dir string, env []string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, bin, args...)
-	cmd.Dir = dir
-	if len(env) > 0 {
-		cmd.Env = append(cmd.Environ(), env...)
+func runGo(ctx context.Context, bin, version, dir string, env []string, args ...string) ([]byte, error) {
+	stdout, stderr, err := toolaudit.Run(ctx, "go", version, dir, bin, env, args...)
+	if err != nil {
+		return stdout, fmt.Errorf("go %v: %w: %s", args, err, stderr)
 	}
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return stdout.Bytes(), fmt.Errorf("go %v: %w: %s", args, err, stderr.String())
-	}
-	return stdout.Bytes(), nil
+	return stdout, nil
 }
 
 func decodeModules(b []byte) ([]Module, error) {

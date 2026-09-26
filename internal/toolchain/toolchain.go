@@ -21,10 +21,11 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"example.com/vuln-analyzer/internal/toolaudit"
 )
 
 // Mode names how the target toolchain is provided.
@@ -165,11 +166,7 @@ func goEnv(ctx context.Context, bin string, env []string, key string) string {
 }
 
 func run(ctx context.Context, bin string, env []string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, bin, args...)
-	if len(env) > 0 {
-		cmd.Env = append(cmd.Environ(), env...)
-	}
-	out, err := cmd.Output()
+	out, _, err := toolaudit.Run(ctx, filepath.Base(bin), "", "", bin, env, args...)
 	if err != nil {
 		return "", fmt.Errorf("%s %v: %w", bin, args, err)
 	}

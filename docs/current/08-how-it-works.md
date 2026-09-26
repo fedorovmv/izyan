@@ -311,6 +311,10 @@ stdlib-advisory записывается явный limitation.
 Exit code 1 при любом false-safe/expect-fail/claims-fail/error —
 пригодно для CI. `--out`/`--json` пишут markdown/JSON-отчёт; case-state
 по умолчанию уходит в temp dir (`--case-dir` для отладки падения).
+Регрессионный прогон **детерминистичен**: eval по умолчанию работает в
+`--deterministic-only` режиме, `--with-llm` — opt-in для замера
+LLM-варианта (LLM-предложения недетерминированы и ломают
+воспроизводимость corpus-метрик).
 Пути в корпусе — относительно файла корпуса. Синтетические advisory
 `eval/advisories/` покрывают механизмы фикстур `testdata/`; живой корпус
 на реальных GHSA — следующий слой (`09-gap-analysis` §3.7).
@@ -334,6 +338,23 @@ Exit code 1 при любом false-safe/expect-fail/claims-fail/error —
   версия (toolchain сборки анализатора роли не играет).
 - Важная граница: toolchain старше `go`-директивы модуля не загружает
   репо → честный `INCONCLUSIVE`, а не анализ по другой версии.
+
+## 12a. Tool execution audit
+
+Каждый внешний вызов инструмента пишется в
+`EvidenceGraph.ToolExecutions` (спека §22): tool, version, dir, args,
+exit_code (-1 = не стартовал/ctx kill), sha256 stdout+stderr,
+duration_ms, error. Реализация — `internal/toolaudit`: рекордер
+ездит в ctx (`WithRecorder` в `analyzeCase` сразу после создания кейса),
+поэтому shared-обёртки из scan/eval (кэшированные runner'ы, созданные
+до кейса) атрибутируют прогоны правильному кейсу. Все exec-точки —
+`repository` (git, go version[-m]), `affected.runGo` (go list),
+`goanalysis.ExecRunner` (govulncheck, `-version`), toolchain-пробы —
+проходят через `toolaudit.Run`. Большие выводы не дублируются: хэш
+привязывает запись к evidence.Content. Отчёт показывает таблицу
+«Tool executions». `Evidence.ToolVersion` заполнен для govulncheck
+(вывод `-version`/vulndb-строки). Не записываются: `packages.Load`
+(in-process), env прогонов (секреты).
 
 ## 13. Чего не хватает (известные границы)
 

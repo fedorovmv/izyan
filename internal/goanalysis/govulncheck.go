@@ -8,11 +8,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os/exec"
 	"strings"
 	"sync"
 
 	"example.com/vuln-analyzer/internal/domain"
+	"example.com/vuln-analyzer/internal/toolaudit"
 )
 
 // Runner executes govulncheck and returns the raw -json stream.
@@ -66,8 +66,6 @@ func (r ExecRunner) RunGovulncheck(ctx context.Context, dir string, build domain
 		}
 		args = append(args, "./...")
 	}
-	cmd := exec.CommandContext(ctx, bin, args...)
-	cmd.Dir = dir
 	var env []string
 	if build.GOOS != "" {
 		env = append(env, "GOOS="+build.GOOS)
@@ -77,14 +75,11 @@ func (r ExecRunner) RunGovulncheck(ctx context.Context, dir string, build domain
 	}
 	env = append(env, fmt.Sprintf("CGO_ENABLED=%t", build.CGOEnabled))
 	env = append(env, extraEnv...)
-	cmd.Env = append(cmd.Environ(), env...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return stdout.Bytes(), fmt.Errorf("govulncheck: %w: %s", err, stderr.String())
+	stdout, stderr, err := toolaudit.Run(ctx, "govulncheck", "", dir, bin, env, args...)
+	if err != nil {
+		return stdout, fmt.Errorf("govulncheck: %w: %s", err, stderr)
 	}
-	return stdout.Bytes(), nil
+	return stdout, nil
 }
 
 // DBInformer is an optional Runner capability: it reports the local
@@ -100,8 +95,7 @@ func (r ExecRunner) DBInfo(ctx context.Context) (string, error) {
 	if bin == "" {
 		bin = "govulncheck"
 	}
-	cmd := exec.CommandContext(ctx, bin, "-version")
-	out, err := cmd.Output()
+	out, _, err := toolaudit.Run(ctx, "govulncheck", "", "", bin, nil, "-version")
 	if err != nil {
 		return "", err
 	}

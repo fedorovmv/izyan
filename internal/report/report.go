@@ -112,6 +112,22 @@ func Markdown(c *domain.AnalysisCase) string {
 	if r := remediation(c); r != "" {
 		fmt.Fprintf(&b, "## Remediation\n\n%s\n\n", r)
 	}
+	if texs := c.EvidenceGraph.ToolExecutions; len(texs) > 0 {
+		b.WriteString("## Tool executions\n\n| tool | args | exit | ms | stdout sha256 |\n|---|---|---|---|---|\n")
+		for _, t := range texs {
+			tool := t.Tool
+			if t.Version != "" {
+				tool += "@" + t.Version
+			}
+			hash := t.StdoutSHA256
+			if len(hash) > 12 {
+				hash = hash[:12] + "…"
+			}
+			fmt.Fprintf(&b, "| `%s` | `%s` | %d | %d | `%s` |\n",
+				tool, strings.Join(t.Args, " "), t.ExitCode, t.DurationMs, hash)
+		}
+		b.WriteString("\n")
+	}
 	if lims := allLimitations(c); len(lims) > 0 {
 		b.WriteString("## Limitations\n\n")
 		for _, l := range lims {

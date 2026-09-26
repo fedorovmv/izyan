@@ -36,7 +36,7 @@
 | Negative check | §19: callers, **interface implementations**, runtime registration, **build-tagged code**, configuration overrides, alternate entrypoints | func_value/linkname/reflect/unsafe/plugin по scoped rules | interface-impl и build-tag покрыты (`GatedRefs`/`InterfaceDispatchSites`); `configuration overrides` как NV-концепт нет — `config_flag`/`config_key` читают knob'ы условий, но не конфигурацию, меняющую reachability |
 | Typed tools | §17: 17 инструментов | реализовано 7: read_function, find_symbol, find_callers, find_entrypoints, trace_argument, find_validations, scan_dynamic | Нет: `get_vulnerability`, `get_advisory`, `get_fix_references`, `get_fix_diff`, `get_module_version`, `get_dependency_graph`, `run_govulncheck`, `read_source`, `search_source`, `run_build`, `run_tests` — LLM-агент не может сам получить advisory/diff/версии или запустить сборку/тесты |
 | Hypothesis loop | §18 + agent §6,§16: OPEN→CONFIRMED/REJECTED, gap-driven planner | `Hypothesis` тип есть в domain | **Не инстанцируется нигде** — нет цикла select UNKNOWN → hypothesis → tool → claim → gap analysis; есть только однопроходный evaluate + fallback evaluator |
-| Persistence | §22: hypotheses, tool_executions с version/input/cmd/exit/stdout/stderr/hash | кейс + raw govulncheck в evidence.Content | `tool_executions` как отдельная сущность нет; `Evidence.ToolVersion` объявлен, но не заполняется; `EvidenceGraph.Runtime` не заполняется |
+| Persistence | §22: hypotheses, tool_executions с version/input/cmd/exit/stdout/stderr/hash | кейс + raw govulncheck в evidence.Content + `EvidenceGraph.ToolExecutions` (tool, version, args, exit, sha256 обоих потоков, ms) через ctx-рекордер; `Evidence.ToolVersion` заполнен для govulncheck | `EvidenceGraph.Runtime` не заполняется; env прогонов не пишется (секреты); reproducibility-diff хэшей между прогонами не делается |
 | Reviewer | §21: root cause, missed conditions, patch misinterpretation, scope mismatch, contradictions | Structural проверяет: TRUE без evidence, FALSE без NV, dangling refs, model без root cause | Не проверяются: пропущенные mandatory conditions (если LLM выкинул условие — не поймаем), «patch misinterpretation», «scope mismatch» |
 
 ## 3. Отсутствует концептуально — сканер обязан, но не делает
@@ -178,5 +178,7 @@ Issues/Jira) — deferred by design.
 7. **Hypothesis/gap-analysis loop** — каркас, который все это связывает.
 8. ~~Eval harness + false-safe metric~~ — `done` (первый слой, §3.7);
    далее — живой корпус и ground-truth метрики.
-9. **tool_executions/ToolVersion** — аудит-полнота, дёшево.
+9. ~~tool_executions/ToolVersion~~ — `done` (первый слой, §таблица
+   Persistence; `17-tool-audit-plan.md`). Остаток: `Runtime` evidence,
+   reproducibility-diff.
 10. **VEX-экспорт** — интеграционная ценность, дёшево (openvex уже есть в govulncheck).

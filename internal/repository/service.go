@@ -4,12 +4,12 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 
 	"example.com/vuln-analyzer/internal/domain"
+	"example.com/vuln-analyzer/internal/toolaudit"
 )
 
 type SnapshotOptions struct {
@@ -109,9 +109,7 @@ func goModDirective(path string) string {
 }
 
 func command(ctx context.Context, dir, name string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, name, args...)
-	cmd.Dir = dir
-	b, err := cmd.Output()
+	b, _, err := toolaudit.Run(ctx, filepath.Base(name), "", dir, name, nil, args...)
 	if err != nil {
 		return "", err
 	}

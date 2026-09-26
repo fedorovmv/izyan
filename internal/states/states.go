@@ -279,18 +279,27 @@ func (h CollectEvidence) Run(ctx context.Context, c *domain.AnalysisCase) (workf
 }
 
 func (h CollectEvidence) runGovulncheck(ctx context.Context, c *domain.AnalysisCase) {
+	// The DB snapshot identity doubles as the tool's version for the
+	// audit trail and explains a not-covered advisory.
+	var toolVer string
+	if informer, ok := h.Govulncheck.(goanalysis.DBInformer); ok {
+		if info, err := informer.DBInfo(ctx); err == nil {
+			toolVer = info
+		}
+	}
 	raw, err := h.Govulncheck.RunGovulncheck(ctx, c.Product.Repository, c.Product)
 	if err != nil {
 		c.EvidenceGraph.AddToolLimitation(fmt.Sprintf("govulncheck failed: %v", err))
 		return
 	}
 	evID := c.EvidenceGraph.AddEvidence(domain.Evidence{
-		Kind:    domain.EvidenceGovulncheck,
-		Quality: domain.QualityDeterministic,
-		Source:  "govulncheck -json -mode source ./...",
-		Tool:    "govulncheck",
-		Command: "govulncheck -json -mode source ./...",
-		Content: string(raw),
+		Kind:        domain.EvidenceGovulncheck,
+		Quality:     domain.QualityDeterministic,
+		Source:      "govulncheck -json -mode source ./...",
+		Tool:        "govulncheck",
+		ToolVersion: toolVer,
+		Command:     "govulncheck -json -mode source ./...",
+		Content:     string(raw),
 	})
 	res, err := goanalysis.Parse(raw)
 	if err != nil {
@@ -306,10 +315,8 @@ func (h CollectEvidence) runGovulncheck(ctx context.Context, c *domain.AnalysisC
 	} else {
 		c.GovulncheckCoverage = "not_in_db"
 		lim := "govulncheck emitted no findings referencing this advisory; reachability was not evaluated (silence is not evidence of no path)"
-		if informer, ok := h.Govulncheck.(goanalysis.DBInformer); ok {
-			if info, err := informer.DBInfo(ctx); err == nil && info != "" {
-				lim += fmt.Sprintf(" (local DB: %s; advisory modified: %s)", info, orUnknown(c.Vulnerability.Modified))
-			}
+		if toolVer != "" {
+			lim += fmt.Sprintf(" (local DB: %s; advisory modified: %s)", toolVer, orUnknown(c.Vulnerability.Modified))
 		}
 		c.EvidenceGraph.AddLimitation(lim)
 	}

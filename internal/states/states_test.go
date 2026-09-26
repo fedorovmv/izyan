@@ -21,6 +21,7 @@ import (
 	"example.com/vuln-analyzer/internal/review"
 	"example.com/vuln-analyzer/internal/rootcause"
 	"example.com/vuln-analyzer/internal/states"
+	"example.com/vuln-analyzer/internal/toolaudit"
 	"example.com/vuln-analyzer/internal/vulnerability"
 	"example.com/vuln-analyzer/internal/workflow"
 )
@@ -162,10 +163,44 @@ func runEngine(t *testing.T, d engineDeps) *domain.AnalysisCase {
 		states.EvaluateVerdict{Evaluator: evaluator.VerdictEvaluator{}},
 		states.BuildReport{Dir: filepath.Join(d.CaseDir, string(c.ID))},
 	)
-	if err := e.Run(context.Background(), c); err != nil {
+	ctx := toolaudit.WithRecorder(context.Background(),
+		&toolaudit.Recorder{Sink: c.EvidenceGraph.AddToolExecution})
+	if err := e.Run(ctx, c); err != nil {
 		t.Fatal(err)
 	}
 	return c
+}
+
+// Every real subprocess the pipeline spawns must land in the case's
+// tool_executions audit trail (spec §22): at minimum the snapshot's
+// git rev-parse and `go version` probes.
+func TestE2EToolExecutionsRecorded(t *testing.T) {
+	repo := initRepo(t)
+	dir := t.TempDir()
+	vulnPath := filepath.Join(dir, "vuln.json")
+	if err := os.WriteFile(vulnPath, []byte(xnetOSV), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c := runEngine(t, engineDeps{
+		RepoPath: repo,
+		VulnSrc:  vulnerability.FileSource{Path: vulnPath},
+		VulnID:   "GO-2024-3333",
+		Resolver: stubResolver{},
+		CaseDir:  filepath.Join(dir, "cases"),
+	})
+	tools := map[string]bool{}
+	for _, tx := range c.EvidenceGraph.ToolExecutions {
+		tools[tx.Tool] = true
+		if tx.ID == "" {
+			t.Fatalf("execution without id: %+v", tx)
+		}
+		if tx.Tool == "git" && (tx.ExitCode != 0 || tx.StdoutSHA256 == "") {
+			t.Fatalf("bad git record: %+v", tx)
+		}
+	}
+	if !tools["git"] || !tools["go"] {
+		t.Fatalf("want git+go executions recorded, got %v", c.EvidenceGraph.ToolExecutions)
+	}
 }
 
 // Golden case: module absent from the dependency graph -> NOT_AFFECTED,
