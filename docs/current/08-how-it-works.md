@@ -35,6 +35,7 @@ CREATED → SNAPSHOT_PRODUCT → RESOLVE_VULNERABILITY → CHECK_AFFECTED
 | BUILD_EXPLOIT_MODEL | `Classify` (CWE → keywords → fix-diff) → pattern из `exploit.Registry` → LLM (при наличии) → generic fallback | `ExploitModel` — класс + mandatory conditions с `Subjects`/`Params` |
 | COLLECT_EVIDENCE | govulncheck + `goanalysis.Index` | `EvidenceGraph`: call paths, data flows, entrypoints, module usages, limitations |
 | EVALUATE_CONDITIONS | evaluators chain | `Claim{TRUE/FALSE/UNKNOWN}` per condition |
+| GAP_ANALYSIS | hypothesis loop: `TraceArgumentBound`, `ScanDynamic`, `InterfaceDispatchSites`+`GatedRefs` | `Hypothesis` OPEN→CONFIRMED/REJECTED/UNRESOLVED; новые flows → re-evaluate |
 | NEGATIVE_CHECK | `goanalysis.Verifier` | FALSE-кандидат → VERIFIED/CONTRADICTED/INSUFFICIENT_SCOPE |
 | REVIEW | Structural + LLM reviewer | findings → bounded repair (только демоция в UNKNOWN) |
 | EVALUATE_VERDICT | `VerdictEvaluator` | вердикт |
@@ -50,7 +51,21 @@ CREATED → SNAPSHOT_PRODUCT → RESOLVE_VULNERABILITY → CHECK_AFFECTED
 | `INCONCLUSIVE` | всё остальное, включая FALSE без верификации |
 
 `INCONCLUSIVE` — нормальный ответ, а не ошибка: «доказать не удалось»,
-что по инварианту отличается от «не эксплуатируется».
+что по инварианту отличается от «не эксплуатируется». Каждый такой
+вердикт несёт список `Hypotheses` — что пытались проверить и почему не
+получилось (CONFIRMED-гипотеза о dynamic dispatch — документированная
+потеря покрытия, а не тихий UNKNOWN).
+
+### Gap-analysis loop
+
+`GAP_ANALYSIS` — bounded цикл по UNKNOWN mandatory claim'ам:
+планировщик генерирует гипотезу (например «origin резолвится глубже
+caller-chain»), tool-экшн собирает evidence, claim переоценивается;
+до фикспоинта (≤3 итераций) или `MaxToolCalls`. Экшены детерминистичны:
+углублённый трейс аргумента (hops=6 вместо 2), `ScanDynamic` при нуле
+call-sites, `InterfaceDispatchSites`/`GatedRefs` для скрытой
+достижимости. Экшены, документирующие потерю покрытия, никогда не
+двигают claim в FALSE — они объясняют честный UNKNOWN.
 
 ## 4. Роль govulncheck — что он умеет и чего не умеет
 

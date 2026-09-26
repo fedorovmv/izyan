@@ -35,7 +35,7 @@
 | Transformations | §15: `source → transformations → validation → sink`, security-relevant transforms | `TraceArgument` даёт origin конечного аргумента | Цепочка трансформаций не моделируется: `quote()/escape()/cast()` между source и sink не учитываются в reasoning |
 | Negative check | §19: callers, **interface implementations**, runtime registration, **build-tagged code**, configuration overrides, alternate entrypoints | func_value/linkname/reflect/unsafe/plugin по scoped rules | interface-impl и build-tag покрыты (`GatedRefs`/`InterfaceDispatchSites`); `configuration overrides` как NV-концепт нет — `config_flag`/`config_key` читают knob'ы условий, но не конфигурацию, меняющую reachability |
 | Typed tools | §17: 17 инструментов | реализовано 7: read_function, find_symbol, find_callers, find_entrypoints, trace_argument, find_validations, scan_dynamic | Нет: `get_vulnerability`, `get_advisory`, `get_fix_references`, `get_fix_diff`, `get_module_version`, `get_dependency_graph`, `run_govulncheck`, `read_source`, `search_source`, `run_build`, `run_tests` — LLM-агент не может сам получить advisory/diff/версии или запустить сборку/тесты |
-| Hypothesis loop | §18 + agent §6,§16: OPEN→CONFIRMED/REJECTED, gap-driven planner | `Hypothesis` тип есть в domain | **Не инстанцируется нигде** — нет цикла select UNKNOWN → hypothesis → tool → claim → gap analysis; есть только однопроходный evaluate + fallback evaluator |
+| Hypothesis loop | §18 + agent §6,§16: OPEN→CONFIRMED/REJECTED, gap-driven planner | `GAP_ANALYSIS` state: UNKNOWN mandatory → Hypothesis → tool action (deep-trace/ScanDynamic/dispatch-scan) → re-evaluate → fixpoint≤3/MaxToolCalls; гипотезы персистятся (`18`) | LLM-agent выбор инструментов не реализован; VALIDATION caller-frame — зафиксированный gap; REVIEW→REPAIR_ANALYSIS петля не включена |
 | Persistence | §22: hypotheses, tool_executions с version/input/cmd/exit/stdout/stderr/hash | кейс + raw govulncheck в evidence.Content + `EvidenceGraph.ToolExecutions` (tool, version, args, exit, sha256 обоих потоков, ms) через ctx-рекордер; `Evidence.ToolVersion` заполнен для govulncheck | `EvidenceGraph.Runtime` не заполняется; env прогонов не пишется (секреты); reproducibility-diff хэшей между прогонами не делается |
 | Reviewer | §21: root cause, missed conditions, patch misinterpretation, scope mismatch, contradictions | Structural проверяет: TRUE без evidence, FALSE без NV, dangling refs, model без root cause | Не проверяются: пропущенные mandatory conditions (если LLM выкинул условие — не поймаем), «patch misinterpretation», «scope mismatch» |
 
@@ -180,7 +180,9 @@ Issues/Jira) — deferred by design.
 5. ~~DATABASE/INTERNAL_SERVICE origins~~ — `done` (первый слой, §таблица
    origins; `16-data-origins-plan.md`); authenticated-vs-trusted — отдельно.
 6. **Недостающие 10 typed tools** — нужны полноценному hypothesis loop.
-7. **Hypothesis/gap-analysis loop** — каркас, который все это связывает.
+7. ~~Hypothesis/gap-analysis loop~~ — `done` (детерминистичный первый
+   слой, `18-gap-loop-plan.md`); LLM-driven planner и REVIEW→REPAIR —
+   отдельно.
 8. ~~Eval harness + false-safe metric~~ — `done` (первый слой, §3.7);
    далее — живой корпус и ground-truth метрики.
 9. ~~tool_executions/ToolVersion~~ — `done` (первый слой, §таблица

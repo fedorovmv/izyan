@@ -220,6 +220,18 @@ func analyzeCase(ctx context.Context, o analyzeOpts) (*domain.AnalysisCase, erro
 	var rcResolver states.RootCauseResolver = &rootcause.Resolver{Fix: fix.Resolver{}, Patch: fix.HTTPProvider{}}
 	var builder states.ExploitBuilder = &exploit.Builder{Source: srcIndex}
 	reviewers := review.Multi{review.Structural{}}
+	// The deterministic evaluator chain — shared by EVALUATE_CONDITIONS
+	// and the gap-analysis loop's re-evaluation pass.
+	conditionEvaluators := []evaluator.ConditionEvaluator{
+		evaluator.SymbolReachable{},
+		evaluator.ServerTransportInput{},
+		evaluator.ArgumentOrigin{},
+		evaluator.Validation{},
+		evaluator.Exposure{},
+		evaluator.ConfigFlag{},
+		evaluator.Presence{},
+		evaluator.VersionFact{},
+	}
 	var fallbackEval evaluator.ConditionEvaluator
 	if llmCfg.Enabled && !o.detOnly {
 		client := llm.NewClient(llmCfg)
@@ -264,16 +276,8 @@ func analyzeCase(ctx context.Context, o analyzeOpts) (*domain.AnalysisCase, erro
 			Source:      srcIndex,
 			OSVBase:     o.osvURL,
 		},
-		states.EvaluateConditions{Evaluators: []evaluator.ConditionEvaluator{
-			evaluator.SymbolReachable{},
-			evaluator.ServerTransportInput{},
-			evaluator.ArgumentOrigin{},
-			evaluator.Validation{},
-			evaluator.Exposure{},
-			evaluator.ConfigFlag{},
-			evaluator.Presence{},
-			evaluator.VersionFact{},
-		}, Fallback: fallbackEval},
+		states.EvaluateConditions{Evaluators: conditionEvaluators, Fallback: fallbackEval},
+		states.GapAnalysis{Source: srcIndex, Evaluators: conditionEvaluators},
 		states.NegativeCheck{Verifier: &goanalysis.Verifier{Source: srcIndex}},
 		states.Review{Reviewer: reviewers, Evaluator: evaluator.VerdictEvaluator{}},
 		states.EvaluateVerdict{Evaluator: evaluator.VerdictEvaluator{}},

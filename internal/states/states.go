@@ -900,7 +900,7 @@ func (h EvaluateConditions) Run(_ context.Context, c *domain.AnalysisCase) (work
 	if allMandatoryTrue(c) {
 		return workflow.Transition{Next: domain.StateReview, Reason: "all mandatory conditions satisfied"}, nil
 	}
-	return workflow.Transition{Next: domain.StateEvaluateVerdict, Reason: "unresolved mandatory conditions"}, nil
+	return workflow.Transition{Next: domain.StateGapAnalysis, Reason: "unresolved mandatory conditions"}, nil
 }
 
 func findClaim(claims []domain.Claim, id domain.ConditionID) *domain.Claim {

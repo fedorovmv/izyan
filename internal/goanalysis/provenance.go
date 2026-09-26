@@ -17,6 +17,30 @@ import (
 // callers. Deeper chains resolve to UNKNOWN (a limitation), not a guess.
 const maxTraceHops = 2
 
+// hops is the effective caller-climb bound: TraceArgumentBound may raise
+// it for a single trace during gap analysis.
+func (ix *Index) hops() int {
+	if ix.hopLimit > 0 {
+		return ix.hopLimit
+	}
+	return maxTraceHops
+}
+
+// TraceArgumentBound is TraceArgument with an explicit caller-climb
+// budget. The gap-analysis loop uses it when the default bound left an
+// argument origin unresolved.
+func (ix *Index) TraceArgumentBound(ctx context.Context, site domain.CallSite, argIndex, hops int) (domain.DataFlow, []domain.Evidence, error) {
+	ix.mu.Lock()
+	ix.hopLimit = hops
+	ix.mu.Unlock()
+	defer func() {
+		ix.mu.Lock()
+		ix.hopLimit = 0
+		ix.mu.Unlock()
+	}()
+	return ix.TraceArgument(ctx, site, argIndex)
+}
+
 // TraceArgument classifies the data origin of the argument at argIndex of
 // the call site (File+Line locate the call expression).
 func (ix *Index) TraceArgument(ctx context.Context, site domain.CallSite, argIndex int) (domain.DataFlow, []domain.Evidence, error) {
@@ -159,7 +183,7 @@ func (ix *Index) classifyIdent(pkg *packages.Package, enc *ast.FuncDecl, id *ast
 // unmarshal/decode families propagate the origin of the data argument;
 // grpc/stub out-params → INTERNAL_SERVICE.
 func (ix *Index) populateOrigin(pkg *packages.Package, enc *ast.FuncDecl, obj types.Object, depth int) (domain.DataOrigin, string, bool) {
-	if enc == nil || enc.Body == nil || depth >= maxTraceHops {
+	if enc == nil || enc.Body == nil || depth >= ix.hops() {
 		return "", "", false
 	}
 	var found *ast.CallExpr
@@ -472,7 +496,7 @@ func (ix *Index) httpClientOrigin(pkg *packages.Package, enc *ast.FuncDecl, fn *
 	if len(call.Args) > 0 {
 		endpoint = call.Args[0]
 	}
-	if endpoint != nil && depth < maxTraceHops {
+	if endpoint != nil && depth < ix.hops() {
 		if o, _ := ix.classify(pkg, enc, endpoint, depth+1); o == domain.OriginConfiguration || o == domain.OriginDatabase {
 			return domain.OriginInternalService,
 				fmt.Sprintf("http %s to configured endpoint", fn.Name()), true
@@ -498,7 +522,7 @@ func (ix *Index) topEval(pkg *packages.Package, enc *ast.FuncDecl) exprEval {
 // contaminated by external sources, or too complex to resolve — the caller
 // then yields UNKNOWN rather than guessing.
 func (ix *Index) traceCallee(fn *types.Func, call *ast.CallExpr, evalArg exprEval, depth int) (domain.DataOrigin, string, bool) {
-	if depth >= maxTraceHops {
+	if depth >= ix.hops() {
 		return "", "", false
 	}
 	decl, dp := ix.funcDecl(fn)
@@ -857,7 +881,7 @@ var passthroughMethods = map[string]bool{
 // traceParam resolves an argument bound to an enclosing function parameter by
 // looking at the callers of that function (one hop).
 func (ix *Index) traceParam(pkg *packages.Package, enc *ast.FuncDecl, v *types.Var, depth int) (domain.DataOrigin, string) {
-	if depth >= maxTraceHops || enc == nil || enc.Name == nil {
+	if depth >= ix.hops() || enc == nil || enc.Name == nil {
 		return domain.OriginUnknown, fmt.Sprintf("parameter %s of %s: caller tracing depth exceeded", v.Name(), enc.Name)
 	}
 	// find which parameter index this is

@@ -43,6 +43,7 @@ const (
 	StateBuildExploitModel    WorkflowState = "BUILD_EXPLOIT_MODEL"
 	StateCollectEvidence      WorkflowState = "COLLECT_EVIDENCE"
 	StateEvaluateConditions   WorkflowState = "EVALUATE_CONDITIONS"
+	StateGapAnalysis          WorkflowState = "GAP_ANALYSIS"
 	StateNegativeCheck        WorkflowState = "NEGATIVE_CHECK"
 	StateReview               WorkflowState = "REVIEW"
 	StateRepairAnalysis       WorkflowState = "REPAIR_ANALYSIS"
@@ -323,6 +324,10 @@ type Hypothesis struct {
 	Statement        string           `json:"statement"`
 	ExpectedEvidence []EvidenceKind   `json:"expected_evidence,omitempty"`
 	Status           HypothesisStatus `json:"status"`
+	// EvidenceIDs point at what the planner's action produced.
+	EvidenceIDs []EvidenceID `json:"evidence_ids,omitempty"`
+	// Notes record the action taken / why it stayed unresolved.
+	Notes string `json:"notes,omitempty"`
 }
 
 type Claim struct {
@@ -560,6 +565,22 @@ func (g *EvidenceGraph) AddDataFlows(flows ...DataFlow) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.DataFlows = append(g.DataFlows, flows...)
+}
+
+// ReplaceDataFlow swaps the flow recorded for the same condition and
+// sink position (the gap-analysis loop's deeper trace supersedes the
+// shallower UNKNOWN one). Appends when nothing matches.
+func (g *EvidenceGraph) ReplaceDataFlow(f DataFlow) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for i, ex := range g.DataFlows {
+		if ex.ConditionID == f.ConditionID &&
+			ex.Sink.File == f.Sink.File && ex.Sink.Line == f.Sink.Line {
+			g.DataFlows[i] = f
+			return
+		}
+	}
+	g.DataFlows = append(g.DataFlows, f)
 }
 
 func (g *EvidenceGraph) AddValidations(vals ...Validation) {
@@ -800,6 +821,7 @@ type AnalysisCase struct {
 	Exploit       *ExploitModel   `json:"exploit_model,omitempty"`
 	EvidenceGraph EvidenceGraph   `json:"evidence_graph"`
 	Claims        []Claim         `json:"claims,omitempty"`
+	Hypotheses    []Hypothesis    `json:"hypotheses,omitempty"`
 	Reviews       []Review        `json:"reviews,omitempty"`
 	Verdict       *VerdictResult  `json:"verdict,omitempty"`
 	// GovulncheckCoverage: "" unknown | "covered" the advisory exists in the
@@ -807,6 +829,17 @@ type AnalysisCase struct {
 	// evidence of no path.
 	GovulncheckCoverage string         `json:"govulncheck_coverage,omitempty"`
 	Workflow            WorkflowStatus `json:"workflow"`
+}
+
+// AddHypothesis appends a hypothesis with an assigned H-id.
+func (c *AnalysisCase) AddHypothesis(h Hypothesis) HypothesisID {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if h.ID == "" {
+		h.ID = HypothesisID(fmt.Sprintf("H-%03d", len(c.Hypotheses)+1))
+	}
+	c.Hypotheses = append(c.Hypotheses, h)
+	return h.ID
 }
 
 // Usage counter helpers — the only safe writers under parallelism.
