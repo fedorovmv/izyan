@@ -28,6 +28,8 @@ func (ServerTransportInput) Evaluate(cond domain.Condition, c *domain.AnalysisCa
 		ID:          domain.ClaimID("CL-" + string(cond.ID)),
 		ConditionID: cond.ID,
 		Result:      domain.ClaimUnknown,
+
+		Producer:    "evaluator.ServerTransportInput",
 	}
 	module := c.Vulnerability.Module
 	var frames []string

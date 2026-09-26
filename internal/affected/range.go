@@ -58,6 +58,7 @@ func normalizeVersion(s string) string {
 	case "", "0":
 		return ""
 	}
+	s = strings.TrimPrefix(s, "go") // toolchain spellings: go1.26.1
 	if !strings.HasPrefix(s, "v") {
 		s = "v" + s
 	}

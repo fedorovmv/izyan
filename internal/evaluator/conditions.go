@@ -32,6 +32,8 @@ func (SymbolReachable) Evaluate(cond domain.Condition, c *domain.AnalysisCase) d
 		ID:          domain.ClaimID("CL-" + string(cond.ID)),
 		ConditionID: cond.ID,
 		Result:      domain.ClaimUnknown,
+
+		Producer:    "evaluator.SymbolReachable",
 	}
 	symbols := reachabilitySubjects(cond, c)
 	if len(symbols) == 0 {

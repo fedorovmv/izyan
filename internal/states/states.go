@@ -257,9 +257,15 @@ func (h CollectEvidence) Run(ctx context.Context, c *domain.AnalysisCase) (workf
 		c.EvidenceGraph.AddLimitation("no evidence collectors beyond affected resolution are wired yet")
 	}
 	if isStdlibModule(c.Vulnerability.Module) {
-		c.EvidenceGraph.AddLimitation(fmt.Sprintf(
-			"stdlib advisory: applicability depends on the toolchain that built the release binary, not the source tree; analysis used %s, go.mod declares go %s — verify with `go version -m <binary>`",
-			c.Product.GoVersion, c.Product.GoModDirective))
+		if c.Product.ReleaseGoVersion != "" {
+			c.EvidenceGraph.AddLimitation(fmt.Sprintf(
+				"stdlib advisory assessed against release toolchain %s (analysis toolchain %s, go.mod minimum %s)",
+				c.Product.ReleaseGoVersion, c.Product.GoVersion, c.Product.GoModDirective))
+		} else {
+			c.EvidenceGraph.AddLimitation(fmt.Sprintf(
+				"stdlib advisory: applicability depends on the toolchain that built the release binary; pass --release-go-version or --binary (analysis toolchain %s, go.mod minimum %s)",
+				c.Product.GoVersion, c.Product.GoModDirective))
+		}
 	}
 	c.EvidenceGraph.ComputeHash()
 	return workflow.Transition{Next: domain.StateEvaluateConditions, Reason: "deterministic evidence collection complete"}, nil
@@ -641,12 +647,24 @@ func (h Review) Run(_ context.Context, c *domain.AnalysisCase) (workflow.Transit
 			continue
 		}
 		for i := range c.Claims {
-			if string(c.Claims[i].ID) == f.TargetID && c.Claims[i].Result != domain.ClaimUnknown {
-				c.Claims[i].Result = domain.ClaimUnknown
-				c.Claims[i].Limitations = append(c.Claims[i].Limitations,
-					"demoted by reviewer: "+f.Problem)
-				repaired = true
+			if string(c.Claims[i].ID) != f.TargetID || c.Claims[i].Result == domain.ClaimUnknown {
+				continue
 			}
+			// A TRUE claim backed by deterministic evidence is verified fact —
+			// a reviewer's reinterpretation cannot undo it; the concern is
+			// recorded as a caveat instead. FALSE claims stay demotable:
+			// negative verification is weaker by nature.
+			if c.Claims[i].Result == domain.ClaimTrue &&
+				strings.HasPrefix(c.Claims[i].Producer, "evaluator.") &&
+				claimHasDeterministicEvidence(c, &c.Claims[i]) {
+				c.Claims[i].Limitations = append(c.Claims[i].Limitations,
+					"reviewer concern (claim kept: deterministic evidence): "+f.Problem)
+				continue
+			}
+			c.Claims[i].Result = domain.ClaimUnknown
+			c.Claims[i].Limitations = append(c.Claims[i].Limitations,
+				"demoted by reviewer: "+f.Problem)
+			repaired = true
 		}
 	}
 	reason := "review REVISE: repaired claims"
@@ -654,6 +672,24 @@ func (h Review) Run(_ context.Context, c *domain.AnalysisCase) (workflow.Transit
 		reason = "review REVISE: no repairable claims"
 	}
 	return workflow.Transition{Next: domain.StateEvaluateVerdict, Reason: reason}, nil
+}
+
+// claimHasDeterministicEvidence reports whether any evidence attached to the
+// claim carries deterministic quality (tool output, not LLM inference).
+func claimHasDeterministicEvidence(c *domain.AnalysisCase, cl *domain.Claim) bool {
+	if len(cl.EvidenceIDs) == 0 {
+		return false
+	}
+	byID := map[domain.EvidenceID]domain.EvidenceQuality{}
+	for _, e := range c.EvidenceGraph.EvidenceList() {
+		byID[e.ID] = e.Quality
+	}
+	for _, id := range cl.EvidenceIDs {
+		if q := byID[id]; q == domain.QualityDeterministic || q == domain.QualityAuthoritative {
+			return true
+		}
+	}
+	return false
 }
 
 func affectedOf(c *domain.AnalysisCase) domain.AffectedResult {

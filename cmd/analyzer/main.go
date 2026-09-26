@@ -80,6 +80,8 @@ type analyzeOpts struct {
 	goos          string
 	goarch        string
 	tags          string
+	binary        string
+	releaseGo     string
 	exploitModel  string
 	llmEnv        string
 	detOnly       bool
@@ -98,6 +100,8 @@ func commonFlags(fs *flag.FlagSet, o *analyzeOpts) {
 	fs.StringVar(&o.goos, "goos", "", "target GOOS")
 	fs.StringVar(&o.goarch, "goarch", "", "target GOARCH")
 	fs.StringVar(&o.tags, "build-tags", "", "comma-separated build tags")
+	fs.StringVar(&o.binary, "binary", "", "release-built Go binary: govulncheck -mode binary + embedded toolchain")
+	fs.StringVar(&o.releaseGo, "release-go-version", "", "toolchain version that built the release (e.g. from the ticket)")
 	fs.BoolVar(&o.detOnly, "deterministic-only", false, "disable LLM-backed states")
 	fs.StringVar(&o.llmEnv, "llm-env", "", "path to LLM .env file (default: .env in cwd or repo)")
 }
@@ -209,9 +213,11 @@ func analyzeCase(ctx context.Context, o analyzeOpts) (*domain.AnalysisCase, erro
 			Repo: repository.Service{},
 			Path: absRepo,
 			Options: repository.SnapshotOptions{
-				GOOS:      o.goos,
-				GOARCH:    o.goarch,
-				BuildTags: splitCSV(o.tags),
+				GOOS:             o.goos,
+				GOARCH:           o.goarch,
+				BuildTags:        splitCSV(o.tags),
+				BinaryPath:       o.binary,
+				ReleaseGoVersion: o.releaseGo,
 			},
 		},
 		states.ResolveVulnerability{Source: src, ID: o.vulnID},
@@ -234,6 +240,7 @@ func analyzeCase(ctx context.Context, o analyzeOpts) (*domain.AnalysisCase, erro
 			evaluator.ServerTransportInput{},
 			evaluator.ArgumentOrigin{},
 			evaluator.Validation{},
+			evaluator.VersionFact{},
 		}, Fallback: fallbackEval},
 		states.NegativeCheck{Verifier: &goanalysis.Verifier{Source: srcIndex}},
 		states.Review{Reviewer: reviewers, Evaluator: evaluator.VerdictEvaluator{}},
@@ -388,6 +395,7 @@ func runScan(args []string) error {
 	// and skipped; survivors get the full pipeline.
 	snap, err := repository.Service{}.Snapshot(ctx, absRepo, repository.SnapshotOptions{
 		GOOS: o.goos, GOARCH: o.goarch, BuildTags: splitCSV(o.tags),
+		BinaryPath: o.binary, ReleaseGoVersion: o.releaseGo,
 	})
 	if err != nil {
 		return fmt.Errorf("snapshot: %w", err)

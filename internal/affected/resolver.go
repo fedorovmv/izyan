@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"strings"
 
 	"example.com/vuln-analyzer/internal/domain"
 )
@@ -66,6 +67,29 @@ func (r GoResolver) Resolve(ctx context.Context, vuln domain.Vulnerability, prod
 		return res, ev, nil
 	}
 
+	if isStdlibModule(vuln.Module) {
+		// Standard library: "present" is decided by package import below; the
+		// vulnerable version is the toolchain that compiled the release —
+		// release/toolchain wins over the local go, go.mod is only a minimum.
+		res.ModulePresent = domain.ClaimTrue
+		res.ResolvedVersion, res.Limitations = toolchainVersion(product, res.Limitations)
+		if normalizeVersion(res.ResolvedVersion) == "" {
+			res.VersionAffected = domain.ClaimUnknown
+			res.Limitations = append(res.Limitations,
+				fmt.Sprintf("cannot apply version ranges to toolchain version %q", res.ResolvedVersion))
+			return res, ev, nil
+		}
+		if affectedByRanges(res.ResolvedVersion, vuln.AffectedVersions) {
+			res.VersionAffected = domain.ClaimTrue
+		} else {
+			res.VersionAffected = domain.ClaimFalse
+			res.PackagePresent = domain.ClaimFalse
+			res.BuildRelevant = domain.ClaimFalse
+			return res, ev, nil
+		}
+		return resolvePackages(ctx, tool, vuln, product, res, ev, add)
+	}
+
 	mod, found := findModule(mods, vuln.Module)
 	if !found {
 		res.ModulePresent = domain.ClaimFalse
@@ -94,6 +118,14 @@ func (r GoResolver) Resolve(ctx context.Context, vuln domain.Vulnerability, prod
 		return res, ev, nil
 	}
 
+	return resolvePackages(ctx, tool, vuln, product, res, ev, add)
+}
+
+// resolvePackages finishes the affected chain: affected package imported?
+// build relevant for the snapshot's platform?
+func resolvePackages(ctx context.Context, tool GoTool, vuln domain.Vulnerability,
+	product domain.ProductSnapshot, res domain.AffectedResult,
+	ev []domain.Evidence, add func(domain.Evidence)) (domain.AffectedResult, []domain.Evidence, error) {
 	pkgRaw, err := tool.ListPackages(ctx, product.Repository, product)
 	if err != nil {
 		res.PackagePresent = domain.ClaimUnknown
@@ -138,6 +170,45 @@ func (r GoResolver) Resolve(ctx context.Context, vuln domain.Vulnerability, prod
 
 	res.BuildRelevant = buildRelevant(vuln, product)
 	return res, ev, nil
+}
+
+// isStdlibModule reports whether the advisory's module is the Go standard
+// library or toolchain pseudo-module — such advisories apply to the release
+// toolchain version, not to a module dependency.
+func isStdlibModule(module string) bool {
+	switch module {
+	case "std", "stdlib", "toolchain", "cmd":
+		return true
+	}
+	first := module
+	if i := strings.IndexByte(module, '/'); i >= 0 {
+		first = module[:i]
+	}
+	return !strings.Contains(first, ".")
+}
+
+// toolchainVersion picks the version the stdlib advisory applies to: the
+// release toolchain (flag/binary build info) first, then the local toolchain
+// used for analysis, then the go.mod minimum. Returns a semver-ish string.
+func toolchainVersion(product domain.ProductSnapshot, lims []string) (string, []string) {
+	if v := product.ReleaseGoVersion; v != "" {
+		return v, lims
+	}
+	// product.GoVersion is "go version go1.26.1 darwin/arm64".
+	f := strings.Fields(product.GoVersion)
+	for _, tok := range f {
+		if strings.HasPrefix(tok, "go1.") || strings.HasPrefix(tok, "go2.") {
+			lims = append(lims,
+				"stdlib version check used the analysis toolchain; pass --release-go-version or --binary for the release toolchain")
+			return tok, lims
+		}
+	}
+	if product.GoModDirective != "" {
+		lims = append(lims,
+			"stdlib version check fell back to the go.mod minimum — actual release toolchain unknown")
+		return "go" + product.GoModDirective, lims
+	}
+	return "", append(lims, "no toolchain version available for stdlib advisory")
 }
 
 func findModule(mods []Module, path string) (Module, bool) {

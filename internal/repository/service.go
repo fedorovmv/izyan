@@ -16,6 +16,14 @@ type SnapshotOptions struct {
 	GOOS      string
 	GOARCH    string
 	BuildTags []string
+	// BinaryPath points at the release-built artifact. When set, the embedded
+	// build info (`go version -m`) supplies the real toolchain and module
+	// versions — the ground truth a ticket refers to, unlike go.mod which is
+	// only a minimum.
+	BinaryPath string
+	// ReleaseGoVersion is the toolchain version that built the release, when
+	// known from the ticket/pipeline metadata.
+	ReleaseGoVersion string
 }
 
 type Snapshotter interface {
@@ -34,6 +42,12 @@ func (Service) Snapshot(ctx context.Context, path string, opts SnapshotOptions) 
 		return domain.ProductSnapshot{}, fmt.Errorf("go version: %w", err)
 	}
 	gomod := goModDirective(path)
+	releaseGo := opts.ReleaseGoVersion
+	if opts.BinaryPath != "" {
+		if v, berr := binaryGoVersion(ctx, opts.BinaryPath); berr == nil && v != "" {
+			releaseGo = v // embedded build info wins over ticket metadata
+		}
+	}
 	goos := opts.GOOS
 	if goos == "" {
 		goos = runtime.GOOS
@@ -43,14 +57,31 @@ func (Service) Snapshot(ctx context.Context, path string, opts SnapshotOptions) 
 		goarch = runtime.GOARCH
 	}
 	return domain.ProductSnapshot{
-		Repository:     path,
-		Commit:         commit,
-		GoVersion:      goversion,
-		GoModDirective: gomod,
-		GOOS:           goos,
-		GOARCH:         goarch,
-		BuildTags:      opts.BuildTags,
+		Repository:       path,
+		Commit:           commit,
+		GoVersion:        goversion,
+		GoModDirective:   gomod,
+		ReleaseGoVersion: releaseGo,
+		BinaryPath:       opts.BinaryPath,
+		GOOS:             goos,
+		GOARCH:           goarch,
+		BuildTags:        opts.BuildTags,
 	}, nil
+}
+
+// binaryGoVersion extracts the toolchain embedded in a Go binary via
+// `go version -m`: the first line ends with the toolchain version.
+func binaryGoVersion(ctx context.Context, bin string) (string, error) {
+	out, err := command(ctx, filepath.Dir(bin), "go", "version", "-m", bin)
+	if err != nil {
+		return "", err
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if i := strings.Index(line, ": go"); i >= 0 {
+			return strings.TrimSpace(line[i+2:]), nil
+		}
+	}
+	return "", fmt.Errorf("no toolchain in go version -m output")
 }
 
 // goModDirective returns the `go` directive of the module's go.mod — the

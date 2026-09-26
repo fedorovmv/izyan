@@ -48,11 +48,18 @@ func (r ExecRunner) RunGovulncheck(ctx context.Context, dir string, build domain
 	if bin == "" {
 		bin = "govulncheck"
 	}
-	args := []string{"-json", "-mode", "source"}
-	if len(build.BuildTags) > 0 {
-		args = append(args, "-tags", strings.Join(build.BuildTags, ","))
+	var args []string
+	if build.BinaryPath != "" {
+		// Binary mode reads the release artifact's embedded build info: the
+		// real toolchain and module versions, not the source tree's claims.
+		args = []string{"-json", "-mode", "binary", build.BinaryPath}
+	} else {
+		args = []string{"-json", "-mode", "source"}
+		if len(build.BuildTags) > 0 {
+			args = append(args, "-tags", strings.Join(build.BuildTags, ","))
+		}
+		args = append(args, "./...")
 	}
-	args = append(args, "./...")
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = dir
 	var env []string

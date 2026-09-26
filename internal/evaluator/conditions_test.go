@@ -126,3 +126,58 @@ func TestServerTransportInputIgnoresProductServe(t *testing.T) {
 		t.Fatalf("got %s, want UNKNOWN: product Serve is not vuln-module transport", claim.Result)
 	}
 }
+
+func affectedCase(ver string) *domain.AnalysisCase {
+	c := &domain.AnalysisCase{}
+	c.Affected = &domain.AffectedResult{
+		VersionAffected: domain.ClaimTrue,
+		ResolvedVersion: ver,
+		EvidenceIDs:     []domain.EvidenceID{"EV-AFFECTED-MODULES"},
+	}
+	return c
+}
+
+func TestVersionFactPriorTo(t *testing.T) {
+	c := affectedCase("v1.80.0")
+	claim := VersionFact{}.Evaluate(domain.Condition{
+		ID: "C-BUILD", Kind: domain.ConditionBuild,
+		Description: "The gRPC-Go version must be prior to 1.83.1 (the release containing the fix), or compaction must be disabled.",
+	}, c)
+	if claim.Result != domain.ClaimTrue {
+		t.Fatalf("got %s, want TRUE", claim.Result)
+	}
+}
+
+func TestVersionFactAbsentInVulnerable(t *testing.T) {
+	c := affectedCase("v1.10.0")
+	claim := VersionFact{}.Evaluate(domain.Condition{
+		ID: "C-CONF", Kind: domain.ConditionConfiguration,
+		Description: "Buffer compaction must be absent. In vulnerable versions (< 1.13.0) the feature does not exist.",
+	}, c)
+	if claim.Result != domain.ClaimTrue {
+		t.Fatalf("got %s, want TRUE", claim.Result)
+	}
+}
+
+func TestVersionFactBoundNotSatisfied(t *testing.T) {
+	c := affectedCase("v1.90.0")
+	claim := VersionFact{}.Evaluate(domain.Condition{
+		ID: "C-BUILD", Kind: domain.ConditionBuild,
+		Description: "version must be prior to 1.83.1",
+	}, c)
+	if claim.Result != domain.ClaimUnknown {
+		t.Fatalf("got %s, want UNKNOWN: bound not satisfied", claim.Result)
+	}
+}
+
+func TestVersionFactUnaffectedStaysUnknown(t *testing.T) {
+	c := affectedCase("v1.80.0")
+	c.Affected.VersionAffected = domain.ClaimUnknown
+	claim := VersionFact{}.Evaluate(domain.Condition{
+		ID: "C-CONF", Kind: domain.ConditionConfiguration,
+		Description: "in vulnerable versions the feature does not exist",
+	}, c)
+	if claim.Result != domain.ClaimUnknown {
+		t.Fatalf("got %s, want UNKNOWN without proven affectedness", claim.Result)
+	}
+}

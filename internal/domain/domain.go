@@ -97,6 +97,8 @@ type ProductSnapshot struct {
 	Commit            string             `json:"commit"`
 	GoVersion         string             `json:"go_version"`
 	GoModDirective    string             `json:"go_mod_directive,omitempty"`
+	ReleaseGoVersion  string             `json:"release_go_version,omitempty"`
+	BinaryPath        string             `json:"binary_path,omitempty"`
 	GOOS              string             `json:"goos"`
 	GOARCH            string             `json:"goarch"`
 	BuildTags         []string           `json:"build_tags,omitempty"`
@@ -241,6 +243,10 @@ type Claim struct {
 	Explanation          string                `json:"explanation,omitempty"`
 	Limitations          []string              `json:"limitations,omitempty"`
 	NegativeVerification *NegativeVerification `json:"negative_verification,omitempty"`
+	// Producer names the evaluator/agent that emitted the claim. Claims from
+	// deterministic evaluators backed by deterministic evidence are immune
+	// to reviewer demotion — reinterpretation cannot undo a verified fact.
+	Producer string `json:"producer,omitempty"`
 }
 
 type EvidenceQuality string

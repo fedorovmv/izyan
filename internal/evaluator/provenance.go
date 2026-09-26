@@ -24,6 +24,8 @@ func (ArgumentOrigin) Evaluate(cond domain.Condition, c *domain.AnalysisCase) do
 		ID:          domain.ClaimID("CL-" + string(cond.ID)),
 		ConditionID: cond.ID,
 		Result:      domain.ClaimUnknown,
+
+		Producer:    "evaluator.ArgumentOrigin",
 	}
 	flows := flowsFor(c, cond.ID)
 	if len(flows) == 0 {
