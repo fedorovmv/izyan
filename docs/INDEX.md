@@ -12,6 +12,7 @@
 | `current/07-implementation-status.md` | живой | Статус срезов MVP, что сделано/что дальше |
 | `current/08-how-it-works.md` | актуальный | Алгоритм работы: пайплайн, evaluators, negative check, особенности govulncheck |
 | `current/09-gap-analysis.md` | актуальный | Gap analysis спека↔код: что не сделано и почему |
+| `current/10-pattern-library-plan.md` | план | Exploit Pattern Library: classify → patterns → conditions |
 | `history/01-initial-architecture.md` | исторический | Исходная архитектура до разбора OSS |
 | `history/README.md` | исторический | Что изменилось и почему |
 
