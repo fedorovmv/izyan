@@ -143,10 +143,15 @@ evidence (hash-сравнение графов между прогонами).
 
 ### 3.8 VEX/OpenVEX/CycloneDX экспорт
 
-§25: «позднее OpenVEX/CycloneDX VEX». govulncheck сам умеет
-`-format openvex`; наш verdict-модель в VEX-статусы мапится
-(`EXPLOITABLE`→affected, `NO_EXPLOIT_PATH_FOUND`→not_affected+justification,
-`INCONCLUSIVE`→under_investigation). Не реализовано.
+§25: «позднее OpenVEX/CycloneDX VEX». `done` для OpenVEX: каждый кейс
+пишет `openvex.json` рядом с report.{json,md} — `internal/report/openvex.go`,
+маппинг `EXPLOITABLE`→affected, `NOT_AFFECTED`→not_affected
+(component_not_present / vulnerable_code_not_present по тому, какая
+ветка отвалилась), `NO_EXPLOIT_PATH_FOUND`→not_affected +
+`vulnerable_code_not_in_execute_path` (выдаётся только после NV),
+`INCONCLUSIVE`→under_investigation + action_statement. Product пинится
+purl'ом на анализируемый коммит, уязвимый модуль — subcomponent с
+resolved version. CycloneDX — не реализовано.
 
 ### 3.9 Remediation workflow
 
@@ -181,4 +186,4 @@ Issues/Jira) — deferred by design.
 9. ~~tool_executions/ToolVersion~~ — `done` (первый слой, §таблица
    Persistence; `17-tool-audit-plan.md`). Остаток: `Runtime` evidence,
    reproducibility-diff.
-10. **VEX-экспорт** — интеграционная ценность, дёшево (openvex уже есть в govulncheck).
+10. ~~VEX-экспорт~~ — `done` (OpenVEX, §3.8); CycloneDX — при нужде.

@@ -15,7 +15,7 @@ import (
 	"example.com/vuln-analyzer/internal/domain"
 )
 
-// Write stores report.json and report.md inside dir.
+// Write stores report.json, report.md and openvex.json inside dir.
 func Write(dir string, c *domain.AnalysisCase) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
@@ -25,6 +25,13 @@ func Write(dir string, c *domain.AnalysisCase) error {
 		return err
 	}
 	if err := os.WriteFile(filepath.Join(dir, "report.json"), jb, 0o644); err != nil {
+		return err
+	}
+	vb, err := OpenVEX(c)
+	if err != nil {
+		return fmt.Errorf("openvex: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "openvex.json"), vb, 0o644); err != nil {
 		return err
 	}
 	return os.WriteFile(filepath.Join(dir, "report.md"), []byte(Markdown(c)), 0o644)

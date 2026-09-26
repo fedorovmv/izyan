@@ -356,6 +356,22 @@ duration_ms, error. Реализация — `internal/toolaudit`: рекорд�
 (вывод `-version`/vulndb-строки). Не записываются: `packages.Load`
 (in-process), env прогонов (секреты).
 
+## 12b. OpenVEX-экспорт
+
+Рядом с `report.{json,md}` каждый кейс пишет `openvex.json`
+(`internal/report.OpenVEX`, openvex.dev/ns/v0.2.0). Маппинг вердиктов:
+
+| Вердикт | VEX status | justification |
+|---|---|---|
+| EXPLOITABLE | affected | — (impact = reason) |
+| NOT_AFFECTED | not_affected | `component_not_present` (модуль/билд) или `vulnerable_code_not_present` (версия/пакет) |
+| NO_EXPLOIT_PATH_FOUND | not_affected | `vulnerable_code_not_in_execute_path` — только после прошедшей negative-верификации |
+| INCONCLUSIVE | under_investigation | action_statement = reason |
+
+Продукт — `pkg:golang/<module>@<analyzed commit>`; уязвимая зависимость —
+subcomponent `pkg:golang/<module>@<resolved_version>`. CycloneDX не
+экспортируется.
+
 ## 13. Чего не хватает (известные границы)
 
 - `ModuleInternalReach` работает по vendored-исходникам; без `vendor/`
