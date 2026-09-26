@@ -204,8 +204,20 @@ const (
 	ParamBound = "bound"
 	// ParamCheck selects a structural check: "symbol_present" verifies the
 	// subject exists in the dependency source; "exposure" resolves the
-	// network exposure of the vulnerable surface.
+	// network exposure of the vulnerable surface; "config_flag" /
+	// "config_key" resolve a configuration knob's effective value.
 	ParamCheck = "check"
+	// ParamConfigPackage/ParamConfigSymbol name a code-level configuration
+	// knob (e.g. crypto/tls + Config.InsecureSkipVerify) for
+	// check=config_flag.
+	ParamConfigPackage = "config_package"
+	ParamConfigSymbol  = "config_symbol"
+	// ParamConfigKey names a repository config-file key for
+	// check=config_key.
+	ParamConfigKey = "config_key"
+	// ParamInsecure is the knob value that enables the vulnerable
+	// configuration (default "true").
+	ParamInsecure = "insecure_value"
 )
 
 const (
@@ -217,6 +229,8 @@ const (
 
 	CheckSymbolPresent = "symbol_present"
 	CheckExposure      = "exposure"
+	CheckConfigFlag    = "config_flag"
+	CheckConfigKey     = "config_key"
 )
 
 // Exposure scope values — deterministic classification of a resolved
@@ -416,7 +430,22 @@ type Validation struct {
 type ConfigItem struct {
 	Key      string     `json:"key"`
 	Value    string     `json:"value"`
+	File     string     `json:"file,omitempty"`
+	Line     int        `json:"line,omitempty"`
 	Evidence EvidenceID `json:"evidence_id,omitempty"`
+}
+
+// ConfigAssignment is a product-code assignment to a configuration knob
+// (a Type.Field subject): composite-literal keys and x.Field = value
+// assignments, with the assigned value resolved to a literal/const when
+// statically determinable.
+type ConfigAssignment struct {
+	CallSite
+	// Subject is the knob key "pkg.Type.Field".
+	Subject string `json:"subject"`
+	Value   string `json:"value,omitempty"`
+	// Source: "literal", "const", or "" when the value is not resolvable.
+	Source string `json:"source,omitempty"`
 }
 
 type EvidenceGraph struct {
@@ -442,13 +471,21 @@ type EvidenceGraph struct {
 	SymbolDecls map[string]*CallSite `json:"symbol_decls,omitempty"`
 	// Exposures records resolved network-exposure facts: inbound listener
 	// binds and outbound endpoints into the vulnerable module.
-	Exposures       []ExposureFact `json:"exposures,omitempty"`
-	Validations     []Validation   `json:"validations,omitempty"`
-	Configuration   []ConfigItem   `json:"configuration,omitempty"`
-	Runtime         []EvidenceID   `json:"runtime,omitempty"`
-	ToolLimitations []string       `json:"tool_limitations,omitempty"`
-	Limitations     []string       `json:"limitations,omitempty"`
-	Hash            string         `json:"hash,omitempty"`
+	Exposures []ExposureFact `json:"exposures,omitempty"`
+	// ConfigFlags maps a knob key "pkg.Type.Field" to the assignments
+	// product code makes to it — empty list under a present key means
+	// "checked, no assignments".
+	ConfigFlags map[string][]ConfigAssignment `json:"config_flags,omitempty"`
+	// ConfigFieldKinds maps a knob key to the field's underlying kind
+	// ("bool", "string", …) — enables Go zero-value reasoning when the
+	// knob is never assigned.
+	ConfigFieldKinds map[string]string `json:"config_field_kinds,omitempty"`
+	Validations      []Validation      `json:"validations,omitempty"`
+	Configuration    []ConfigItem      `json:"configuration,omitempty"`
+	Runtime          []EvidenceID      `json:"runtime,omitempty"`
+	ToolLimitations  []string          `json:"tool_limitations,omitempty"`
+	Limitations      []string          `json:"limitations,omitempty"`
+	Hash             string            `json:"hash,omitempty"`
 }
 
 // AddEvidence appends e to the graph, assigning an ID when empty, and
@@ -560,6 +597,60 @@ func (g *EvidenceGraph) SymbolDeclFor(key string) (site *CallSite, checked bool)
 	defer g.mu.Unlock()
 	site, checked = g.SymbolDecls[key]
 	return site, checked
+}
+
+// AddConfigFlag records an assignment to a configuration knob; a nil
+// assignment still records that the knob was checked.
+func (g *EvidenceGraph) AddConfigFlag(subject string, a ...ConfigAssignment) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.ConfigFlags == nil {
+		g.ConfigFlags = map[string][]ConfigAssignment{}
+	}
+	g.ConfigFlags[subject] = append(g.ConfigFlags[subject], a...)
+}
+
+// ConfigFlagsFor returns assignments recorded for the knob; checked
+// reports whether the lookup ran at all.
+func (g *EvidenceGraph) ConfigFlagsFor(subject string) (list []ConfigAssignment, checked bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	list, checked = g.ConfigFlags[subject]
+	return list, checked
+}
+
+// AddConfigFieldKind records the underlying kind of a config knob field.
+func (g *EvidenceGraph) AddConfigFieldKind(subject, kind string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.ConfigFieldKinds == nil {
+		g.ConfigFieldKinds = map[string]string{}
+	}
+	g.ConfigFieldKinds[subject] = kind
+}
+
+// SymbolFieldKind returns the recorded field kind for the knob.
+func (g *EvidenceGraph) SymbolFieldKind(subject string) (string, bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	k, ok := g.ConfigFieldKinds[subject]
+	return k, ok
+}
+
+// AddConfigItem records a configuration key/value found in the repo.
+func (g *EvidenceGraph) AddConfigItem(it ConfigItem) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.Configuration = append(g.Configuration, it)
+}
+
+// ConfigItems returns recorded configuration items.
+func (g *EvidenceGraph) ConfigItems() []ConfigItem {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	out := make([]ConfigItem, len(g.Configuration))
+	copy(out, g.Configuration)
+	return out
 }
 
 // AddExposure records a resolved exposure fact.

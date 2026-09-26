@@ -178,7 +178,22 @@ composite-literal ключи матчатся по declaring struct); `sequence=
 | `Validation` | `INPUT_CONSTRAINT` | `FindValidations` — guard-выражения до sink |
 | `Presence` | `check=symbol_present` | `SymbolDecls`: subject объявлен в dep source → TRUE; проверен и отсутствует → FALSE-кандидат (INFO_LEAK) |
 | `Exposure` | `check=exposure` | `Exposures`: факты есть → TRUE (перечисление + scope, caveat'ы в limitations); фактов нет или скан не запускался → UNKNOWN — FALSE не выдаётся никогда: отсутствие listener/dial-сайта в коде не доказывает недостижимость (proxy/ingress вне кода) |
+| `ConfigFlag` | `check=config_flag` / `config_key` | code-knob: присваивания `Type.Field` из `ConfigFlags` (literal/const резолв) — insecure → TRUE, все safe → FALSE-кандидат; никогда не присвоен + тип bool + insecure≠zero → FALSE-кандидат по Go zero-value; file-key: `Configuration` items из `FindKey` |
 | `VersionFact` | `BUILD_CONDITION`, `CONFIGURATION` | semver-сравнение («prior to X.Y.Z», «нет в vulnerable versions») по `AffectedResult` |
+
+**Configuration checks** (`C-TLS-VERIFY` supporting в peer-driven
+паттерне — `crypto/tls Config.InsecureSkipVerify`, insecure=true; LLM
+может предлагать свои knob'ы через params — верифицируются `FindSymbol`):
+
+- `FieldAssignments` собирает composite-literal ключи и `x.Field = v`
+  присваивания; значение резолвится через `types.Info` (literal/const).
+- `SymbolFieldType` даёт kind поля → zero-value семантика Go
+  детерминистична: bool-knob без присваиваний = false.
+- `exposure.FindKey` — поиск произвольного ключа в конфигах репо
+  (та же walk+sanitize, что ScanRepo, без addr-фильтра).
+- Живой результат: продукт-референс ставит `InsecureSkipVerify=true`
+  в `pkg/tls/type.go` → `C-TLS-VERIFY` TRUE — факт «peer on the wire»
+  для всех peer-driven кейсов подтверждён конфигурацией.
 
 **Exposure facts** (`C-EXPOSURE`, supporting в peer-driven и NIL_DEREF
 паттернах — не гейтит вердикт, но получает claim и попадает в отчёт):
@@ -220,6 +235,9 @@ FALSE-кандидат проходит `Verifier` до того, как вер�
   CONTRADICTED.
 - `sequence=` — проверяются только **не вызванные** члены пары: ссылки
   на них → INSUFFICIENT_SCOPE, нет → VERIFIED.
+- Параметрические check-условия (`config_flag`/`config_key`/`exposure`/
+  `symbol_present`) NV не проверяет subject-escape правилами — их FALSE
+  фальсифицируется собственным evidence; вердикт — INSUFFICIENT_SCOPE.
 - **Scope-расширение** (после VERIFIED любой стратегией —
   `extendNegativeScope`): `GatedRefs` ищет ссылки на subject в файлах,
   исключённых текущими build tags (`pkg.IgnoredFiles`, без `_test.go`),

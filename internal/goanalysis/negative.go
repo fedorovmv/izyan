@@ -48,6 +48,19 @@ func (v Verifier) VerifyFalse(ctx context.Context, c *domain.AnalysisCase, claim
 		})
 	}
 
+	// Parametric checks (config knobs, exposure, symbol presence) are
+	// falsified by their own evidence, not by subject-escape rules — the
+	// subjects bound to such conditions are advisory sinks, and a
+	// func_value marker on a sink says nothing about the knob's value.
+	switch cond.Params[domain.ParamCheck] {
+	case domain.CheckConfigFlag, domain.CheckConfigKey,
+		domain.CheckExposure, domain.CheckSymbolPresent:
+		return setNeg(claim, &domain.NegativeVerification{
+			Status: domain.NegativeInsufficientScope,
+			Notes:  "parametric check condition — subject-escape falsification does not apply",
+		})
+	}
+
 	allSites := map[string][]domain.CallSite{}
 	anyExported := false
 	for _, s := range subjects {

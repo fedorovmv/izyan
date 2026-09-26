@@ -156,9 +156,11 @@ Issues/Jira) — deferred by design.
 1. ~~Pattern library~~ — `done` (базовый слой, §3.2).
 2. ~~Deployment facts (bind/endpoint)~~ — `done` (первый слой, §3.1);
    auth на entrypoint'ах — в резерве.
-3. **Configuration reading** — частично: `exposure.ScanRepo` читает
-   addr-ключи для env-резолва; полноценные CONFIGURATION-условия
-   (не версионные) всё ещё UNKNOWN.
+3. ~~Configuration reading~~ — `done` (первый слой): `check=config_flag`
+   резолвит code-knob'ы (`FieldAssignments` + zero-value для bool),
+   `check=config_key` — ключи в конфигах репо; `C-TLS-VERIFY` supporting
+   в peer-driven. Live: InsecureSkipVerify=TRUE найден на
+   продукт-референс.
 4. ~~Interface-impl + build-tag paths в negative check~~ — `done`:
    `GatedRefs` + `InterfaceDispatchSites` деградируют VERIFIED в
    INSUFFICIENT_SCOPE при находках вне typed-скоупа.

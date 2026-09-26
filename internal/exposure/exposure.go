@@ -112,6 +112,74 @@ func sanitizeValue(v string) string {
 	return v
 }
 
+// FindKey walks root for config files and returns items whose key
+// matches the requested one (same matching as Lookup). Unlike ScanRepo it
+// is not restricted to address-shaped keys.
+func FindKey(root, key string) ([]Item, error) {
+	var out []Item
+	err := filepath.WalkDir(root, func(path string, e fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if e.IsDir() {
+			if SkipDirs[e.Name()] {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if !configExtRe[strings.ToLower(filepath.Ext(path))] {
+			return nil
+		}
+		if info, err := e.Info(); err != nil || info.Size() > 1<<20 {
+			return nil
+		}
+		items, err := scanFilePred(path, key)
+		if err != nil {
+			return nil
+		}
+		out = append(out, items...)
+		return nil
+	})
+	return out, err
+}
+
+// scanFilePred collects key/value pairs whose key matches want
+// (case-insensitive, last dotted segment or whole key).
+func scanFilePred(path, want string) ([]Item, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	want = strings.ToLower(want)
+	var out []Item
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 64<<10), 1<<20)
+	line := 0
+	for sc.Scan() {
+		line++
+		m := kvRe.FindStringSubmatch(sc.Text())
+		if m == nil {
+			continue
+		}
+		k := strings.ToLower(m[1])
+		last := k
+		if j := strings.LastIndexByte(k, '.'); j >= 0 {
+			last = k[j+1:]
+		}
+		if k != want && last != want {
+			continue
+		}
+		out = append(out, Item{
+			Key:   m[1],
+			Value: sanitizeValue(strings.TrimSpace(m[2])),
+			File:  path,
+			Line:  line,
+		})
+	}
+	return out, sc.Err()
+}
+
 // Lookup finds a config item by key (case-insensitive, exact match on the
 // last dotted segment or the whole key).
 func Lookup(items []Item, key string) *Item {

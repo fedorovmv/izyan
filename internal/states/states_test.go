@@ -154,6 +154,7 @@ func runEngine(t *testing.T, d engineDeps) *domain.AnalysisCase {
 			evaluator.ArgumentOrigin{},
 			evaluator.Validation{},
 			evaluator.Exposure{},
+			evaluator.ConfigFlag{},
 			evaluator.Presence{},
 		}},
 		states.NegativeCheck{Verifier: &goanalysis.Verifier{Source: srcIndex}},
@@ -972,5 +973,73 @@ func TestE2EInfoLeakReader(t *testing.T) {
 	}
 	if c.Verdict == nil || c.Verdict.Verdict != domain.VerdictExploitable {
 		t.Fatalf("verdict=%+v want EXPLOITABLE", c.Verdict)
+	}
+}
+
+// C-TLS-VERIFY (peer-driven supporting): tlsprod assigns
+// InsecureSkipVerify=true — the knob check must resolve TRUE.
+func TestE2ETLSKnobInsecure(t *testing.T) {
+	repo := initRepoFrom(t, "tlsprod")
+	c := runEngine(t, engineDeps{
+		RepoPath: repo,
+		VulnSrc: vulnerability.StaticSource{Vulns: map[string]*domain.Vulnerability{
+			"GO-WIRE-1": {
+				ID:      "GO-WIRE-1",
+				Module:  "example.com/dep",
+				Summary: "wire protocol parser buffer overflow in length handling",
+				CWE:     []string{"CWE-787"},
+				AffectedPackages: []domain.AffectedPackage{{
+					Path: "example.com/dep/vuln", Symbols: []string{"Parse"},
+				}},
+			},
+		}},
+		VulnID:   "GO-WIRE-1",
+		Resolver: stubResolver{},
+		ManualRC: []domain.RootCause{{
+			Package: "example.com/dep/vuln", Symbol: "Parse", Role: domain.RootCauseSink,
+		}},
+		CaseDir:     t.TempDir(),
+		Govulncheck: fakeGovulncheck{out: []byte(`{"protocol_version":"v1.0.0"}`)},
+		UseSource:   true,
+	})
+	cl := findClaimT(t, c.Claims, "C-TLS-VERIFY")
+	if cl.Result != domain.ClaimTrue {
+		t.Fatalf("C-TLS-VERIFY=%s want TRUE (%s; lims=%v)", cl.Result, cl.Explanation, cl.Limitations)
+	}
+}
+
+// tlssafe never assigns the knob: bool field + insecure=true → Go
+// zero-value FALSE candidate, demoted to INSUFFICIENT_SCOPE by NV.
+func TestE2ETLSKnobSafe(t *testing.T) {
+	repo := initRepoFrom(t, "tlssafe")
+	c := runEngine(t, engineDeps{
+		RepoPath: repo,
+		VulnSrc: vulnerability.StaticSource{Vulns: map[string]*domain.Vulnerability{
+			"GO-WIRE-2": {
+				ID:      "GO-WIRE-2",
+				Module:  "example.com/dep",
+				Summary: "wire protocol parser buffer overflow in length handling",
+				CWE:     []string{"CWE-787"},
+				AffectedPackages: []domain.AffectedPackage{{
+					Path: "example.com/dep/vuln", Symbols: []string{"Parse"},
+				}},
+			},
+		}},
+		VulnID:   "GO-WIRE-2",
+		Resolver: stubResolver{},
+		ManualRC: []domain.RootCause{{
+			Package: "example.com/dep/vuln", Symbol: "Parse", Role: domain.RootCauseSink,
+		}},
+		CaseDir:     t.TempDir(),
+		Govulncheck: fakeGovulncheck{out: []byte(`{"protocol_version":"v1.0.0"}`)},
+		UseSource:   true,
+	})
+	cl := findClaimT(t, c.Claims, "C-TLS-VERIFY")
+	if cl.Result != domain.ClaimFalse {
+		t.Fatalf("C-TLS-VERIFY=%s want FALSE (%s; lims=%v)", cl.Result, cl.Explanation, cl.Limitations)
+	}
+	if cl.NegativeVerification == nil ||
+		cl.NegativeVerification.Status != domain.NegativeInsufficientScope {
+		t.Fatalf("neg verification=%+v want INSUFFICIENT_SCOPE", cl.NegativeVerification)
 	}
 }

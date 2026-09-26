@@ -557,6 +557,10 @@ func (h CollectEvidence) runSourceAnalysis(ctx context.Context, c *domain.Analys
 		switch {
 		case cond.Params[domain.ParamCheck] == domain.CheckSymbolPresent:
 			h.collectPresence(ctx, c, dedupSubjects(subjects))
+		case cond.Params[domain.ParamCheck] == domain.CheckConfigFlag:
+			h.collectConfigFlag(ctx, c, cond)
+		case cond.Params[domain.ParamCheck] == domain.CheckConfigKey:
+			h.collectConfigKey(ctx, c, cond)
 		case cond.Params[domain.ParamDirection] == domain.DirectionRead:
 			h.collectReaders(ctx, c, dedupSubjects(subjects))
 		case needsProvenance(cond.Kind):
@@ -696,6 +700,89 @@ func (h CollectEvidence) collectReaders(ctx context.Context, c *domain.AnalysisC
 			Content: fmt.Sprintf("%d product reference site(s) to %s", len(sites), key),
 		})
 	}
+}
+
+// collectConfigFlag resolves a code-level configuration knob
+// (config_package + config_symbol params): verifies the field exists in
+// its package source, records the field kind (for Go zero-value
+// reasoning) and collects every product assignment into
+// EvidenceGraph.ConfigFlags.
+func (h CollectEvidence) collectConfigFlag(ctx context.Context, c *domain.AnalysisCase, cond domain.Condition) {
+	pkg, sym := cond.Params[domain.ParamConfigPackage], cond.Params[domain.ParamConfigSymbol]
+	if pkg == "" || sym == "" {
+		return
+	}
+	key := pkg + "." + sym
+	ref := domain.SymbolRef{Package: pkg, Symbol: sym}
+	site, err := h.Source.FindSymbol(ctx, ref)
+	var content string
+	switch {
+	case err == nil:
+		c.EvidenceGraph.AddSymbolDecl(key, site)
+		content = fmt.Sprintf("knob %s declared at %s:%d", key, site.File, site.Line)
+	case strings.Contains(err.Error(), "not found"):
+		c.EvidenceGraph.AddSymbolDecl(key, nil)
+		content = "knob " + key + " not found in source"
+	default:
+		c.EvidenceGraph.AddToolLimitation(fmt.Sprintf("config flag %s decl: %v", key, err))
+		content = fmt.Sprintf("config flag lookup for %s failed: %v", key, err)
+	}
+	if kind, kerr := h.Source.SymbolFieldType(ctx, ref); kerr == nil && kind != "" {
+		c.EvidenceGraph.AddConfigFieldKind(key, kind)
+	}
+	assigns, err := h.Source.FieldAssignments(ctx, ref)
+	if err != nil {
+		c.EvidenceGraph.AddToolLimitation(fmt.Sprintf("config flag %s assignments: %v", key, err))
+		return
+	}
+	c.EvidenceGraph.AddConfigFlag(key, assigns...)
+	content += fmt.Sprintf("; %d assignment(s) in product code", len(assigns))
+	c.EvidenceGraph.AddEvidence(domain.Evidence{
+		Kind:    domain.EvidenceSearchResult,
+		Quality: domain.QualityDeterministic,
+		Source:  "config flag check " + key,
+		Tool:    "goanalysis.Index.FindSymbol+FieldAssignments",
+		Content: content,
+	})
+}
+
+// collectConfigKey resolves a file-level configuration knob
+// (config_key param): scans repository config files for the key and
+// records matches into EvidenceGraph.Configuration.
+func (h CollectEvidence) collectConfigKey(_ context.Context, c *domain.AnalysisCase, cond domain.Condition) {
+	key := cond.Params[domain.ParamConfigKey]
+	if key == "" {
+		return
+	}
+	dir := c.Product.Repository
+	var content string
+	if dir == "" {
+		content = "repository path unavailable — config scan skipped"
+	} else if items, err := exposure.FindKey(dir, key); err != nil {
+		content = fmt.Sprintf("config key scan failed: %v", err)
+		c.EvidenceGraph.AddToolLimitation(fmt.Sprintf("config key %s: %v", key, err))
+	} else {
+		for _, it := range items {
+			evID := c.EvidenceGraph.AddEvidence(domain.Evidence{
+				Kind:    domain.EvidenceConfiguration,
+				Quality: domain.QualityDeterministic,
+				Source:  "config file " + it.File,
+				Tool:    "exposure.FindKey",
+				Content: fmt.Sprintf("%s=%s", it.Key, it.Value),
+			})
+			c.EvidenceGraph.AddConfigItem(domain.ConfigItem{
+				Key: it.Key, Value: it.Value, File: it.File, Line: it.Line, Evidence: evID,
+			})
+		}
+		content = fmt.Sprintf("%d occurrence(s) of key %q in repo config files", len(items), key)
+	}
+	c.EvidenceGraph.AddEvidence(domain.Evidence{
+		Kind:    domain.EvidenceSearchResult,
+		Quality: domain.QualityDeterministic,
+		Source:  "config key check " + key,
+		Tool:    "exposure.FindKey",
+		Content: content,
+	})
 }
 
 type EvaluateConditions struct {
