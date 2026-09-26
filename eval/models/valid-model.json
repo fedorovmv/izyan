@@ -1,0 +1,25 @@
+{
+  "impact": "input reaches vulnerable symbol",
+  "mandatory_conditions": [
+    {
+      "id": "C-REACH",
+      "kind": "SYMBOL_REACHABLE",
+      "mandatory": true,
+      "subject": {"package": "example.com/dep/vuln", "symbol": "Parse"}
+    },
+    {
+      "id": "C-INPUT",
+      "kind": "ATTACKER_CONTROL",
+      "mandatory": true,
+      "subject": {"package": "example.com/dep/vuln", "symbol": "Parse"},
+      "arg_index": 0
+    },
+    {
+      "id": "C-VALID",
+      "kind": "VALIDATION",
+      "mandatory": true,
+      "subject": {"package": "example.com/dep/vuln", "symbol": "Parse"},
+      "arg_index": 0
+    }
+  ]
+}

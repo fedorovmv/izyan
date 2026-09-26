@@ -430,6 +430,10 @@ type Entrypoint struct {
 type Validation struct {
 	CallSite
 	Property string `json:"property"`
+	// Covers marks a guard found in a caller frame (a different file/line)
+	// that constrains the argument reaching this sink. Nil for guards that
+	// precede the sink call in its own frame.
+	Covers *CallSite `json:"covers,omitempty"`
 }
 
 type ConfigItem struct {

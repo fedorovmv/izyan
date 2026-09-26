@@ -66,9 +66,12 @@ func (Validation) Evaluate(cond domain.Condition, c *domain.AnalysisCase) domain
 }
 
 // hasGuardBefore reports whether a validation in the same file precedes the
-// sink call site.
+// sink call site, or a caller-frame guard was recorded as covering it.
 func hasGuardBefore(vals []domain.Validation, sink domain.CallSite) bool {
 	for _, v := range vals {
+		if v.Covers != nil && v.Covers.File == sink.File && v.Covers.Line == sink.Line {
+			return true
+		}
 		if v.File == sink.File && v.Line > 0 && sink.Line > 0 && v.Line < sink.Line {
 			return true
 		}

@@ -193,6 +193,38 @@
    "expect_claims": {
     "C-PEER-INPUT": "TRUE"
    }
+  },
+  {
+   "id": "caller-guard-false",
+   "vuln": "GO-EVAL-PARSE",
+   "vuln_file": "advisories/dep-parse.json",
+   "repo": "../testdata/guardprod",
+   "root_causes": [
+    "example.com/dep/vuln.Parse"
+   ],
+   "exploit_model": "models/valid-model.json",
+   "expect": [
+    "NO_EXPLOIT_PATH_FOUND"
+   ],
+   "expect_claims": {
+    "C-VALID": "FALSE"
+   }
+  },
+  {
+   "id": "caller-guard-partial",
+   "vuln": "GO-EVAL-PARSE",
+   "vuln_file": "advisories/dep-parse.json",
+   "repo": "../testdata/mixguard",
+   "root_causes": [
+    "example.com/dep/vuln.Parse"
+   ],
+   "exploit_model": "models/valid-model.json",
+   "expect": [
+    "INCONCLUSIVE"
+   ],
+   "expect_claims": {
+    "C-VALID": "UNKNOWN"
+   }
   }
  ]
 }

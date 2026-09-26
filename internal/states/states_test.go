@@ -1248,3 +1248,122 @@ func TestE2ETLSKnobSafe(t *testing.T) {
 		t.Fatalf("neg verification=%+v want INSUFFICIENT_SCOPE", cl.NegativeVerification)
 	}
 }
+
+// Caller-frame validation: the sink frame has no guard, but the only
+// caller validates the argument before the call. GAP_ANALYSIS climbs the
+// caller chain, records a sink-covering guard, and VALIDATION goes FALSE.
+func TestE2ECallerFrameGuard(t *testing.T) {
+	repo := initRepoFrom(t, "guardprod")
+	dir := t.TempDir()
+	model := `{"impact":"t","mandatory_conditions":[
+		{"id":"C-REACH","kind":"SYMBOL_REACHABLE","mandatory":true,
+		 "subject":{"package":"example.com/dep/vuln","symbol":"Parse"}},
+		{"id":"C-INPUT","kind":"ATTACKER_CONTROL","mandatory":true,
+		 "subject":{"package":"example.com/dep/vuln","symbol":"Parse"},"arg_index":0},
+		{"id":"C-VALID","kind":"VALIDATION","mandatory":true,
+		 "subject":{"package":"example.com/dep/vuln","symbol":"Parse"},"arg_index":0}
+	]}`
+	mp := filepath.Join(dir, "model.json")
+	if err := os.WriteFile(mp, []byte(model), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	c := runEngine(t, engineDeps{
+		RepoPath: repo,
+		VulnSrc: vulnerability.StaticSource{Vulns: map[string]*domain.Vulnerability{
+			"GO-TEST-1": {ID: "GO-TEST-1", Module: "example.com/dep"},
+		}},
+		VulnID:   "GO-TEST-1",
+		Resolver: stubResolver{},
+		ManualRC: []domain.RootCause{{Package: "example.com/dep/vuln", Symbol: "Parse"}},
+		Model:    mp,
+		CaseDir:  filepath.Join(dir, "cases"),
+		Govulncheck: fakeGovulncheck{out: []byte(`{"protocol_version":"v1.0.0"}
+{"finding":{"osv":"GO-TEST-1","trace":[
+ {"package":"example.com/guardprod","function":"sink","position":{"filename":"main.go","line":11}},
+ {"package":"example.com/dep/vuln","function":"Parse","position":{"filename":"vuln.go","line":4}}
+]}}`)},
+		UseSource: true,
+	})
+
+	cl := findClaimT(t, c.Claims, "C-VALID")
+	if cl.Result != domain.ClaimFalse {
+		t.Fatalf("C-VALID=%s want FALSE via caller-frame guard (%s; lims=%v)",
+			cl.Result, cl.Explanation, cl.Limitations)
+	}
+	var cover bool
+	for _, v := range c.EvidenceGraph.Validations {
+		if v.Covers != nil {
+			cover = true
+		}
+	}
+	if !cover {
+		t.Fatal("expected a Covers= validation marking caller-frame coverage")
+	}
+	var hyp *domain.Hypothesis
+	for i := range c.Hypotheses {
+		if c.Hypotheses[i].ConditionID == "C-VALID" {
+			hyp = &c.Hypotheses[i]
+		}
+	}
+	if hyp == nil || hyp.Status != domain.HypothesisConfirmed {
+		t.Fatalf("hypothesis=%+v want CONFIRMED", hyp)
+	}
+	if cl.NegativeVerification == nil ||
+		cl.NegativeVerification.Status != domain.NegativeVerified {
+		t.Fatalf("neg verification=%+v want VERIFIED", cl.NegativeVerification)
+	}
+	if c.Verdict == nil || c.Verdict.Verdict != domain.VerdictNoExploitPathFound {
+		t.Fatalf("verdict=%+v want NO_EXPLOIT_PATH_FOUND", c.Verdict)
+	}
+}
+
+// Partial caller coverage must NOT justify FALSE: one caller guards, the
+// other does not — VALIDATION stays UNKNOWN, verdict INCONCLUSIVE.
+func TestE2EPartialCallerGuardStaysUnknown(t *testing.T) {
+	repo := initRepoFrom(t, "mixguard")
+	dir := t.TempDir()
+	model := `{"impact":"t","mandatory_conditions":[
+		{"id":"C-REACH","kind":"SYMBOL_REACHABLE","mandatory":true,
+		 "subject":{"package":"example.com/dep/vuln","symbol":"Parse"}},
+		{"id":"C-INPUT","kind":"ATTACKER_CONTROL","mandatory":true,
+		 "subject":{"package":"example.com/dep/vuln","symbol":"Parse"},"arg_index":0},
+		{"id":"C-VALID","kind":"VALIDATION","mandatory":true,
+		 "subject":{"package":"example.com/dep/vuln","symbol":"Parse"},"arg_index":0}
+	]}`
+	mp := filepath.Join(dir, "model.json")
+	if err := os.WriteFile(mp, []byte(model), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	c := runEngine(t, engineDeps{
+		RepoPath: repo,
+		VulnSrc: vulnerability.StaticSource{Vulns: map[string]*domain.Vulnerability{
+			"GO-TEST-1": {ID: "GO-TEST-1", Module: "example.com/dep"},
+		}},
+		VulnID:   "GO-TEST-1",
+		Resolver: stubResolver{},
+		ManualRC: []domain.RootCause{{Package: "example.com/dep/vuln", Symbol: "Parse"}},
+		Model:    mp,
+		CaseDir:  filepath.Join(dir, "cases"),
+		Govulncheck: fakeGovulncheck{out: []byte(`{"protocol_version":"v1.0.0"}
+{"finding":{"osv":"GO-TEST-1","trace":[
+ {"package":"example.com/mixguard","function":"sink","position":{"filename":"main.go","line":10}},
+ {"package":"example.com/dep/vuln","function":"Parse","position":{"filename":"vuln.go","line":4}}
+]}}`)},
+		UseSource: true,
+	})
+
+	cl := findClaimT(t, c.Claims, "C-VALID")
+	if cl.Result != domain.ClaimUnknown {
+		t.Fatalf("C-VALID=%s want UNKNOWN on partial caller coverage (%s)", cl.Result, cl.Explanation)
+	}
+	for _, v := range c.EvidenceGraph.Validations {
+		if v.Covers != nil {
+			t.Fatalf("partial coverage must not emit Covers= validation: %+v", v)
+		}
+	}
+	if c.Verdict == nil || c.Verdict.Verdict != domain.VerdictInconclusive {
+		t.Fatalf("verdict=%+v want INCONCLUSIVE", c.Verdict)
+	}
+}

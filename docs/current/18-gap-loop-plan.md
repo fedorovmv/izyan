@@ -37,7 +37,7 @@ FALSE капает вердикт, тратить tool-budget бессмысле
 | ATTACKER_CONTROL / INPUT_CONSTRAINT (flow UNKNOWN) | «origin резолвится глубже caller-chain» | `TraceArgumentBound` с hops=6; resolved → `ReplaceDataFlow` + CONFIRMED |
 | ATTACKER_CONTROL / INPUT_CONSTRAINT (нет call sites) | «синк вызывается через dynamic dispatch» | `ScanDynamic` → маркеры CONFIRMED (документирует потерю покрытия; claim остаётся UNKNOWN) |
 | SYMBOL_REACHABLE | «путь через interface dispatch / build-tagged файлы» | `InterfaceDispatchSites` + `GatedRefs` → сайты → CONFIRMED-документация |
-| VALIDATION | «guard в caller-frame» | нет инструмента (param-index маппинг через FindCallers) — гипотеза записывается UNRESOLVED как документированный gap |
+| VALIDATION | «guard в caller-frame» | `FindValidationsBound`: climb caller-chain, гарда покрывает sink только если **все** ветки guarded (`Validation.Covers`); частичное покрытие → informational evidence, claim остаётся UNKNOWN; NV-стратегия `verifyGuardFalse` + extendNegativeScope (dynamic bypass) |
 
 Инвариант: действия, документирующие потерю покрытия, **никогда не
 двигают claim в FALSE** — они объясняют, почему UNKNOWN честен.
@@ -66,8 +66,9 @@ FALSE капает вердикт, тратить tool-budget бессмысле
 
 ## Границы
 
-- Planner детерминистичен и покрывает три kind; VALIDATION в caller
-  frame — зафиксированный gap.
+- Planner детерминистичен и покрывает четыре kind, включая caller-frame
+  validation (`FindValidationsBound`: Covers-гарда только при полном
+  покрытии всех caller-веток; partial → UNKNOWN; NV `verifyGuardFalse`).
 - Reviewer-driven repair loop (REVIEW → REPAIR_ANALYSIS) — отдельная
   ветка, не этот слой: state `REPAIR_ANALYSIS` объявлен, не используется.
 - Глубокий трейс всё ещё bounded (6); цепочки глубже остаются UNKNOWN.

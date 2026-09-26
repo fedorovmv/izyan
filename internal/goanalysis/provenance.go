@@ -885,30 +885,14 @@ func (ix *Index) traceParam(pkg *packages.Package, enc *ast.FuncDecl, v *types.V
 		return domain.OriginUnknown, fmt.Sprintf("parameter %s of %s: caller tracing depth exceeded", v.Name(), enc.Name)
 	}
 	// find which parameter index this is
-	paramIdx := -1
-	idx := 0
-	for _, f := range enc.Type.Params.List {
-		for _, n := range f.Names {
-			if n.Name == v.Name() {
-				paramIdx = idx
-			}
-			idx++
-		}
-	}
+	paramIdx := paramIndexOf(enc, v.Name())
 	if paramIdx < 0 {
 		return domain.OriginUnknown, "parameter index not found"
 	}
 	// callers of enclosing function
 	var encRef domain.SymbolRef
 	if pkg.Types != nil {
-		encRef = domain.SymbolRef{Package: pkg.PkgPath, Symbol: enc.Name.Name}
-		if enc.Recv != nil && len(enc.Recv.List) > 0 {
-			// method: include receiver type name
-			t := pkg.TypesInfo.TypeOf(enc.Recv.List[0].Type)
-			if t != nil {
-				encRef.Symbol = recvTypeName(t) + "." + enc.Name.Name
-			}
-		}
+		encRef = funcSymbolRef(pkg, enc)
 	}
 	refs, err := ix.findCallSites(context.Background(), encRef)
 	if err != nil || len(refs) == 0 {
@@ -928,6 +912,36 @@ func (ix *Index) traceParam(pkg *packages.Package, enc *ast.FuncDecl, v *types.V
 		return domain.OriginUnknown, "no caller arguments resolvable"
 	}
 	return merged, fmt.Sprintf("param %s via %d caller(s): %s", v.Name(), len(refs), strings.Join(whys, "; "))
+}
+
+// paramIndexOf returns the positional index of the parameter named `name`
+// in fn's signature, or -1 when fn does not declare it.
+func paramIndexOf(fn *ast.FuncDecl, name string) int {
+	if fn == nil || fn.Type == nil || fn.Type.Params == nil {
+		return -1
+	}
+	idx := 0
+	for _, f := range fn.Type.Params.List {
+		for _, n := range f.Names {
+			if n.Name == name {
+				return idx
+			}
+			idx++
+		}
+	}
+	return -1
+}
+
+// funcSymbolRef builds the SymbolRef callers are found under: methods are
+// qualified with the receiver type name.
+func funcSymbolRef(pkg *packages.Package, fn *ast.FuncDecl) domain.SymbolRef {
+	ref := domain.SymbolRef{Package: pkg.PkgPath, Symbol: fn.Name.Name}
+	if fn.Recv != nil && len(fn.Recv.List) > 0 && pkg.TypesInfo != nil {
+		if t := pkg.TypesInfo.TypeOf(fn.Recv.List[0].Type); t != nil {
+			ref.Symbol = recvTypeName(t) + "." + fn.Name.Name
+		}
+	}
+	return ref
 }
 
 // mergeOrigin picks the most attacker-influencing origin of two.
@@ -975,17 +989,113 @@ func (ix *Index) FindValidations(ctx context.Context, site domain.CallSite, argI
 		return nil, nil, nil
 	}
 	argIdent := argIdentifier(call.Args[argIndex])
+	vals = append(vals, ix.frameGuards(pkg, enc, call, argIdent)...)
+	return vals, ev, nil
+}
+
+// frameGuards scans enc's body for guard statements on ident that precede
+// the call expression (same-frame guards).
+func (ix *Index) frameGuards(pkg *packages.Package, enc *ast.FuncDecl, call *ast.CallExpr, ident string) []domain.Validation {
+	var vals []domain.Validation
+	if enc == nil || enc.Body == nil {
+		return nil
+	}
 	for _, stmt := range enc.Body.List {
 		if stmt.Pos() >= call.Pos() {
 			break
 		}
-		v := stmtValidation(ix, pkg, stmt, argIdent)
+		v := stmtValidation(ix, pkg, stmt, ident)
 		if v != nil {
 			p := ix.fset.Position(stmt.Pos())
 			vals = append(vals, *v)
 			vals[len(vals)-1].File = p.Filename
 			vals[len(vals)-1].Line = p.Line
 		}
+	}
+	return vals
+}
+
+// FindValidationsBound extends FindValidations up the caller chain: the
+// sink argument is traced to an enclosing-function parameter, every caller
+// of that function is checked for a guard on the mapped argument, and the
+// climb repeats through caller parameters up to hops.
+//
+// A Validation with Covers=<sink site> is emitted only when every caller
+// frame of every expanded branch guards the argument — partial caller
+// coverage cannot justify a FALSE claim, so those guards are recorded
+// without Covers (informational evidence, not sink coverage).
+func (ix *Index) FindValidationsBound(ctx context.Context, site domain.CallSite, argIndex, hops int) ([]domain.Validation, []domain.Evidence, error) {
+	ix.mu.Lock()
+	defer ix.mu.Unlock()
+	var ev []domain.Evidence
+	if err := ix.load(ctx); err != nil {
+		return nil, nil, err
+	}
+	call, enc, pkg, err := ix.callAt(site)
+	if err != nil {
+		return nil, nil, err
+	}
+	if enc == nil || enc.Body == nil || argIndex >= len(call.Args) {
+		return nil, nil, nil
+	}
+	argIdent := argIdentifier(call.Args[argIndex])
+	vals := ix.frameGuards(pkg, enc, call, argIdent)
+	if len(vals) > 0 {
+		return vals, ev, nil // sink frame already guards — nothing to climb
+	}
+	idx := paramIndexOf(enc, argIdent)
+	if idx < 0 {
+		return vals, ev, nil // argument does not reach a parameter — cannot climb
+	}
+
+	type frame struct {
+		pkg      *packages.Package
+		enc      *ast.FuncDecl
+		paramIdx int
+		depth    int
+	}
+	queue := []frame{{pkg: pkg, enc: enc, paramIdx: idx}}
+	seen := map[string]bool{fmt.Sprintf("%s.%s:%d", pkg.PkgPath, funcSymbolRef(pkg, enc).Symbol, idx): true}
+	allGuarded := true
+	for len(queue) > 0 {
+		fr := queue[0]
+		queue = queue[1:]
+		if fr.depth >= hops {
+			allGuarded = false
+			continue
+		}
+		refs, err := ix.findCallSites(ctx, funcSymbolRef(fr.pkg, fr.enc))
+		if err != nil || len(refs) == 0 {
+			allGuarded = false // entrypoint/dynamic callers — unproven path
+			continue
+		}
+		for _, r := range refs {
+			if fr.paramIdx >= len(r.call.Args) {
+				allGuarded = false
+				continue
+			}
+			ident := argIdentifier(r.call.Args[fr.paramIdx])
+			if g := ix.frameGuards(r.pkg, r.enclosing, r.call, ident); len(g) > 0 {
+				vals = append(vals, g...)
+				continue
+			}
+			next := paramIndexOf(r.enclosing, ident)
+			key := fmt.Sprintf("%s.%s:%d", r.pkg.PkgPath, funcSymbolRef(r.pkg, r.enclosing).Symbol, next)
+			if next < 0 || seen[key] {
+				allGuarded = false
+				continue
+			}
+			seen[key] = true
+			queue = append(queue, frame{pkg: r.pkg, enc: r.enclosing, paramIdx: next, depth: fr.depth + 1})
+		}
+	}
+	if allGuarded && len(vals) > 0 {
+		covered := site
+		vals = append(vals, domain.Validation{
+			CallSite: site,
+			Property: "all expanded caller frames guard the argument before it reaches this sink",
+			Covers:   &covered,
+		})
 	}
 	return vals, ev, nil
 }

@@ -64,7 +64,11 @@ caller-chain»), tool-экшн собирает evidence, claim переоцен
 до фикспоинта (≤3 итераций) или `MaxToolCalls`. Экшены детерминистичны:
 углублённый трейс аргумента (hops=6 вместо 2), `ScanDynamic` при нуле
 call-sites, `InterfaceDispatchSites`/`GatedRefs` для скрытой
-достижимости. Экшены, документирующие потерю покрытия, никогда не
+достижимости, `FindValidationsBound` для VALIDATION — подъём по
+caller-chain и поиск гард на аргументе. Гарда засчитывается как
+покрывающая sink (`Validation.Covers`) только когда **все** caller-ветки
+guard'ят; частичное покрытие — informational evidence, claim остаётся
+UNKNOWN. Экшены, документирующие потерю покрытия, никогда не
 двигают claim в FALSE — они объясняют честный UNKNOWN.
 
 ## 4. Роль govulncheck — что он умеет и чего не умеет

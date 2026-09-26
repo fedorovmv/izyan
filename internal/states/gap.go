@@ -3,6 +3,7 @@ package states
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"example.com/vuln-analyzer/internal/domain"
 	"example.com/vuln-analyzer/internal/evaluator"
@@ -121,17 +122,74 @@ func (h GapAnalysis) plan(ctx context.Context, c *domain.AnalysisCase, cond doma
 			return false
 		}
 		planned[key] = true
-		// Guards upstream of the sink's caller frame need param-index
-		// mapping through FindCallers — not implemented; record the gap.
+		return h.actCallerGuards(ctx, c, cond)
+	}
+	return false
+}
+
+// actCallerGuards climbs the caller chain of each traced sink site
+// (FindValidationsBound). A sink-covering guard is emitted only when
+// every expanded caller branch guards the argument — partial coverage
+// is recorded as informational evidence and keeps the claim UNKNOWN.
+func (h GapAnalysis) actCallerGuards(ctx context.Context, c *domain.AnalysisCase, cond domain.Condition) bool {
+	flows := flowsForCond(c, cond.ID)
+	if len(flows) == 0 {
 		c.AddHypothesis(domain.Hypothesis{
 			ConditionID:      cond.ID,
 			Statement:        "the sink argument may be validated in a caller frame upstream of the traced site",
 			ExpectedEvidence: []domain.EvidenceKind{domain.EvidenceValidation},
 			Status:           domain.HypothesisUnresolved,
-			Notes:            "no tool: caller-frame validation requires param-index mapping through FindCallers",
+			Notes:            "no data flows recorded; sink sites unknown",
 		})
+		return false
 	}
-	return false
+	progress := false
+	var evIDs []domain.EvidenceID
+	var notes []string
+	arg := cond.ArgIndex
+	if arg < 0 {
+		arg = 0
+	}
+	for _, f := range flows {
+		c.IncToolCalls()
+		vals, evs, err := h.Source.FindValidationsBound(ctx, f.Sink, arg, deepTraceHops)
+		if err != nil {
+			c.EvidenceGraph.AddToolLimitation(fmt.Sprintf("gap caller-guard scan %s:%d: %v", f.Sink.File, f.Sink.Line, err))
+			continue
+		}
+		for _, e := range evs {
+			evIDs = append(evIDs, c.EvidenceGraph.AddEvidence(e))
+		}
+		covered := false
+		for _, v := range vals {
+			if v.Covers != nil {
+				covered = true
+			}
+			c.EvidenceGraph.AddValidations(v)
+		}
+		if len(vals) > 0 {
+			progress = true
+			if covered {
+				notes = append(notes, fmt.Sprintf("%s:%d fully guarded in caller frames", f.Sink.File, f.Sink.Line))
+			} else {
+				notes = append(notes, fmt.Sprintf("%s:%d partially guarded in caller frames", f.Sink.File, f.Sink.Line))
+			}
+		}
+	}
+	hyp := domain.Hypothesis{
+		ConditionID:      cond.ID,
+		Statement:        "the sink argument may be validated in a caller frame upstream of the traced site",
+		ExpectedEvidence: []domain.EvidenceKind{domain.EvidenceValidation},
+		EvidenceIDs:      evIDs,
+		Status:           domain.HypothesisRejected,
+		Notes:            "no caller-frame guards found on any expanded path",
+	}
+	if len(notes) > 0 {
+		hyp.Notes = strings.Join(notes, "; ")
+		hyp.Status = domain.HypothesisConfirmed
+	}
+	c.AddHypothesis(hyp)
+	return progress
 }
 
 // actDeepTrace re-runs argument provenance with an extended caller-climb

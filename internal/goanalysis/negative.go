@@ -143,6 +143,8 @@ func (v Verifier) VerifyFalse(ctx context.Context, c *domain.AnalysisCase, claim
 			out = v.verifyReachableFalse(claim, nv, subjects, allSites)
 		case domain.ConditionAttackerControl, domain.ConditionInputConstraint:
 			out = v.verifyInputFalse(ctx, c, claim, nv, subjects, cond.ArgIndex)
+		case domain.ConditionValidation:
+			out = v.verifyGuardFalse(c, claim, nv)
 		default:
 			nv.Status = domain.NegativeInsufficientScope
 			nv.Notes = "no falsification strategy for condition kind " + string(cond.Kind)
@@ -350,6 +352,52 @@ func (v Verifier) verifyInputFalse(ctx context.Context, c *domain.AnalysisCase, 
 	}
 	nv.Notes = fmt.Sprintf("all %d call site(s) across %d subject(s) pass non-external input",
 		totalCallers, len(subjects))
+	return setNeg(claim, nv)
+}
+
+// verifyGuardFalse verifies a VALIDATION FALSE ("every path to the sink is
+// guarded"). The claim stands only when every traced sink site carries a
+// Covers validation emitted by the bounded caller-guard climb — i.e. all
+// expanded caller branches guard the argument. Missing sinks or partial
+// coverage are INSUFFICIENT_SCOPE, not contradictions. extendNegativeScope
+// still applies: a dynamic or build-gated call into the sink bypasses
+// caller guards entirely.
+func (v Verifier) verifyGuardFalse(c *domain.AnalysisCase, claim domain.Claim,
+	nv *domain.NegativeVerification) domain.Claim {
+
+	sinks := map[string]domain.CallSite{}
+	for _, f := range c.EvidenceGraph.DataFlows {
+		sinks[f.Sink.File+":"+fmt.Sprint(f.Sink.Line)] = f.Sink
+	}
+	if len(sinks) == 0 {
+		nv.Status = domain.NegativeInsufficientScope
+		nv.Notes = "no sink call sites recorded for the validation claim"
+		return setNeg(claim, nv)
+	}
+	var uncovered []string
+	for key, s := range sinks {
+		guarded := false
+		for _, val := range c.EvidenceGraph.Validations {
+			if val.Covers != nil && val.Covers.File == s.File && val.Covers.Line == s.Line {
+				guarded = true
+				break
+			}
+			if val.File == s.File && val.Line > 0 && val.Line < s.Line {
+				guarded = true
+				break
+			}
+		}
+		if !guarded {
+			uncovered = append(uncovered, key)
+		}
+	}
+	if len(uncovered) > 0 {
+		nv.Status = domain.NegativeInsufficientScope
+		nv.Notes = fmt.Sprintf("%d sink site(s) lack a covering guard: %s",
+			len(uncovered), strings.Join(uncovered, ", "))
+		return setNeg(claim, nv)
+	}
+	nv.Notes = fmt.Sprintf("all %d sink site(s) are covered by guards", len(sinks))
 	return setNeg(claim, nv)
 }
 
