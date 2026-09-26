@@ -235,19 +235,22 @@ func analyzeCase(ctx context.Context, o analyzeOpts) (*domain.AnalysisCase, erro
 		evaluator.VersionFact{},
 	}
 	var fallbackEval evaluator.ConditionEvaluator
+	var gapPlanner states.HypothesisPlanner
 	if llmCfg.Enabled && !o.detOnly {
 		client := llm.NewClient(llmCfg)
-		rcResolver = &llm.RootCauseResolver{Client: client, Fallback: rcResolver}
-		builder = llm.ExploitModelBuilder{Client: client, Fallback: builder}
-		reviewers = append(reviewers, llm.Reviewer{Client: client})
-		fallbackEval = llm.ClaimEvaluator{Client: client, Tools: llm.Tools{
+		tools := llm.Tools{
 			Source:      srcIndex,
 			Vuln:        src,
 			Patch:       fix.HTTPProvider{},
 			Govulncheck: gvRunner,
 			GoTool:      goTool,
 			AllowExec:   o.allowExec,
-		}}
+		}
+		rcResolver = &llm.RootCauseResolver{Client: client, Fallback: rcResolver}
+		builder = llm.ExploitModelBuilder{Client: client, Fallback: builder}
+		reviewers = append(reviewers, llm.Reviewer{Client: client})
+		fallbackEval = llm.ClaimEvaluator{Client: client, Tools: tools}
+		gapPlanner = llm.Planner{Client: client, Tools: tools}
 	} else if o.detOnly {
 		c.EvidenceGraph.Limitations = append(c.EvidenceGraph.Limitations,
 			"deterministic-only mode: LLM adapters disabled")
@@ -286,7 +289,7 @@ func analyzeCase(ctx context.Context, o analyzeOpts) (*domain.AnalysisCase, erro
 			OSVBase:     o.osvURL,
 		},
 		states.EvaluateConditions{Evaluators: conditionEvaluators, Fallback: fallbackEval},
-		states.GapAnalysis{Source: srcIndex, Evaluators: conditionEvaluators},
+		states.GapAnalysis{Source: srcIndex, Evaluators: conditionEvaluators, Planner: gapPlanner},
 		states.NegativeCheck{Verifier: &goanalysis.Verifier{Source: srcIndex}},
 		states.Review{Reviewer: reviewers, Evaluator: evaluator.VerdictEvaluator{}},
 		states.RepairAnalysis{},

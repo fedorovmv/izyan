@@ -185,3 +185,86 @@ func TestToolExecGated(t *testing.T) {
 		}
 	}
 }
+
+func plannerCond() domain.Condition {
+	return domain.Condition{ID: "C-1", Kind: domain.ConditionAttackerControl,
+		Subjects: []domain.SymbolRef{{Package: "example.com/dep", Symbol: "vuln.Parse"}}}
+}
+
+func TestPlannerExecutesToolCall(t *testing.T) {
+	client, srv, calls := scriptServer(t,
+		`{"hypothesis":{"statement":"callers of vuln.Parse reveal the arg origin","expected_evidence":["CALL_PATH"]},"tool_call":{"name":"find_callers","args":{"package":"example.com/dep","symbol":"vuln.Parse"},"purpose":"locate sinks"}}`)
+	defer srv.Close()
+	p := Planner{Client: client, Tools: Tools{Source: toolIndex(t)}}
+	c := newCase()
+
+	if !p.Plan(context.Background(), plannerCond(), c) {
+		t.Fatal("planner must report progress after a successful tool call")
+	}
+	if *calls != 1 {
+		t.Fatalf("llm calls=%d want 1", *calls)
+	}
+	if len(c.Hypotheses) != 1 {
+		t.Fatalf("hypotheses=%d want 1", len(c.Hypotheses))
+	}
+	h := c.Hypotheses[0]
+	if h.Status != domain.HypothesisConfirmed || len(h.EvidenceIDs) == 0 {
+		t.Fatalf("hypothesis=%+v want CONFIRMED with evidence", h)
+	}
+}
+
+func TestPlannerNullToolCallIsUnresolved(t *testing.T) {
+	client, srv, _ := scriptServer(t,
+		`{"hypothesis":{"statement":"nothing more to check","expected_evidence":[]},"tool_call":null}`)
+	defer srv.Close()
+	p := Planner{Client: client, Tools: Tools{Source: toolIndex(t)}}
+	c := newCase()
+
+	if p.Plan(context.Background(), plannerCond(), c) {
+		t.Fatal("null tool_call must not report progress")
+	}
+	if h := c.Hypotheses[0]; h.Status != domain.HypothesisUnresolved {
+		t.Fatalf("hypothesis=%+v want UNRESOLVED", h)
+	}
+}
+
+func TestPlannerRejectsBadProposals(t *testing.T) {
+	// Malformed tool name: never reaches the tool layer.
+	client, srv, _ := scriptServer(t,
+		`{"hypothesis":{"statement":"x"},"tool_call":{"name":"rm -rf","args":{},"purpose":"evil"}}`)
+	defer srv.Close()
+	p := Planner{Client: client, Tools: Tools{Source: toolIndex(t)}}
+	c := newCase()
+	if p.Plan(context.Background(), plannerCond(), c) {
+		t.Fatal("malformed tool name must not progress")
+	}
+	if h := c.Hypotheses[0]; h.Status != domain.HypothesisUnresolved {
+		t.Fatalf("hypothesis=%+v want UNRESOLVED", h)
+	}
+
+	// Valid name, bad args: tool error -> REJECTED hypothesis.
+	client2, srv2, _ := scriptServer(t,
+		`{"hypothesis":{"statement":"x"},"tool_call":{"name":"find_symbol","args":{"nope":1},"purpose":"y"}}`)
+	defer srv2.Close()
+	p2 := Planner{Client: client2, Tools: Tools{Source: toolIndex(t)}}
+	c2 := newCase()
+	if p2.Plan(context.Background(), plannerCond(), c2) {
+		t.Fatal("tool miss must not report progress")
+	}
+	if h := c2.Hypotheses[0]; h.Status != domain.HypothesisRejected {
+		t.Fatalf("hypothesis=%+v want REJECTED", h)
+	}
+}
+
+func TestPlannerUnparseableResponse(t *testing.T) {
+	client, srv, _ := scriptServer(t, `not json at all`)
+	defer srv.Close()
+	p := Planner{Client: client, Tools: Tools{Source: toolIndex(t)}}
+	c := newCase()
+	if p.Plan(context.Background(), plannerCond(), c) {
+		t.Fatal("unparseable response must not progress")
+	}
+	if h := c.Hypotheses[0]; h.Status != domain.HypothesisUnresolved {
+		t.Fatalf("hypothesis=%+v want UNRESOLVED", h)
+	}
+}

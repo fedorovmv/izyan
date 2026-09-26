@@ -22,6 +22,17 @@ import (
 type GapAnalysis struct {
 	Source     *goanalysis.Index
 	Evaluators []evaluator.ConditionEvaluator
+	// Planner is the optional LLM-driven hypothesis planner (spec §18):
+	// it runs once per still-unknown condition when the deterministic
+	// actions for it are exhausted. It only decides where to look next;
+	// claim results remain the evaluators' job.
+	Planner HypothesisPlanner
+}
+
+// HypothesisPlanner proposes and executes one hypothesis test for an
+// unresolved condition. Returns true when new evidence was produced.
+type HypothesisPlanner interface {
+	Plan(ctx context.Context, cond domain.Condition, c *domain.AnalysisCase) bool
 }
 
 const (
@@ -51,7 +62,23 @@ func (h GapAnalysis) Run(ctx context.Context, c *domain.AnalysisCase) (workflow.
 					"gap analysis stopped: MaxToolCalls budget exhausted")
 				return h.dispatch(c, "tool budget exhausted")
 			}
-			progress = h.plan(ctx, c, cond, planned) || progress
+			moved := h.plan(ctx, c, cond, planned)
+			// The deterministic planner had nothing for this condition —
+			// let the LLM planner pick the next check (once per run).
+			if !moved && h.Planner != nil {
+				key := string(cond.ID) + ":llm-plan"
+				if !planned[key] {
+					planned[key] = true
+					if max := c.Workflow.Limits.MaxLLMCalls; max > 0 &&
+						c.UsageSnapshot().LLMCalls >= max {
+						c.EvidenceGraph.AddLimitation(
+							"gap analysis: LLM planner skipped, MaxLLMCalls exhausted")
+					} else {
+						moved = h.Planner.Plan(ctx, cond, c)
+					}
+				}
+			}
+			progress = moved || progress
 		}
 		if !progress {
 			break

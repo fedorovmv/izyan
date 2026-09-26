@@ -69,8 +69,9 @@ FALSE капает вердикт, тратить tool-budget бессмысле
 - Planner детерминистичен и покрывает четыре kind, включая caller-frame
   validation (`FindValidationsBound`: Covers-гарда только при полном
   покрытии всех caller-веток; partial → UNKNOWN; NV `verifyGuardFalse`).
-- Reviewer-driven repair loop (REVIEW → REPAIR_ANALYSIS) — отдельная
-  ветка, не этот слой: state `REPAIR_ANALYSIS` объявлен, не используется.
+- Reviewer-driven repair loop реализован: REVIEW → REPAIR_ANALYSIS →
+  REVIEW (demotion-only, bounded MaxReviewIterations).
 - Глубокий трейс всё ещё bounded (6); цепочки глубже остаются UNKNOWN.
-- LLM-agent hypothesis selection (спека §16 — агент сам выбирает
-  инструменты) не реализована — это слой над typed tools #6.
+- LLM-planner реализован: `llm.Planner` — один шаг «гипотеза + tool
+  call» на неразрешённый claim, когда детерминистичные экшены исчерпаны
+  (персистится как Hypothesis; claim решают evaluators).
