@@ -234,6 +234,7 @@ func analyzeCase(ctx context.Context, o analyzeOpts) (*domain.AnalysisCase, erro
 		states.CollectEvidence{
 			Govulncheck: gvRunner,
 			Source:      srcIndex,
+			OSVBase:     o.osvURL,
 		},
 		states.EvaluateConditions{Evaluators: []evaluator.ConditionEvaluator{
 			evaluator.SymbolReachable{},

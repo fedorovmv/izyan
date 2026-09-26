@@ -241,6 +241,10 @@ func (h BuildExploitModel) Run(ctx context.Context, c *domain.AnalysisCase) (wor
 type CollectEvidence struct {
 	Govulncheck goanalysis.Runner
 	Source      *goanalysis.Index
+	// OSVBase, when set, lets coverage checks ask the vulnerability database
+	// whether the advisory exists as a GO-* record — distinguishing
+	// "evaluated, no path" from "unknown to the DB".
+	OSVBase string
 }
 
 func (CollectEvidence) State() domain.WorkflowState { return domain.StateCollectEvidence }
@@ -291,7 +295,11 @@ func (h CollectEvidence) runGovulncheck(ctx context.Context, c *domain.AnalysisC
 		c.EvidenceGraph.AddToolLimitation(err.Error())
 		return
 	}
-	if res.Covers(c.Vulnerability) {
+	covered := res.Covers(c.Vulnerability)
+	if !covered && c.Vulnerability.Module != "" {
+		covered = dbKnowsAdvisory(ctx, h.OSVBase, c.Vulnerability)
+	}
+	if covered {
 		c.GovulncheckCoverage = "covered"
 	} else {
 		c.GovulncheckCoverage = "not_in_db"
@@ -842,6 +850,35 @@ func (h BuildReport) Run(ctx context.Context, c *domain.AnalysisCase) (workflow.
 		}
 	}
 	return workflow.Transition{Next: domain.StateCompleted, Reason: "report written to " + h.Dir}, nil
+}
+
+// dbKnowsAdvisory reports whether the Go vulnerability database (mirrored by
+// the OSV API) holds a GO-* record matching the vulnerability or its aliases.
+// Only GO-* entries count: govulncheck's DB contains Go-ecosystem records; a
+// bare GHSA/OSV document does not imply coverage.
+func dbKnowsAdvisory(ctx context.Context, base string, v domain.Vulnerability) bool {
+	refs, err := vulnerability.QueryOSVRefs(ctx, base, v.Module)
+	if err != nil {
+		return false
+	}
+	want := map[string]bool{v.ID: true}
+	for _, a := range v.Aliases {
+		want[a] = true
+	}
+	for _, r := range refs {
+		if !strings.HasPrefix(r.ID, "GO-") {
+			continue
+		}
+		if want[r.ID] {
+			return true
+		}
+		for _, a := range r.Aliases {
+			if want[a] {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func orUnknown(s string) string {
