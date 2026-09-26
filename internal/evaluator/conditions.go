@@ -28,12 +28,20 @@ func (SymbolReachable) CanEvaluate(cond domain.Condition) bool {
 }
 
 func (SymbolReachable) Evaluate(cond domain.Condition, c *domain.AnalysisCase) domain.Claim {
+	// Pattern-parametrized reachability shapes are decided by their own
+	// rules before the govulncheck path runs.
+	if cond.Params[domain.ParamDirection] == domain.DirectionRead {
+		return evalReadDirection(cond, c)
+	}
+	if cond.Params[domain.ParamSequence] != "" {
+		return evalSequencePair(cond, c)
+	}
 	claim := domain.Claim{
 		ID:          domain.ClaimID("CL-" + string(cond.ID)),
 		ConditionID: cond.ID,
 		Result:      domain.ClaimUnknown,
 
-		Producer:    "evaluator.SymbolReachable",
+		Producer: "evaluator.SymbolReachable",
 	}
 	symbols := reachabilitySubjects(cond, c)
 	if len(symbols) == 0 {
@@ -143,6 +151,163 @@ func libraryUsageVerdict(claim domain.Claim, c *domain.AnalysisCase, subjects []
 		"FALSE is a candidate: implicit interface dispatch (e.g. fmt.Stringer) may hide calls",
 		"module-internal reachability was checked in vendored source only")
 	return claim
+}
+
+// evalReadDirection evaluates direction=read reachability (INFO_LEAK
+// class): the question is whether product code *references* the sensitive
+// subject — any product reader can observe the exposed data. Readers are
+// collected by the read-scope scan into EvidenceGraph.SymbolRefs.
+//
+//	TRUE  — at least one subject has product-code references.
+//	FALSE candidate — the scan ran and found no references; requires
+//	  negative verification like any other absence claim.
+//	UNKNOWN — the scan never ran (source index unavailable) or the
+//	  condition carries no subjects.
+func evalReadDirection(cond domain.Condition, c *domain.AnalysisCase) domain.Claim {
+	claim := domain.Claim{
+		ID:          domain.ClaimID("CL-" + string(cond.ID)),
+		ConditionID: cond.ID,
+		Result:      domain.ClaimUnknown,
+
+		Producer: "evaluator.SymbolReachable",
+	}
+	subjects := condSubjects(cond)
+	if len(subjects) == 0 {
+		claim.Limitations = append(claim.Limitations,
+			"no subject symbol: read-direction conditions bind the exposed datum, not root causes")
+		return claim
+	}
+	var evIDs []domain.EvidenceID
+	for _, e := range c.EvidenceGraph.EvidenceList() {
+		if e.Tool == "goanalysis.Index.SearchSymbol" && strings.HasPrefix(e.Source, "read-scope check ") {
+			evIDs = appendUniqueID(evIDs, e.ID)
+		}
+	}
+	if len(evIDs) == 0 {
+		claim.Limitations = append(claim.Limitations,
+			"read-scope scan did not run for this condition's subjects")
+		return claim
+	}
+	var readers []string
+	for _, s := range subjects {
+		refs := c.EvidenceGraph.SymbolRefsFor(s.Package + "." + s.Symbol)
+		if len(refs) > 0 {
+			readers = append(readers, fmt.Sprintf("%s.%s (%s:%d)",
+				s.Package, s.Symbol, refs[0].File, refs[0].Line))
+		}
+	}
+	claim.EvidenceIDs = evIDs
+	if len(readers) > 0 {
+		claim.Result = domain.ClaimTrue
+		claim.Explanation = fmt.Sprintf(
+			"product code references %d of %d subject(s): %s — data is observable outside the owning package",
+			len(readers), len(subjects), strings.Join(readers, ", "))
+		return claim
+	}
+	claim.Result = domain.ClaimFalse
+	claim.Explanation = fmt.Sprintf(
+		"no product-code reference to any of %d subject(s); the sensitive data has no observed reader",
+		len(subjects))
+	claim.Limitations = append(claim.Limitations,
+		"FALSE is a candidate: readers inside other dependencies or through interface dispatch are not scanned")
+	return claim
+}
+
+// evalSequencePair evaluates sequence reachability (URI_CONFUSION class):
+// the product must invoke the full API pair that forms the vulnerable
+// round-trip — a member counts as invoked when the product calls it
+// directly or reaches it through a module API it uses.
+//
+//	TRUE  — every subject is invoked (direct callee or module-internal chain).
+//	FALSE candidate — module usage was checked and at least one member is
+//	  never invoked.
+//	UNKNOWN — module usage was never collected.
+func evalSequencePair(cond domain.Condition, c *domain.AnalysisCase) domain.Claim {
+	claim := domain.Claim{
+		ID:          domain.ClaimID("CL-" + string(cond.ID)),
+		ConditionID: cond.ID,
+		Result:      domain.ClaimUnknown,
+
+		Producer: "evaluator.SymbolReachable",
+	}
+	subjects := condSubjects(cond)
+	if len(subjects) < 2 {
+		claim.Limitations = append(claim.Limitations,
+			"sequence condition needs a pair of subject symbols")
+		return claim
+	}
+	if !moduleUsageChecked(c) {
+		claim.Limitations = append(claim.Limitations,
+			"module usage was not collected; the API pair cannot be verified")
+		return claim
+	}
+	var missing []string
+	for _, s := range subjects {
+		key := s.Package + "." + s.Symbol
+		if !memberInvoked(key, c) {
+			missing = append(missing, key)
+		}
+	}
+	claim.EvidenceIDs = moduleUsageEvidence(c)
+	if len(missing) == 0 {
+		claim.Result = domain.ClaimTrue
+		claim.Explanation = fmt.Sprintf(
+			"product invokes the full round-trip pair (%s)",
+			cond.Params[domain.ParamSequence])
+		claim.Limitations = append(claim.Limitations,
+			"pair presence is proven; call order/dataflow between members is not verified")
+		return claim
+	}
+	claim.Result = domain.ClaimFalse
+	claim.Explanation = fmt.Sprintf(
+		"round-trip pair incomplete: product never invokes %s",
+		strings.Join(missing, ", "))
+	claim.Limitations = append(claim.Limitations,
+		"FALSE is a candidate: pair members may be invoked via interface dispatch or reflection")
+	return claim
+}
+
+// memberInvoked reports whether the product invokes key ("pkg.Symbol") —
+// directly at a call site into the module, or through a used module API
+// whose intra-module call chain reaches it.
+func memberInvoked(key string, c *domain.AnalysisCase) bool {
+	if _, ok := c.EvidenceGraph.ModuleReachable[key]; ok {
+		return true
+	}
+	for _, u := range c.EvidenceGraph.ModuleUsages {
+		if u.Callee == key {
+			return true
+		}
+	}
+	return false
+}
+
+// moduleUsageChecked reports whether the module-usage scan ran — its check
+// evidence is recorded even when zero call sites were found.
+func moduleUsageChecked(c *domain.AnalysisCase) bool {
+	for _, e := range c.EvidenceGraph.EvidenceList() {
+		if e.Tool == "goanalysis.Index.ModuleUsage" {
+			return true
+		}
+	}
+	return false
+}
+
+// condSubjects returns the condition's bound subjects (Subjects plus the
+// singular Subject, deduplicated) — unlike reachabilitySubjects it does
+// not union in advisory symbols: param-directed conditions bind exactly
+// what the pattern declared.
+func condSubjects(cond domain.Condition) []domain.SymbolRef {
+	var out []domain.SymbolRef
+	for _, s := range cond.Subjects {
+		if !containsSymbol(out, s) {
+			out = append(out, s)
+		}
+	}
+	if cond.Subject != nil && !containsSymbol(out, *cond.Subject) {
+		out = append(out, *cond.Subject)
+	}
+	return out
 }
 
 // moduleReachChecked reports whether the intra-module reachability scan ran

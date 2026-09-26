@@ -153,6 +153,7 @@ func runEngine(t *testing.T, d engineDeps) *domain.AnalysisCase {
 			evaluator.SymbolReachable{},
 			evaluator.ArgumentOrigin{},
 			evaluator.Validation{},
+			evaluator.Presence{},
 		}},
 		states.NegativeCheck{Verifier: &goanalysis.Verifier{Source: srcIndex}},
 		states.Review{Reviewer: review.Structural{}, Evaluator: evaluator.VerdictEvaluator{}},
@@ -883,5 +884,92 @@ func TestRootCauseRetryOnVerificationFailure(t *testing.T) {
 	}
 	if len(c.RootCause.RootCauses) != 1 || c.RootCause.RootCauses[0].Symbol != "Parse" {
 		t.Fatalf("root causes=%+v", c.RootCause.RootCauses)
+	}
+}
+
+// Pattern-library golden: the advisory names a credential carrier, not an
+// input->sink path. Classified INFO_LEAK, the model is C-DATA-PRESENT +
+// C-EXPOSED; with no product reader the pair resolves to a verified FALSE
+// -> NO_EXPLOIT_PATH_FOUND.
+func TestE2EInfoLeakNoReader(t *testing.T) {
+	repo := initRepoFrom(t, "leakprod")
+	caseDir := t.TempDir()
+
+	c := runEngine(t, engineDeps{
+		RepoPath: repo,
+		VulnSrc: vulnerability.StaticSource{Vulns: map[string]*domain.Vulnerability{
+			"GO-LEAK-1": {
+				ID:      "GO-LEAK-1",
+				Module:  "example.com/dep",
+				Summary: "credentials retained in plaintext in exported struct fields",
+				AffectedPackages: []domain.AffectedPackage{{
+					Path: "example.com/dep/vuln", Symbols: []string{"PlainAuth.Password"},
+				}},
+			},
+		}},
+		VulnID:   "GO-LEAK-1",
+		Resolver: stubResolver{},
+		ManualRC: []domain.RootCause{{
+			Package: "example.com/dep/vuln", Symbol: "PlainAuth.Password", Role: domain.RootCauseSink,
+		}},
+		CaseDir:     caseDir,
+		Govulncheck: fakeGovulncheck{out: []byte(`{"protocol_version":"v1.0.0"}`)},
+		UseSource:   true,
+	})
+
+	if c.Exploit == nil || c.Exploit.Class != "INFO_LEAK" {
+		t.Fatalf("exploit class=%v, want INFO_LEAK", c.Exploit)
+	}
+	present := findClaimT(t, c.Claims, "C-DATA-PRESENT")
+	if present.Result != domain.ClaimTrue {
+		t.Fatalf("C-DATA-PRESENT=%s want TRUE (%s)", present.Result, present.Explanation)
+	}
+	exposed := findClaimT(t, c.Claims, "C-EXPOSED")
+	if exposed.Result != domain.ClaimFalse {
+		t.Fatalf("C-EXPOSED=%s want FALSE (%s)", exposed.Result, exposed.Explanation)
+	}
+	if exposed.NegativeVerification == nil ||
+		exposed.NegativeVerification.Status != domain.NegativeVerified {
+		t.Fatalf("neg verification=%+v want VERIFIED", exposed.NegativeVerification)
+	}
+	if c.Verdict == nil || c.Verdict.Verdict != domain.VerdictNoExploitPathFound {
+		t.Fatalf("verdict=%+v want NO_EXPLOIT_PATH_FOUND", c.Verdict)
+	}
+}
+
+// Same INFO_LEAK model, but the product reads the exported credential
+// field: both pattern conditions are TRUE -> EXPLOITABLE.
+func TestE2EInfoLeakReader(t *testing.T) {
+	repo := initRepoFrom(t, "leakread")
+	caseDir := t.TempDir()
+
+	c := runEngine(t, engineDeps{
+		RepoPath: repo,
+		VulnSrc: vulnerability.StaticSource{Vulns: map[string]*domain.Vulnerability{
+			"GO-LEAK-2": {
+				ID:      "GO-LEAK-2",
+				Module:  "example.com/dep",
+				Summary: "credentials retained in plaintext in exported struct fields",
+				AffectedPackages: []domain.AffectedPackage{{
+					Path: "example.com/dep/vuln", Symbols: []string{"PlainAuth.Password"},
+				}},
+			},
+		}},
+		VulnID:   "GO-LEAK-2",
+		Resolver: stubResolver{},
+		ManualRC: []domain.RootCause{{
+			Package: "example.com/dep/vuln", Symbol: "PlainAuth.Password", Role: domain.RootCauseSink,
+		}},
+		CaseDir:     caseDir,
+		Govulncheck: fakeGovulncheck{out: []byte(`{"protocol_version":"v1.0.0"}`)},
+		UseSource:   true,
+	})
+
+	exposed := findClaimT(t, c.Claims, "C-EXPOSED")
+	if exposed.Result != domain.ClaimTrue {
+		t.Fatalf("C-EXPOSED=%s want TRUE (%s)", exposed.Result, exposed.Explanation)
+	}
+	if c.Verdict == nil || c.Verdict.Verdict != domain.VerdictExploitable {
+		t.Fatalf("verdict=%+v want EXPLOITABLE", c.Verdict)
 	}
 }

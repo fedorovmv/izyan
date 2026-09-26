@@ -25,12 +25,17 @@ func (ServerTransportInput) CanEvaluate(cond domain.Condition) bool {
 }
 
 func (ServerTransportInput) Evaluate(cond domain.Condition, c *domain.AnalysisCase) domain.Claim {
+	// A declared non-peer input source skips transport reasoning entirely:
+	// the pattern asserts the input arrives as an argument or from config.
+	if src := cond.Params[domain.ParamInputSource]; src == domain.InputArg || src == domain.InputConfig {
+		return ArgumentOrigin{}.Evaluate(cond, c)
+	}
 	claim := domain.Claim{
 		ID:          domain.ClaimID("CL-" + string(cond.ID)),
 		ConditionID: cond.ID,
 		Result:      domain.ClaimUnknown,
 
-		Producer:    "evaluator.ServerTransportInput",
+		Producer: "evaluator.ServerTransportInput",
 	}
 	module := c.Vulnerability.Module
 	var frames []string
@@ -50,8 +55,9 @@ func (ServerTransportInput) Evaluate(cond domain.Condition, c *domain.AnalysisCa
 		// Client side: the product calls the vulnerable module's API, so
 		// unexported internals run inside its peer-driven read path — input
 		// is controlled by the remote peer (broker/server), not product code.
-		// Only applies when the condition describes remote input.
-		if len(c.EvidenceGraph.ModuleUsages) > 0 && describesRemoteInput(cond, c.Vulnerability) &&
+		// Applies when the condition is about peer input — declared via
+		// input_source=peer or inferred from remote-input wording.
+		if len(c.EvidenceGraph.ModuleUsages) > 0 && wantsPeerInput(cond, c.Vulnerability) &&
 			reachabilitySubjects(cond, c) != nil && allUnexported(reachabilitySubjects(cond, c)) {
 			claim.Result = domain.ClaimTrue
 			claim.EvidenceIDs = moduleUsageEvidence(c)
@@ -106,6 +112,17 @@ func describesRemoteInput(cond domain.Condition, v domain.Vulnerability) bool {
 	return remoteInputRe.MatchString(cond.Description) ||
 		remoteInputRe.MatchString(v.Summary) ||
 		remoteInputRe.MatchString(v.Description)
+}
+
+// wantsPeerInput reports whether the condition is about peer-controlled
+// input. An explicit input_source param outranks the description regex —
+// patterns declare peer input even when the condition text carries no
+// remote-signal words.
+func wantsPeerInput(cond domain.Condition, v domain.Vulnerability) bool {
+	if cond.Params[domain.ParamInputSource] == domain.InputPeer {
+		return true
+	}
+	return describesRemoteInput(cond, v)
 }
 
 func frameName(fr domain.CallSite) string {

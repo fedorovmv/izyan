@@ -115,6 +115,9 @@ type File struct {
 	Dels    int      `json:"deleted_lines"`
 }
 
+// Patch is a parsed unified diff — the set of files it touches.
+type Patch []File
+
 var (
 	diffGitRe  = regexp.MustCompile(`^diff --git a/(\S+) b/(\S+)`)
 	hunkRe     = regexp.MustCompile(`^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@\s*(.*)`)
@@ -124,8 +127,8 @@ var (
 
 // Parse splits a unified diff into per-file entries and extracts the names
 // of the enclosing functions from hunk headers and changed func decls.
-func Parse(patch string) []File {
-	var files []File
+func Parse(patch string) Patch {
+	var files Patch
 	var cur *File
 	var curSym string
 	flush := func() {

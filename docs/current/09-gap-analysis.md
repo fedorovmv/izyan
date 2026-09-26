@@ -29,7 +29,7 @@
 
 | Область | Спека | Сейчас | Пробел |
 |---|---|---|---|
-| Exploit model | §8–9: атомарные условия по классу уязвимости | fallback = 2 generic условия (C-REACH, C-INPUT); LLM расширяет когда доступен | **Нет PatternRegistry**: vuln-class-specific mandatory conditions (panic/DoS, traversal, SSRF, deserialization, info-leak). Живой кейс: GHSA-27gv (PlainAuth creds in-memory) зажат в шаблон «attacker controls sink arg» → INCONCLUSIVE вместо условий «кто-то может прочитать Connection.Config.SASL» |
+| Exploit model | §8–9: атомарные условия по классу уязвимости | `Classify` (CWE → keywords → fix-diff) + `exploit.Registry`: peer-driven, INFO_LEAK, URI_CONFUSION, NIL_DEREF паттерны; `Condition.Params` (`input_source`, `direction=read`, `sequence=`, `bound`, `check`); generic C-REACH/C-INPUT домердживаются; LLM дополняет и заполняет пустой `bound` | Классификация keywords — эвристика (фиксируется limitation); `bound` пока текстовая аннотация без доказательства гарды; паттернов пока 4 семейства — PATH_TRAVERSAL/INJECTION/SSRF/etc. сидят на generic-модели |
 | Condition kinds | §8 минимум 10 типов | enum есть | Нет evaluators для `PLATFORM_CONDITION`, `AUTHENTICATION_CONDITION`, `RUNTIME_CONDITION`, `VALIDATION` (есть `Validation`, но kind в enum — отдельный) → всегда UNKNOWN |
 | Data origins | §15: EXTERNAL_UNTRUSTED/AUTHENTICATED, CONFIGURATION, DATABASE, INTERNAL_SERVICE, CONSTANT, GENERATED | enum есть; provenance покрывает http.Request/os.Args/net, частично config/generated | `DATABASE`/`INTERNAL_SERVICE` не распознаются → UNKNOWN; `EXTERNAL_AUTHENTICATED` в enum, но классификация authenticated-vs-trusted не различается |
 | Transformations | §15: `source → transformations → validation → sink`, security-relevant transforms | `TraceArgument` даёт origin конечного аргумента | Цепочка трансформаций не моделируется: `quote()/escape()/cast()` между source и sink не учитываются в reasoning |
@@ -55,20 +55,42 @@ deployment property». Спека требует учитывать deployment c
 
 Это единственный блокер между «EXPLOITABLE с оговоркой» и полным ответом.
 
-### 3.2 Pattern library / vuln-class exploit models
+### 3.2 Pattern library / vuln-class exploit models — `done` (базовый слой)
 
-Не кодовый gap — модельный. Сейчас mandatory conditions одинаковы для
-всех классов. Реальные последствия уже видны:
+Реализовано по `10-pattern-library-plan.md`: классификатор (CWE →
+keywords → fix-diff), декларативный `exploit.Registry`, `Condition.Params`
+для evaluator-семантики, ветки сбора/оценки/фальсификации
+(`check=symbol_present`, `direction=read`, `sequence=a->b`,
+`input_source=peer`), отображение класса и параметров в отчёте.
 
-- credential/secret-in-memory advisory (GHSA-27gv) — нужны условия вида
-  «данные доступны читателю объекта», а не «input достиг sink»;
-- URI round-trip advisory (GHSA-465g) — нужно условие «продукт
-  вызывает String()→Parse() пару», а не generic input;
-- panic/DoS class — условие «sink on hot path» vs «достижим»;
-- auth-bypass class — условие «entrypoint без authn».
+Закрытые мотивирующие кейсы:
 
-Без библиотеки классов каждая новая форма уязвимости упирается в
-generic-шаблон и INCONCLUSIVE.
+- credential/secret-in-memory (GHSA-27gv) — `INFO_LEAK`:
+  `C-DATA-PRESENT` (поля подтверждаются `FindSymbol` в dep source) +
+  `C-EXPOSED` (product-читатели `Type.Field` через `SearchSymbol`;
+  e2e: нет читателя → VERIFIED FALSE → NO_EXPLOIT_PATH_FOUND, есть
+  читатель → EXPLOITABLE);
+- URI round-trip (GHSA-465g) — `URI_CONFUSION`: `C-ROUNDTRIP`
+  биндится на паре exported API и проверяет, что продукт вызывает
+  обоих членов пары; неполная пара → FALSE-кандидат;
+- peer-driven семейство (wire parser/OOB/int-overflow/exhaustion) —
+  `C-PEER-INPUT`+`C-CONSTRAINT`+`C-ENTRY` вместо generic input;
+- NIL_DEREF — `C-TRIGGER`+`C-HOT-PATH`.
+
+Остаток: остальные классы (PATH_TRAVERSAL, INJECTION, SSRF, AUTH_BYPASS,
+XXE, REDOS, RACE, DESERIALIZATION) классифицируются, но сидят на
+generic-модели — паттерны добавляются по мере живых кейсов; `bound` —
+текстовая аннотация, доказательство гарды не реализовано.
+
+Дополнительно после живого перепрогона: subject-пулы по `Bind`-оси —
+INFO_LEAK биндит datum-субъекты (advisory-символы `Type.Field` +
+`SensitiveFields` field-scan dep package + верифицированные LLM-
+предложения), URI_CONFUSION достраивает пару stem-таблицей
+(`URI.String→ParseURI`). Проверено на живых кейсах: GHSA-27gv биндит
+реальные поля (`PlainAuth.Password`, `Config.SASL`, …), GHSA-465g —
+реальную пару; оба VERIFIED FALSE демотированы ревьюером по reflect-
+маркеру → INCONCLUSIVE (reflect действительно читает exported-поля —
+консервативно верно).
 
 ### 3.3 Build/tag вариативность
 

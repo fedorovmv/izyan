@@ -32,7 +32,7 @@ CREATED → SNAPSHOT_PRODUCT → RESOLVE_VULNERABILITY → CHECK_AFFECTED
 | RESOLVE_VULNERABILITY | OSV API / `--vuln-file` | `Vulnerability` + алиас-дотягивание GO-* документа, если у GHSA нет `ecosystem_specific.imports` |
 | CHECK_AFFECTED | `go list -m all` + `vendor/modules.txt`, `go list -deps ./...`, `x/mod/semver` | `AffectedResult`: module/version/package/build — каждый факт с evidence |
 | RESOLVE_ROOT_CAUSE | advisory `affected_symbols` → fix-commit diff → LLM-retry | верифицированные sink-символы (каждый проверен `FindSymbol` в dep source) |
-| BUILD_EXPLOIT_MODEL | LLM (при наличии) → детерминистический fallback | `ExploitModel` — mandatory conditions с `Subjects` |
+| BUILD_EXPLOIT_MODEL | `Classify` (CWE → keywords → fix-diff) → pattern из `exploit.Registry` → LLM (при наличии) → generic fallback | `ExploitModel` — класс + mandatory conditions с `Subjects`/`Params` |
 | COLLECT_EVIDENCE | govulncheck + `goanalysis.Index` | `EvidenceGraph`: call paths, data flows, entrypoints, module usages, limitations |
 | EVALUATE_CONDITIONS | evaluators chain | `Claim{TRUE/FALSE/UNKNOWN}` per condition |
 | NEGATIVE_CHECK | `goanalysis.Verifier` | FALSE-кандидат → VERIFIED/CONTRADICTED/INSUFFICIENT_SCOPE |
@@ -113,20 +113,76 @@ advisory `affected_symbols`); `CallSite` хранит receiver, matching
 `DialTLS → DialConfig → Open → Connection.reader → ReadFrame → parseMethodFrame → readLongstr`
 записываются в evidence.
 
-## 5. Evaluators (condition → claim)
+## 5. Pattern library — класс-специфичные exploit models
+
+`BUILD_EXPLOIT_MODEL` больше не сводится к generic-паре `C-REACH`+`C-INPUT`:
+
+1. `Classify` (`internal/exploit/classify.go`) выбирает `Class`:
+   CWE-маппинг → keyword-регексы по summary/description → keywords по
+   уже собранному fix-diff (без новых tool calls) → `UNKNOWN`. Класс
+   и источник классификации фиксируются (`ExploitModel.Class`, для
+   keyword/patch-инференса — limitation).
+2. `Registry` (`internal/exploit/patterns.go`) держит декларативные
+   `Pattern` — набор `ConditionTmpl` (что проверять, не чему равно) +
+   `SkipGenericReach/Input`. Шаблоны несут `Params`:
+   `input_source=peer|arg|config`, `direction=read`, `sequence=a->b`,
+   `bound=…`, `check=symbol_present`.
+3. `Instantiate` привязывает шаблоны к subject-пулам по `Bind`-оси:
+   `BindSinks` (root-cause sinks), `BindDatums` (чувствительные данные),
+   `BindPair` (API-пара round-trip). `ExportedOnly`/`MinSubjects`
+   применяются к выбранному пулу; неполный пул → limitation, условие
+   остаётся непривязанным — никогда не деградирует в bind на sinks.
+   Непокрытые generic-роли домердживаются — `C-REACH`/`C-INPUT` остаются
+   fallback'ом всегда.
+4. Пулы `Datums`/`Pairs` собираются до instantiate и верифицируются
+   `FindSymbol` в dep source:
+   - advisory-символы формы `Type.Field` и bare-имена, резолвящиеся в
+     struct-типы (`IsStruct`);
+   - `SensitiveFields(pkg)` — детерминистичный скан struct-полей dep
+     package по credential-именам (password|secret|token|sasl|…);
+   - pair-completion по stem-таблице (`String→Parse{T}`, `Marshal→
+     Unmarshal{T}`, …) — `URI.String` достраивается `ParseURI`;
+   - LLM-предложения (`datum_symbols`/`pair_symbols` в схеме exploit-
+     модели) — только символы внутри advisory-модуля, только после
+     FindSymbol-верификации.
+5. LLM-условия дополняют модель; пустые pattern-параметры (`bound`)
+   заполняются из LLM, непустые — не перезаписываются.
+
+Собранные классы:
+
+| Класс | Mandatory | Supporting |
+|---|---|---|
+| peer-driven (`WIRE_PARSER`, `OOB_WRITE`, `INTEGER_OVERFLOW`, `RESOURCE_EXHAUSTION`) | `C-REACH`, `C-PEER-INPUT`, `C-CONSTRAINT` (`input_source=peer`, `bound`) | `C-ENTRY` |
+| `INFO_LEAK` | `C-DATA-PRESENT` (`check=symbol_present`), `C-EXPOSED` (`direction=read`) — оба `BindDatums`; generic-условия выключены | `C-USE` |
+| `URI_CONFUSION`, `CONFIG_INJECTION` | `C-ROUNDTRIP` (`sequence=`, `BindPair`), `C-INPUT` | — |
+| `NIL_DEREF` | `C-REACH`, `C-TRIGGER` | `C-HOT-PATH` |
+
+`UNKNOWN`/непокрытые классы → прежняя generic-модель. `bound` — текстовая
+аннотация: семантическое доказательство гарды осознанно отложено.
+
+Params задают и сбор evidence, и evaluation: `check=symbol_present` →
+`collectPresence` (`SymbolDecls` через `FindSymbol`, который умеет
+резолвить поля структур); `direction=read` → `collectReaders`
+(`SymbolRefs` через `SearchSymbol` — `Type.Field` селекторы и
+composite-literal ключи матчатся по declaring struct); `sequence=` →
+сверка членов пары с module-usage/`ModuleReachable`; `input_source` →
+выбор ветки в `ServerTransportInput`.
+
+## 6. Evaluators (condition → claim)
 
 | Evaluator | Обрабатывает | Логика |
 |---|---|---|
-| `SymbolReachable` | `SYMBOL_REACHABLE` | govulncheck-трейсы → TRUE; `not_in_db` → module-usage fallback; covered+нет пути → FALSE-кандидат |
-| `ServerTransportInput` | `ATTACKER_CONTROL`, `INPUT_CONSTRAINT` | server-фреймы уязвимого модуля в трейсе + listener-entrypoints → TRUE; client-side: module usage + unexported subjects + remote-input в тексте → TRUE; иначе делегирует `ArgumentOrigin` |
+| `SymbolReachable` | `SYMBOL_REACHABLE` | govulncheck-трейсы → TRUE; `not_in_db` → module-usage fallback; covered+нет пути → FALSE-кандидат. Param-ветки: `direction=read` → product-refs из `SymbolRefs` (INFO_LEAK); `sequence=a->b` → все члены пары вызваны (URI_CONFUSION) |
+| `ServerTransportInput` | `ATTACKER_CONTROL`, `INPUT_CONSTRAINT` | server-фреймы уязвимого модуля в трейсе + listener-entrypoints → TRUE; client-side: module usage + unexported subjects + peer-input → TRUE (`input_source=peer` в params или remote-input в тексте); `input_source=arg/config` — сразу `ArgumentOrigin` |
 | `ArgumentOrigin` | `ATTACKER_CONTROL` | `DataFlows`: external origin → TRUE; все non-external → FALSE-кандидат |
 | `Validation` | `INPUT_CONSTRAINT` | `FindValidations` — guard-выражения до sink |
+| `Presence` | `check=symbol_present` | `SymbolDecls`: subject объявлен в dep source → TRUE; проверен и отсутствует → FALSE-кандидат (INFO_LEAK) |
 | `VersionFact` | `BUILD_CONDITION`, `CONFIGURATION` | semver-сравнение («prior to X.Y.Z», «нет в vulnerable versions») по `AffectedResult` |
 
 TRUE-claim обязан нести evidence ID — структурный ревьюер иначе
 демотирует (provenance-инвариант).
 
-## 6. Negative verification — защита FALSE
+## 7. Negative verification — защита FALSE
 
 FALSE-кандидат проходит `Verifier` до того, как вердикт на него опирается:
 
@@ -139,11 +195,15 @@ FALSE-кандидат проходит `Verifier` до того, как вер�
   сам по себе ничего не вызывает (значим через func_value/linkname,
   которые проверяются адресно).
 - Для `ATTACKER_CONTROL` — provenance всех call sites.
+- `direction=read` — любая product-ссылка на subject это читатель →
+  CONTRADICTED.
+- `sequence=` — проверяются только **не вызванные** члены пары: ссылки
+  на них → INSUFFICIENT_SCOPE, нет → VERIFIED.
 
 VERIFIED FALSE → можно опираться; CONTRADICTED → UNKNOWN;
 INSUFFICIENT_SCOPE → UNKNOWN, вердикт не может использовать FALSE.
 
-## 7. Review + repair
+## 8. Review + repair
 
 `review.Structural` (детерминистический) + `llm.Reviewer` (если включён)
 → merged findings. REVISE → bounded repair: демоция неподдержанных
@@ -158,7 +218,7 @@ claim'ов в UNKNOWN, бюджет `MaxReviewIterations`. Правила защ
 - Structural демотирует FALSE при «widens the call graph»-limitation —
   детерминистично, не дожидаясь LLM.
 
-## 8. Go toolchain — три уровня
+## 9. Go toolchain — три уровня
 
 | Источник | Когда | Что даёт |
 |---|---|---|
@@ -169,7 +229,7 @@ claim'ов в UNKNOWN, бюджет `MaxReviewIterations`. Правила защ
 `go.mod` (`GoModDirective`) — **нижняя граница**, не факт сборки; для
 stdlib-advisory записывается явный limitation.
 
-## 9. LLM-слой — строго поверх детерминистики
+## 10. LLM-слой — строго поверх детерминистики
 
 - LLM предлагает структуры: root-cause кандидаты, exploit-model
   conditions, review findings. Всё проходит детерминистическую
@@ -179,7 +239,7 @@ stdlib-advisory записывается явный limitation.
   равно дошёл до вердикта).
 - `--deterministic-only` гасит слой полностью.
 
-## 10. Чего не хватает (известные границы)
+## 11. Чего не хватает (известные границы)
 
 - `ModuleInternalReach` работает по vendored-исходникам; без `vendor/`
   внутримодульные цепочки не проверяются → UNKNOWN вместо FALSE.
@@ -189,8 +249,13 @@ stdlib-advisory записывается явный limitation.
   фиксируются caveat'ом, не резолвятся — следующий шаг: читать bind-
   адрес из конфига/манифестов.
 - gRPC-кейс (`GHSA-vp52`) проходит до `EXPLOITABLE`; RabbitMQ —
-  4 EXPLOITABLE (unexported sinks + module usage + vendor-цепочки) +
-  2 INCONCLUSIVE (exported sinks, input-условие не резолвится
-  детерминистично — корректно: один advisory про утечку кредов из
-  in-memory state, не wire-вход; второй про product-side URI round-trip,
-  который продукт не делает, но FALSE блокирует reflect/Stringer caveat).
+  4 EXPLOITABLE (unexported sinks + module usage + vendor-цепочки).
+  Два бывших INCONCLUSIVE моделируются паттернами: credential retention
+  → `INFO_LEAK` (`C-DATA-PRESENT` TRUE на реальных полях
+  `PlainAuth.Password`/`Config.SASL`/`AMQPlainAuth.Password` из
+  field-scan'а + `C-EXPOSED` VERIFIED FALSE), URI round-trip →
+  `URI_CONFUSION` (`C-ROUNDTRIP` достроен stem'ом до `URI.String→
+  ParseURI`, VERIFIED FALSE по паре). Оба FALSE демотируются ревьюером
+  по `reflect`-маркеру → INCONCLUSIVE — корректно: `FieldByName`/
+  `MethodByName` реально могут читать экспортируемые поля и вызывать
+  экспортируемые методы, исключить их статически нельзя.

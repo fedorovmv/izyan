@@ -7,6 +7,7 @@ import (
 	"go/token"
 	"go/types"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -169,6 +170,15 @@ func findObjectInPkg(fset *token.FileSet, pkg *packages.Package, typeName, name 
 				return callSiteFor(fset, pkg, m)
 			}
 		}
+		// Struct fields resolve as symbols too — presence checks for
+		// sensitive data ("Config.SASL") name fields, not methods.
+		if st, ok := obj.Underlying().(*types.Struct); ok {
+			for i := 0; i < st.NumFields(); i++ {
+				if st.Field(i).Name() == name {
+					return callSiteFor(fset, pkg, st.Field(i))
+				}
+			}
+		}
 	}
 	return nil
 }
@@ -216,9 +226,10 @@ func callSiteFor(fset *token.FileSet, pkg *packages.Package, obj types.Object) *
 	}
 }
 
-// SearchSymbol returns every textual reference to the symbol inside product
-// packages — direct calls as well as value references (assignments,
-// interface satisfaction candidates, etc.).
+// SearchSymbol returns every reference to the symbol inside product
+// packages — direct calls, value references (assignments, interface
+// satisfaction candidates), qualified type names, and for field-qualified
+// subjects ("Type.Field") field selections and composite-literal keys.
 func (ix *Index) SearchSymbol(ctx context.Context, ref domain.SymbolRef) ([]domain.CallSite, error) {
 	ix.mu.Lock()
 	defer ix.mu.Unlock()
@@ -232,18 +243,47 @@ func (ix *Index) SearchSymbol(ctx context.Context, ref domain.SymbolRef) ([]doma
 			continue
 		}
 		for _, f := range pkg.Syntax {
+			// Selector .Sel idents and composite-literal field keys are
+			// matched at their parent nodes, where the receiver/literal
+			// type can disambiguate which struct declares the field.
+			skip := map[*ast.Ident]bool{}
+			ast.Inspect(f, func(n ast.Node) bool {
+				switch e := n.(type) {
+				case *ast.SelectorExpr:
+					skip[e.Sel] = true
+				case *ast.CompositeLit:
+					for _, elt := range e.Elts {
+						if kv, ok := elt.(*ast.KeyValueExpr); ok {
+							if id, ok := kv.Key.(*ast.Ident); ok {
+								skip[id] = true
+							}
+						}
+					}
+				}
+				return true
+			})
 			var enc *ast.FuncDecl
 			ast.Inspect(f, func(n ast.Node) bool {
 				if fn, ok := n.(*ast.FuncDecl); ok {
 					enc = fn
 				}
-				id, ok := n.(*ast.Ident)
-				if !ok || !symRefIdent(info, id, ref) {
+				match := false
+				switch e := n.(type) {
+				case *ast.Ident:
+					if !skip[e] {
+						match = symRefIdent(info, e, ref)
+					}
+				case *ast.SelectorExpr:
+					match = selRefMatch(info, e, ref)
+				case *ast.CompositeLit:
+					match = litFieldMatch(info, e, ref)
+				}
+				if !match {
 					return true
 				}
 				site := domain.CallSite{
-					File:    ix.fset.Position(id.Pos()).Filename,
-					Line:    ix.fset.Position(id.Pos()).Line,
+					File:    ix.fset.Position(n.Pos()).Filename,
+					Line:    ix.fset.Position(n.Pos()).Line,
 					Package: pkg.PkgPath,
 				}
 				if enc != nil && enc.Name != nil {
@@ -823,12 +863,211 @@ func (ix *Index) ScanDynamic(ctx context.Context, ref domain.SymbolRef) ([]Dynam
 
 // symRefIdent reports whether ident references the target symbol without
 // being part of a call expression fun position (i.e. used as a value).
+// Beyond functions it matches qualified type names and package-level
+// vars — field accesses are resolved precisely at their SelectorExpr /
+// CompositeLiteral parents, never here.
 func symRefIdent(info *types.Info, id *ast.Ident, ref domain.SymbolRef) bool {
 	obj := info.ObjectOf(id)
-	fn, ok := obj.(*types.Func)
-	if !ok || fn.Pkg() == nil || fn.Pkg().Path() != ref.Package {
+	typeName, name := splitSymbol(ref.Symbol)
+	switch o := obj.(type) {
+	case *types.Func:
+		if o.Pkg() == nil || o.Pkg().Path() != ref.Package {
+			return false
+		}
+		return o.Name() == name
+	case *types.TypeName, *types.Const:
+		// "PlainAuth" in vuln.PlainAuth — the type name alone matches only
+		// unqualified subjects; "Type.Field" subjects bind the member.
+		if typeName != "" {
+			return false
+		}
+		if o.Pkg() == nil || o.Pkg().Path() != ref.Package {
+			return false
+		}
+		return o.Name() == name
+	case *types.Var:
+		if o.IsField() || typeName != "" {
+			return false
+		}
+		if o.Pkg() == nil || o.Pkg().Path() != ref.Package {
+			return false
+		}
+		return o.Name() == name
+	}
+	return false
+}
+
+// selRefMatch matches a selector expression against the subject: a
+// selection (x.Field / x.Method) is checked against the declaring struct,
+// a qualified identifier (pkg.Name) follows the bare-ident rules.
+func selRefMatch(info *types.Info, e *ast.SelectorExpr, ref domain.SymbolRef) bool {
+	if seln, ok := info.Selections[e]; ok {
+		return selObjMatch(seln, ref)
+	}
+	return symRefIdent(info, e.Sel, ref)
+}
+
+// selObjMatch matches a resolved selection (field or method value) against
+// a "Type.Name" subject by the declaring struct's name.
+func selObjMatch(seln *types.Selection, ref domain.SymbolRef) bool {
+	typeName, name := splitSymbol(ref.Symbol)
+	if typeName == "" {
 		return false
 	}
-	_, name := splitSymbol(ref.Symbol)
-	return fn.Name() == name
+	obj := seln.Obj()
+	if obj.Pkg() == nil || obj.Pkg().Path() != ref.Package || obj.Name() != name {
+		return false
+	}
+	switch seln.Kind() {
+	case types.FieldVal:
+		return declaringStructName(seln) == typeName
+	case types.MethodVal, types.MethodExpr:
+		return recvTypeName(seln.Recv()) == typeName
+	}
+	return false
+}
+
+// declaringStructName resolves which struct along a (possibly embedded)
+// selection path declares the selected field — "x.Password" promoted from
+// an embedded PlainAuth reports PlainAuth, not the outer struct.
+func declaringStructName(seln *types.Selection) string {
+	t := seln.Recv()
+	idx := seln.Index()
+	for _, i := range idx[:len(idx)-1] {
+		st, ok := derefStruct(t)
+		if !ok {
+			return recvTypeName(seln.Recv())
+		}
+		t = st.Field(i).Type()
+	}
+	return recvTypeName(t)
+}
+
+func derefStruct(t types.Type) (*types.Struct, bool) {
+	if p, ok := t.(*types.Pointer); ok {
+		t = p.Elem()
+	}
+	st, ok := t.Underlying().(*types.Struct)
+	return st, ok
+}
+
+// litFieldMatch matches a composite literal field key ("Type{Field: v}")
+// against a "Type.Field" subject — the key ident's object alone cannot
+// name its declaring struct, so the literal's type does it.
+func litFieldMatch(info *types.Info, lit *ast.CompositeLit, ref domain.SymbolRef) bool {
+	typeName, name := splitSymbol(ref.Symbol)
+	if typeName == "" {
+		return false
+	}
+	n := namedOf(info.TypeOf(lit))
+	if n == nil || n.Obj() == nil || n.Obj().Pkg() == nil ||
+		n.Obj().Pkg().Path() != ref.Package || n.Obj().Name() != typeName {
+		return false
+	}
+	for _, elt := range lit.Elts {
+		kv, ok := elt.(*ast.KeyValueExpr)
+		if !ok {
+			continue
+		}
+		if id, ok := kv.Key.(*ast.Ident); ok && id.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func namedOf(t types.Type) *types.Named {
+	if p, ok := t.(*types.Pointer); ok {
+		t = p.Elem()
+	}
+	n, _ := t.(*types.Named)
+	return n
+}
+
+// sensitiveFieldRe names struct fields that plausibly hold credentials —
+// used by the INFO_LEAK datum pool, not by any verdict logic.
+var sensitiveFieldRe = regexp.MustCompile(`(?i)password|passwd|secret|token|api[-_]?key|credential|sasl|session|cookie|private[-_]?key`)
+
+// SensitiveFields returns "Type.Field" references for every exported,
+// credential-named field declared in package pkgPath — the deterministic
+// datum source for INFO_LEAK patterns. The dependency package is loaded
+// on demand like any other symbol lookup.
+func (ix *Index) SensitiveFields(ctx context.Context, pkgPath string) ([]domain.SymbolRef, error) {
+	ix.mu.Lock()
+	defer ix.mu.Unlock()
+	if err := ix.load(ctx); err != nil {
+		return nil, err
+	}
+	pkg := ix.pkgByPath(ctx, pkgPath)
+	if pkg == nil || pkg.Types == nil {
+		return nil, fmt.Errorf("package %s not loaded", pkgPath)
+	}
+	var out []domain.SymbolRef
+	for _, name := range pkg.Types.Scope().Names() {
+		tn, ok := pkg.Types.Scope().Lookup(name).(*types.TypeName)
+		if !ok {
+			continue
+		}
+		named := mustNamed(tn)
+		if named == nil {
+			continue
+		}
+		st, ok := named.Underlying().(*types.Struct)
+		if !ok {
+			continue
+		}
+		for i := 0; i < st.NumFields(); i++ {
+			f := st.Field(i)
+			if f.Exported() && sensitiveFieldRe.MatchString(f.Name()) {
+				out = append(out, domain.SymbolRef{Package: pkgPath, Symbol: name + "." + f.Name()})
+			}
+		}
+	}
+	return out, nil
+}
+
+// IsStruct reports whether a bare package-level name resolves to a struct
+// type — distinguishes a data carrier ("PlainAuth") from a sink function
+// when advisory symbols are unqualified.
+func (ix *Index) IsStruct(ctx context.Context, ref domain.SymbolRef) (bool, error) {
+	ix.mu.Lock()
+	defer ix.mu.Unlock()
+	if err := ix.load(ctx); err != nil {
+		return false, err
+	}
+	pkg := ix.pkgByPath(ctx, ref.Package)
+	if pkg == nil || pkg.Types == nil {
+		return false, fmt.Errorf("package %s not loaded", ref.Package)
+	}
+	obj := pkg.Types.Scope().Lookup(ref.Symbol)
+	tn, ok := obj.(*types.TypeName)
+	if !ok {
+		return false, nil
+	}
+	named := mustNamed(tn)
+	if named == nil {
+		return false, nil
+	}
+	_, isStruct := named.Underlying().(*types.Struct)
+	return isStruct, nil
+}
+
+// pkgByPath finds a loaded package by path, loading it on demand —
+// dependency packages are not roots of the ./... load.
+func (ix *Index) pkgByPath(ctx context.Context, pkgPath string) *packages.Package {
+	for _, pkg := range ix.pkgs {
+		if pkg.PkgPath == pkgPath && pkg.Types != nil {
+			return pkg
+		}
+	}
+	extra, err := ix.loadExtra(ctx, pkgPath)
+	if err != nil {
+		return nil
+	}
+	for _, pkg := range extra {
+		if pkg.PkgPath == pkgPath && pkg.Types != nil {
+			return pkg
+		}
+	}
+	return nil
 }

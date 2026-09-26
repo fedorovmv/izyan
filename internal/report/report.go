@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"golang.org/x/mod/semver"
@@ -57,7 +58,11 @@ func Markdown(c *domain.AnalysisCase) string {
 		b.WriteString("\n")
 	}
 	if c.Exploit != nil {
-		fmt.Fprintf(&b, "## Exploit model\n\nImpact: %s\n\n", c.Exploit.Impact)
+		fmt.Fprintf(&b, "## Exploit model\n\n")
+		if c.Exploit.Class != "" {
+			fmt.Fprintf(&b, "Class: `%s`\n\n", c.Exploit.Class)
+		}
+		fmt.Fprintf(&b, "Impact: %s\n\n", c.Exploit.Impact)
 		writeConditions(&b, "Mandatory conditions", c.Exploit.MandatoryConditions)
 		writeConditions(&b, "Supporting factors", c.Exploit.SupportingFactors)
 	}
@@ -102,9 +107,25 @@ func writeConditions(b *strings.Builder, title string, conds []domain.Condition)
 	}
 	fmt.Fprintf(b, "### %s\n\n", title)
 	for _, cond := range conds {
-		fmt.Fprintf(b, "- `%s` [%s]: %s\n", cond.ID, cond.Kind, cond.Description)
+		fmt.Fprintf(b, "- `%s` [%s]: %s%s\n", cond.ID, cond.Kind, cond.Description, renderParams(cond.Params))
 	}
 	b.WriteString("\n")
+}
+
+func renderParams(params map[string]string) string {
+	if len(params) == 0 {
+		return ""
+	}
+	var keys []string
+	for k := range params {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var parts []string
+	for _, k := range keys {
+		parts = append(parts, k+"="+params[k])
+	}
+	return " {" + strings.Join(parts, ", ") + "}"
 }
 
 func evidenceIDs(ids []domain.EvidenceID) []string {

@@ -38,7 +38,7 @@ func (VersionFact) Evaluate(cond domain.Condition, c *domain.AnalysisCase) domai
 		ConditionID: cond.ID,
 		Result:      domain.ClaimUnknown,
 
-		Producer:    "evaluator.VersionFact",
+		Producer: "evaluator.VersionFact",
 	}
 	if c.Affected == nil || c.Affected.VersionAffected != domain.ClaimTrue {
 		return claim

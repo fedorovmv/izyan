@@ -241,6 +241,7 @@ func analyzeCase(ctx context.Context, o analyzeOpts) (*domain.AnalysisCase, erro
 			evaluator.ServerTransportInput{},
 			evaluator.ArgumentOrigin{},
 			evaluator.Validation{},
+			evaluator.Presence{},
 			evaluator.VersionFact{},
 		}, Fallback: fallbackEval},
 		states.NegativeCheck{Verifier: &goanalysis.Verifier{Source: srcIndex}},

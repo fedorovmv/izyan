@@ -183,18 +183,57 @@ const (
 	OriginUnknown               DataOrigin = "UNKNOWN"
 )
 
+// Condition param keys — declarative hints emitted by exploit patterns and
+// consumed by evaluators. Unknown params are ignored, so patterns stay
+// declarative: a param never asserts a verdict, it only narrows what to
+// check.
+const (
+	// ParamInputSource declares where the condition's input is expected to
+	// come from: "peer" (remote peer of a listener/dialed service), "arg"
+	// (a product-code call argument) or "config" (deployment config).
+	ParamInputSource = "input_source"
+	// ParamDirection selects the reachability direction: "read" looks for
+	// readers of the subject (data exposure), not paths to a sink.
+	ParamDirection = "direction"
+	// ParamSequence names an API pair ("a->b") the product must invoke for
+	// the vulnerable round-trip to exist.
+	ParamSequence = "sequence"
+	// ParamBound carries a constraint expression (e.g. "length > INT32_MAX")
+	// for INPUT_CONSTRAINT conditions; a text annotation until guard
+	// semantics land.
+	ParamBound = "bound"
+	// ParamCheck selects a structural check: "symbol_present" verifies the
+	// subject exists in the dependency source.
+	ParamCheck = "check"
+)
+
+const (
+	InputPeer   = "peer"
+	InputArg    = "arg"
+	InputConfig = "config"
+
+	DirectionRead = "read"
+
+	CheckSymbolPresent = "symbol_present"
+)
+
 type Condition struct {
-	ID                ConditionID   `json:"id"`
-	Kind              ConditionKind `json:"kind"`
-	Description       string        `json:"description"`
-	Mandatory         bool          `json:"mandatory"`
-	Subject           *SymbolRef    `json:"subject,omitempty"`
-	Subjects          []SymbolRef   `json:"subjects,omitempty"` // alternative symbols: condition holds if ANY is satisfied
-	ArgIndex          int           `json:"arg_index,omitempty"`
-	VerificationHints []string      `json:"verification_hints,omitempty"`
+	ID                ConditionID       `json:"id"`
+	Kind              ConditionKind     `json:"kind"`
+	Description       string            `json:"description"`
+	Mandatory         bool              `json:"mandatory"`
+	Subject           *SymbolRef        `json:"subject,omitempty"`
+	Subjects          []SymbolRef       `json:"subjects,omitempty"` // alternative symbols: condition holds if ANY is satisfied
+	ArgIndex          int               `json:"arg_index,omitempty"`
+	Params            map[string]string `json:"params,omitempty"`
+	VerificationHints []string          `json:"verification_hints,omitempty"`
 }
 
 type ExploitModel struct {
+	// Class is the inferred vulnerability class (INFO_LEAK, URI_CONFUSION,
+	// ...) that selected the exploit pattern; "UNKNOWN" for the generic
+	// fallback model.
+	Class               string       `json:"class,omitempty"`
 	Impact              string       `json:"impact"`
 	RootCauses          []SymbolRef  `json:"root_causes"`
 	MandatoryConditions []Condition  `json:"mandatory_conditions"`
@@ -345,23 +384,32 @@ type ConfigItem struct {
 }
 
 type EvidenceGraph struct {
-	mu              sync.Mutex   `json:"-"`
-	Version         string       `json:"version"`
-	Evidence        []Evidence   `json:"evidence"`
-	CallPaths       []CallPath   `json:"call_paths,omitempty"`
-	DataFlows       []DataFlow   `json:"data_flows,omitempty"`
-	Entrypoints     []Entrypoint `json:"entrypoints,omitempty"`
-	ModuleUsages    []CallSite   `json:"module_usages,omitempty"`
+	mu           sync.Mutex   `json:"-"`
+	Version      string       `json:"version"`
+	Evidence     []Evidence   `json:"evidence"`
+	CallPaths    []CallPath   `json:"call_paths,omitempty"`
+	DataFlows    []DataFlow   `json:"data_flows,omitempty"`
+	Entrypoints  []Entrypoint `json:"entrypoints,omitempty"`
+	ModuleUsages []CallSite   `json:"module_usages,omitempty"`
 	// ModuleReachable maps an affected symbol ("pkg.Symbol") to the
 	// intra-module call chain (product-used API → ... → subject) proven by
 	// vendored-source analysis.
 	ModuleReachable map[string][]string `json:"module_reachable,omitempty"`
-	Validations     []Validation `json:"validations,omitempty"`
-	Configuration   []ConfigItem `json:"configuration,omitempty"`
-	Runtime         []EvidenceID `json:"runtime,omitempty"`
-	ToolLimitations []string     `json:"tool_limitations,omitempty"`
-	Limitations     []string     `json:"limitations,omitempty"`
-	Hash            string       `json:"hash,omitempty"`
+	// SymbolRefs maps a subject ("pkg.Symbol") to product-code reference
+	// sites collected for read-direction conditions — the candidate
+	// readers/writers of an exposed datum.
+	SymbolRefs map[string][]CallSite `json:"symbol_refs,omitempty"`
+	// SymbolDecls records deterministic presence checks of subjects in the
+	// dependency source: key "pkg.Symbol" -> declaration site. A present
+	// key with a nil site means "checked, not found"; an absent key means
+	// the lookup never ran or failed.
+	SymbolDecls     map[string]*CallSite `json:"symbol_decls,omitempty"`
+	Validations     []Validation         `json:"validations,omitempty"`
+	Configuration   []ConfigItem         `json:"configuration,omitempty"`
+	Runtime         []EvidenceID         `json:"runtime,omitempty"`
+	ToolLimitations []string             `json:"tool_limitations,omitempty"`
+	Limitations     []string             `json:"limitations,omitempty"`
+	Hash            string               `json:"hash,omitempty"`
 }
 
 // AddEvidence appends e to the graph, assigning an ID when empty, and
@@ -433,6 +481,46 @@ func (g *EvidenceGraph) AddModuleReachable(key string, chain []string) {
 		g.ModuleReachable = map[string][]string{}
 	}
 	g.ModuleReachable[key] = chain
+}
+
+func (g *EvidenceGraph) AddSymbolRefs(key string, sites ...CallSite) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.SymbolRefs == nil {
+		g.SymbolRefs = map[string][]CallSite{}
+	}
+	g.SymbolRefs[key] = append(g.SymbolRefs[key], sites...)
+}
+
+// AddSymbolDecl records the outcome of a presence check: site nil means
+// "checked, not found in the dependency source".
+func (g *EvidenceGraph) AddSymbolDecl(key string, site *CallSite) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.SymbolDecls == nil {
+		g.SymbolDecls = map[string]*CallSite{}
+	}
+	g.SymbolDecls[key] = site
+}
+
+// SymbolRefsFor returns the reference sites recorded for key (nil when the
+// read-scope scan found none or never ran — disambiguated by the check
+// evidence record).
+func (g *EvidenceGraph) SymbolRefsFor(key string) []CallSite {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	out := make([]CallSite, len(g.SymbolRefs[key]))
+	copy(out, g.SymbolRefs[key])
+	return out
+}
+
+// SymbolDeclFor reports the presence-check outcome for key: found=true,
+// site non-nil when declared.
+func (g *EvidenceGraph) SymbolDeclFor(key string) (site *CallSite, checked bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	site, checked = g.SymbolDecls[key]
+	return site, checked
 }
 
 func (g *EvidenceGraph) AddEntrypoints(eps ...Entrypoint) {

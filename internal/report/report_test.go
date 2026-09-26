@@ -15,7 +15,7 @@ func TestRemediationPicksMinFixAboveResolved(t *testing.T) {
 			FixedVersions: []string{"v1.5.0", "v1.4.0", "v2.0.0"},
 		},
 		Affected: &domain.AffectedResult{
-			VersionAffected:  domain.ClaimTrue,
+			VersionAffected: domain.ClaimTrue,
 			ResolvedVersion: "v1.4.0",
 		},
 	}

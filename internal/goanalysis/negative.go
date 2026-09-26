@@ -116,6 +116,14 @@ func (v Verifier) VerifyFalse(ctx context.Context, c *domain.AnalysisCase, claim
 		nv.Notes += fmt.Sprintf(" %d unrelated go:linkname pragma(s) ignored", strayLinkname)
 	}
 
+	if cond.Kind == domain.ConditionSymbolReachable &&
+		cond.Params[domain.ParamDirection] == domain.DirectionRead {
+		return v.verifyReadFalse(claim, nv, subjects, allSites)
+	}
+	if cond.Kind == domain.ConditionSymbolReachable &&
+		cond.Params[domain.ParamSequence] != "" {
+		return v.verifySequenceFalse(c, claim, nv, subjects, allSites)
+	}
 	switch cond.Kind {
 	case domain.ConditionSymbolReachable:
 		return v.verifyReachableFalse(claim, nv, subjects, allSites)
@@ -126,6 +134,69 @@ func (v Verifier) VerifyFalse(ctx context.Context, c *domain.AnalysisCase, claim
 		nv.Notes = "no falsification strategy for condition kind " + string(cond.Kind)
 		return setNeg(claim, nv)
 	}
+}
+
+// verifyReadFalse falsifies a direction=read FALSE ("no product reader of
+// the exposed datum"): any static product reference to a subject IS a
+// reader candidate, so it contradicts the FALSE outright rather than
+// merely weakening it.
+func (v Verifier) verifyReadFalse(claim domain.Claim,
+	nv *domain.NegativeVerification, subjects []domain.SymbolRef,
+	allSites map[string][]domain.CallSite) domain.Claim {
+
+	var total int
+	for _, s := range subjects {
+		total += len(allSites[s.Package+"."+s.Symbol])
+	}
+	if total == 0 {
+		nv.Notes = fmt.Sprintf("none of %d subject(s) is referenced in product code",
+			len(subjects))
+		return setNeg(claim, nv)
+	}
+	nv.Status = domain.NegativeContradicted
+	nv.Notes = fmt.Sprintf("%d product reference(s) to the subject(s) exist — reader candidates the FALSE did not see",
+		total)
+	return setNeg(claim, nv)
+}
+
+// verifySequenceFalse falsifies a sequence FALSE ("the round-trip pair is
+// incomplete"). Only the never-invoked members can resurrect it: if the
+// product still statically references them, an indirect invocation path
+// cannot be excluded.
+func (v Verifier) verifySequenceFalse(c *domain.AnalysisCase, claim domain.Claim,
+	nv *domain.NegativeVerification, subjects []domain.SymbolRef,
+	allSites map[string][]domain.CallSite) domain.Claim {
+
+	var missing []string
+	for _, s := range subjects {
+		key := s.Package + "." + s.Symbol
+		if _, ok := c.EvidenceGraph.ModuleReachable[key]; ok {
+			continue
+		}
+		called := false
+		for _, u := range c.EvidenceGraph.ModuleUsages {
+			if u.Callee == key {
+				called = true
+				break
+			}
+		}
+		if !called {
+			missing = append(missing, key)
+		}
+	}
+	refs := 0
+	for _, m := range missing {
+		refs += len(allSites[m])
+	}
+	if refs == 0 {
+		nv.Notes = fmt.Sprintf("never-invoked member(s) %s have no product references",
+			strings.Join(missing, ", "))
+		return setNeg(claim, nv)
+	}
+	nv.Status = domain.NegativeInsufficientScope
+	nv.Notes = fmt.Sprintf("%d product reference(s) to never-invoked member(s) exist; "+
+		"cannot exclude indirect invocation", refs)
+	return setNeg(claim, nv)
 }
 
 // verifyReachableFalse: govulncheck reported no call path. A FALSE survives

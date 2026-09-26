@@ -27,7 +27,7 @@ func (Validation) Evaluate(cond domain.Condition, c *domain.AnalysisCase) domain
 		ConditionID: cond.ID,
 		Result:      domain.ClaimUnknown,
 
-		Producer:    "evaluator.Validation",
+		Producer: "evaluator.Validation",
 	}
 	flows := flowsFor(c, cond.ID)
 	if len(flows) == 0 {

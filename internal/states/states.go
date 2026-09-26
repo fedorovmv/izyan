@@ -367,6 +367,15 @@ func (h CollectEvidence) runModuleUsage(ctx context.Context, c *domain.AnalysisC
 		c.EvidenceGraph.AddToolLimitation(fmt.Sprintf("module usage scan failed: %v", err))
 		return
 	}
+	// The check record is written even with zero sites: it distinguishes
+	// "verified no usage" from "never attempted" for evaluators.
+	c.EvidenceGraph.AddEvidence(domain.Evidence{
+		Kind:    domain.EvidenceSourceSnippet,
+		Quality: domain.QualityDeterministic,
+		Source:  "source index: module usage check",
+		Tool:    "goanalysis.Index.ModuleUsage",
+		Content: fmt.Sprintf("%d product call site(s) into module %s", len(sites), module),
+	})
 	if len(sites) == 0 {
 		return
 	}
@@ -453,7 +462,7 @@ func (h CollectEvidence) runSourceAnalysis(ctx context.Context, c *domain.Analys
 	conds = append(conds, c.Exploit.SupportingFactors...)
 	seen := map[domain.ConditionID]bool{}
 	for _, cond := range conds {
-		if seen[cond.ID] || !needsProvenance(cond.Kind) {
+		if seen[cond.ID] {
 			continue
 		}
 		seen[cond.ID] = true
@@ -461,8 +470,15 @@ func (h CollectEvidence) runSourceAnalysis(ctx context.Context, c *domain.Analys
 		if cond.Subject != nil {
 			subjects = append(append([]domain.SymbolRef{}, subjects...), *cond.Subject)
 		}
-		for _, subj := range dedupSubjects(subjects) {
-			h.collectProvenance(ctx, c, cond, subj)
+		switch {
+		case cond.Params[domain.ParamCheck] == domain.CheckSymbolPresent:
+			h.collectPresence(ctx, c, dedupSubjects(subjects))
+		case cond.Params[domain.ParamDirection] == domain.DirectionRead:
+			h.collectReaders(ctx, c, dedupSubjects(subjects))
+		case needsProvenance(cond.Kind):
+			for _, subj := range dedupSubjects(subjects) {
+				h.collectProvenance(ctx, c, cond, subj)
+			}
 		}
 	}
 }
@@ -539,6 +555,62 @@ func (h CollectEvidence) collectProvenance(ctx context.Context, c *domain.Analys
 				c.EvidenceGraph.AddEvidence(e)
 			}
 		}
+	}
+}
+
+// collectPresence resolves each subject in the dependency source for
+// check=symbol_present conditions (INFO_LEAK pattern). Outcomes land in
+// EvidenceGraph.SymbolDecls; the per-subject evidence record is written
+// even on failure so evaluators can tell "checked" from "never ran".
+func (h CollectEvidence) collectPresence(ctx context.Context, c *domain.AnalysisCase, subjects []domain.SymbolRef) {
+	for _, subj := range subjects {
+		key := subj.Package + "." + subj.Symbol
+		site, err := h.Source.FindSymbol(ctx, subj)
+		var content string
+		switch {
+		case err == nil:
+			c.EvidenceGraph.AddSymbolDecl(key, site)
+			content = fmt.Sprintf("%s declared at %s:%d", key, site.File, site.Line)
+		case strings.Contains(err.Error(), "not found"):
+			c.EvidenceGraph.AddSymbolDecl(key, nil)
+			content = key + " not found in loaded packages"
+		default:
+			c.EvidenceGraph.AddToolLimitation(fmt.Sprintf("presence check %s: %v", key, err))
+			content = fmt.Sprintf("presence lookup for %s failed: %v", key, err)
+		}
+		c.EvidenceGraph.AddEvidence(domain.Evidence{
+			Kind:    domain.EvidenceSearchResult,
+			Quality: domain.QualityDeterministic,
+			Source:  "presence check " + key,
+			Tool:    "goanalysis.Index.FindSymbol",
+			Content: content,
+		})
+	}
+}
+
+// collectReaders gathers product-code references to each subject for
+// direction=read conditions (INFO_LEAK pattern): any reference is a
+// candidate reader of the exposed datum. Sites land in
+// EvidenceGraph.SymbolRefs; the per-subject check record is written even
+// with zero hits to distinguish "verified none" from "never scanned".
+func (h CollectEvidence) collectReaders(ctx context.Context, c *domain.AnalysisCase, subjects []domain.SymbolRef) {
+	for _, subj := range subjects {
+		key := subj.Package + "." + subj.Symbol
+		sites, err := h.Source.SearchSymbol(ctx, subj)
+		if err != nil {
+			c.EvidenceGraph.AddToolLimitation(fmt.Sprintf("read-scope check %s: %v", key, err))
+			continue
+		}
+		if len(sites) > 0 {
+			c.EvidenceGraph.AddSymbolRefs(key, sites...)
+		}
+		c.EvidenceGraph.AddEvidence(domain.Evidence{
+			Kind:    domain.EvidenceSearchResult,
+			Quality: domain.QualityDeterministic,
+			Source:  "read-scope check " + key,
+			Tool:    "goanalysis.Index.SearchSymbol",
+			Content: fmt.Sprintf("%d product reference site(s) to %s", len(sites), key),
+		})
 	}
 }
 
