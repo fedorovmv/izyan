@@ -10,6 +10,7 @@
 | `current/05-reference-projects-analysis.md` | актуальный | Анализ VEX Toolset/VulnReach/amihit/govulncheck |
 | `current/06-decisions.md` | актуальный | Ключевые архитектурные решения и запреты |
 | `current/07-implementation-status.md` | живой | Статус срезов MVP, что сделано/что дальше |
+| `current/08-how-it-works.md` | актуальный | Алгоритм работы: пайплайн, evaluators, negative check, особенности govulncheck |
 | `history/01-initial-architecture.md` | исторический | Исходная архитектура до разбора OSS |
 | `history/README.md` | исторический | Что изменилось и почему |
 
@@ -21,6 +22,7 @@
 4. `03-mvp-implementation-plan.md`
 5. `04-go-skeleton-state-machine.md`
 6. `02-analyzer-agent-spec.md` — перед реализацией LLM loop
-7. `05-reference-projects-analysis.md` — как reference, не как governing source
+7. `08-how-it-works.md` — как код реально работает сейчас
+8. `05-reference-projects-analysis.md` — как reference, не как governing source
 
 При противоречии документов приоритет имеет `01-governing-spec.md`, затем `06-decisions.md`.
