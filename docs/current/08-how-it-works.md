@@ -220,9 +220,19 @@ FALSE-кандидат проходит `Verifier` до того, как вер�
   CONTRADICTED.
 - `sequence=` — проверяются только **не вызванные** члены пары: ссылки
   на них → INSUFFICIENT_SCOPE, нет → VERIFIED.
+- **Scope-расширение** (после VERIFIED любой стратегией —
+  `extendNegativeScope`): `GatedRefs` ищет ссылки на subject в файлах,
+  исключённых текущими build tags (`pkg.IgnoredFiles`, без `_test.go`),
+  синтаксически по импорту пакета; `InterfaceDispatchSites` ищет вызовы
+  `x.Method()` по интерфейсному типу, который реализует тип субъекта
+  (`types.Implements`). Находки → `INSUFFICIENT_SCOPE` (не CONTRADICTED:
+  tag-файл может быть мёртвым кодом, interface-dispatch не доказывает
+  конкретный impl) — FALSE остаётся, но вердикт/ревьюер на него не
+  опираются.
 
-VERIFIED FALSE → можно опираться; CONTRADICTED → UNKNOWN;
-INSUFFICIENT_SCOPE → UNKNOWN, вердикт не может использовать FALSE.
+VERIFIED FALSE → можно опираться; CONTRADICTED → claim демотируется в
+UNKNOWN; INSUFFICIENT_SCOPE → claim остаётся FALSE, но вердикт на него
+не опирается и ревьюер фиксирует medium-finding.
 
 ## 8. Review + repair
 
@@ -270,6 +280,9 @@ stdlib-advisory записывается явный limitation.
   provenance адреса собираются (`C-EXPOSURE`), но остаются supporting-
   уточнением, не гейтом; auth на entrypoint'ах, k8s/docker-манифесты и
   связывание var→config-значений без `env:`-источника не покрыты.
+- NV-скоуп расширен (tag-excluded файлы + interface dispatch), но
+  остаётся синтаксическим/типовым: компилируемость tag-варианта не
+  проверяется, impl'ы интерфейса *внутри* dep-кода не перечисляются.
 - gRPC-кейс (`GHSA-vp52`) проходит до `EXPLOITABLE`; RabbitMQ —
   4 EXPLOITABLE (unexported sinks + module usage + vendor-цепочки).
   Два бывших INCONCLUSIVE моделируются паттернами: credential retention

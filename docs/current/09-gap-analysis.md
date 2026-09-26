@@ -95,19 +95,22 @@ INFO_LEAK биндит datum-субъекты (advisory-символы `Type.Fie
 маркеру → INCONCLUSIVE (reflect действительно читает exported-поля —
 консервативно верно).
 
-### 3.3 Build/tag вариативность
+### 3.3 Build/tag вариативность — `done` (первый слой)
 
-`BuildRelevant` проверяет GOOS/GOARCH-ограничение пакета, но не ищет
-альтернативные реализации под build tags (в spec negative-check явно
-требует «build-tagged implementation»). Путь может существовать только
-при `-tags foo` — проверки нет.
+`Index.GatedRefs` (по `12-negative-coverage-plan.md`) сканирует
+`pkg.IgnoredFiles` — файлы, исключённые текущими build tags, — синтаксически
+по импорту пакета субъекта; `_test.go` отфильтровываются. Находка
+деградирует VERIFIED FALSE в INSUFFICIENT_SCOPE: путь под `-tags foo`
+больше не невидим. Не проверяется компилируемость tag-варианта.
 
-### 3.4 Interface-implementation paths
+### 3.4 Interface-implementation paths — `done` (первый слой)
 
-`func foo(x Interface)` — callee за x может быть любой impl. Negative
-check ищет func_value/linkname, но не перечисляет implementations
-интерфейса через `go/types` — а это стандартный путь обхода статического
-«нет вызовов».
+`Index.InterfaceDispatchSites` находит `x.Method()`-вызовы по
+интерфейсному типу, который реализует тип субъекта (`types.Implements`,
+оба receiver-варианта). `SearchSymbol` такие сайты пропускал (selection
+резолвится на интерфейс, не на impl). Находка → INSUFFICIENT_SCOPE.
+Не покрыто: impl'ы интерфейсов, вызываемых внутри dep-кода; goroutine/
+channel-based dispatch.
 
 ### 3.5 Multi-hop provenance через vendor internals
 
@@ -150,14 +153,15 @@ Issues/Jira) — deferred by design.
 
 ## 4. Приоритет (по принципу «какой UNKNOWN закрывает»)
 
-1. **Pattern library** — решает класс-специфичные mandatory conditions;
-   снимает модельные INCONCLUSIVE (27gv/465g-подобные).
-2. **Deployment facts (bind/endpoint/auth)** — конвертирует caveat в
-   факт; единственный путь к уверенному вердикту для network-input vulns.
-3. **Configuration reading** — CONFIGURATION-условия без него всегда
-   UNKNOWN (VersionFact закрыл только версионные).
-4. **Interface-impl + build-tag paths в negative check** — последние
-   системные дыры в FALSE-верификации.
+1. ~~Pattern library~~ — `done` (базовый слой, §3.2).
+2. ~~Deployment facts (bind/endpoint)~~ — `done` (первый слой, §3.1);
+   auth на entrypoint'ах — в резерве.
+3. **Configuration reading** — частично: `exposure.ScanRepo` читает
+   addr-ключи для env-резолва; полноценные CONFIGURATION-условия
+   (не версионные) всё ещё UNKNOWN.
+4. ~~Interface-impl + build-tag paths в negative check~~ — `done`:
+   `GatedRefs` + `InterfaceDispatchSites` деградируют VERIFIED в
+   INSUFFICIENT_SCOPE при находках вне typed-скоупа.
 5. **DATABASE/INTERNAL_SERVICE origins** — расширяет ATTACKER_CONTROL
    для не-HTTP источников.
 6. **Недостающие 10 typed tools** — нужны полноценному hypothesis loop.

@@ -116,23 +116,79 @@ func (v Verifier) VerifyFalse(ctx context.Context, c *domain.AnalysisCase, claim
 		nv.Notes += fmt.Sprintf(" %d unrelated go:linkname pragma(s) ignored", strayLinkname)
 	}
 
-	if cond.Kind == domain.ConditionSymbolReachable &&
-		cond.Params[domain.ParamDirection] == domain.DirectionRead {
-		return v.verifyReadFalse(claim, nv, subjects, allSites)
-	}
-	if cond.Kind == domain.ConditionSymbolReachable &&
-		cond.Params[domain.ParamSequence] != "" {
-		return v.verifySequenceFalse(c, claim, nv, subjects, allSites)
-	}
-	switch cond.Kind {
-	case domain.ConditionSymbolReachable:
-		return v.verifyReachableFalse(claim, nv, subjects, allSites)
-	case domain.ConditionAttackerControl, domain.ConditionInputConstraint:
-		return v.verifyInputFalse(ctx, c, claim, nv, subjects, cond.ArgIndex)
+	var out domain.Claim
+	switch {
+	case cond.Kind == domain.ConditionSymbolReachable &&
+		cond.Params[domain.ParamDirection] == domain.DirectionRead:
+		out = v.verifyReadFalse(claim, nv, subjects, allSites)
+	case cond.Kind == domain.ConditionSymbolReachable &&
+		cond.Params[domain.ParamSequence] != "":
+		out = v.verifySequenceFalse(c, claim, nv, subjects, allSites)
 	default:
-		nv.Status = domain.NegativeInsufficientScope
-		nv.Notes = "no falsification strategy for condition kind " + string(cond.Kind)
-		return setNeg(claim, nv)
+		switch cond.Kind {
+		case domain.ConditionSymbolReachable:
+			out = v.verifyReachableFalse(claim, nv, subjects, allSites)
+		case domain.ConditionAttackerControl, domain.ConditionInputConstraint:
+			out = v.verifyInputFalse(ctx, c, claim, nv, subjects, cond.ArgIndex)
+		default:
+			nv.Status = domain.NegativeInsufficientScope
+			nv.Notes = "no falsification strategy for condition kind " + string(cond.Kind)
+			out = setNeg(claim, nv)
+		}
+	}
+	// A VERIFIED negative is scoped to what the loaded index can see:
+	// extend the scope to build-tag-excluded files and interface
+	// dispatch before letting a verdict rely on it.
+	if out.NegativeVerification != nil &&
+		out.NegativeVerification.Status == domain.NegativeVerified {
+		v.extendNegativeScope(ctx, c, out.NegativeVerification, subjects)
+	}
+	return out
+}
+
+// extendNegativeScope widens the negative check beyond the typed index:
+// references in files excluded by the current build tags, and call sites
+// where the subject's method could be reached through interface
+// dispatch. Either finding downgrades VERIFIED to INSUFFICIENT_SCOPE —
+// they show an un-closed scope, not a proven path, so the claim's FALSE
+// result is kept but cannot support the verdict.
+func (v Verifier) extendNegativeScope(ctx context.Context, c *domain.AnalysisCase,
+	nv *domain.NegativeVerification, subjects []domain.SymbolRef) {
+
+	addSites := func(tool string, sites []domain.CallSite) {
+		for _, s := range sites {
+			nv.EvidenceIDs = append(nv.EvidenceIDs, c.EvidenceGraph.AddEvidence(domain.Evidence{
+				Kind:    domain.EvidenceSourceSnippet,
+				Quality: domain.QualityDeterministic,
+				Source:  "go-analysis " + tool,
+				Tool:    "goanalysis.Index",
+				Content: fmt.Sprintf("%s.%s referenced at %s:%d", s.Package, s.Function, s.File, s.Line),
+			}))
+		}
+	}
+	for _, subj := range subjects {
+		gated, err := v.Source.GatedRefs(ctx, subj)
+		if err != nil {
+			nv.Limitations = append(nv.Limitations, "build-tag-excluded scan failed: "+err.Error())
+			continue
+		}
+		if len(gated) > 0 {
+			addSites("GatedRefs", gated)
+			nv.Status = domain.NegativeInsufficientScope
+			nv.Notes += fmt.Sprintf(" %d reference(s) to %s.%s in files excluded by the current build tags — an alternate build configuration may reach the subject;",
+				len(gated), subj.Package, subj.Symbol)
+		}
+		disp, err := v.Source.InterfaceDispatchSites(ctx, subj)
+		if err != nil {
+			nv.Limitations = append(nv.Limitations, "interface dispatch scan failed: "+err.Error())
+			continue
+		}
+		if len(disp) > 0 {
+			addSites("InterfaceDispatchSites", disp)
+			nv.Status = domain.NegativeInsufficientScope
+			nv.Notes += fmt.Sprintf(" %d interface-dispatched call site(s) may invoke %s.%s — the concrete implementation behind an interface is not resolved;",
+				len(disp), subj.Package, subj.Symbol)
+		}
 	}
 }
 
