@@ -31,9 +31,9 @@
 |---|---|---|---|
 | Exploit model | §8–9: атомарные условия по классу уязвимости | `Classify` (CWE → keywords → fix-diff) + `exploit.Registry`: peer-driven, INFO_LEAK, URI_CONFUSION, NIL_DEREF паттерны; `Condition.Params` (`input_source`, `direction=read`, `sequence=`, `bound`, `check`); generic C-REACH/C-INPUT домердживаются; LLM дополняет и заполняет пустой `bound` | Классификация keywords — эвристика (фиксируется limitation); `bound` пока текстовая аннотация без доказательства гарды; паттернов пока 4 семейства — PATH_TRAVERSAL/INJECTION/SSRF/etc. сидят на generic-модели |
 | Condition kinds | §8 минимум 10 типов | enum есть | Нет evaluators для `PLATFORM_CONDITION`, `AUTHENTICATION_CONDITION`, `RUNTIME_CONDITION`, `VALIDATION` (есть `Validation`, но kind в enum — отдельный) → всегда UNKNOWN |
-| Data origins | §15: EXTERNAL_UNTRUSTED/AUTHENTICATED, CONFIGURATION, DATABASE, INTERNAL_SERVICE, CONSTANT, GENERATED | enum есть; provenance покрывает http.Request/os.Args/net, частично config/generated | `DATABASE`/`INTERNAL_SERVICE` не распознаются → UNKNOWN; `EXTERNAL_AUTHENTICATED` в enum, но классификация authenticated-vs-trusted не различается |
+| Data origins | §15: EXTERNAL_UNTRUSTED/AUTHENTICATED, CONFIGURATION, DATABASE, INTERNAL_SERVICE, CONSTANT, GENERATED | enum есть; provenance покрывает http.Request/os.Args/net/config/generated + `populateOrigin` (Scan/Unmarshal out-params), DB-драйверы по pkg path, gRPC-стабы и http-клиенты с config-endpoint → INTERNAL_SERVICE (`16`) | `EXTERNAL_AUTHENTICATED` не различается; детекция драйверов по pkg path — эвристика, кастомные обёртки не покрыты |
 | Transformations | §15: `source → transformations → validation → sink`, security-relevant transforms | `TraceArgument` даёт origin конечного аргумента | Цепочка трансформаций не моделируется: `quote()/escape()/cast()` между source и sink не учитываются в reasoning |
-| Negative check | §19: callers, **interface implementations**, runtime registration, **build-tagged code**, configuration overrides, alternate entrypoints | func_value/linkname/reflect/unsafe/plugin по scoped rules | interface-impl dispatch и build-tag-варианты не ищутся адресно; `configuration overrides` нет — конфигурация вообще не читается |
+| Negative check | §19: callers, **interface implementations**, runtime registration, **build-tagged code**, configuration overrides, alternate entrypoints | func_value/linkname/reflect/unsafe/plugin по scoped rules | interface-impl и build-tag покрыты (`GatedRefs`/`InterfaceDispatchSites`); `configuration overrides` как NV-концепт нет — `config_flag`/`config_key` читают knob'ы условий, но не конфигурацию, меняющую reachability |
 | Typed tools | §17: 17 инструментов | реализовано 7: read_function, find_symbol, find_callers, find_entrypoints, trace_argument, find_validations, scan_dynamic | Нет: `get_vulnerability`, `get_advisory`, `get_fix_references`, `get_fix_diff`, `get_module_version`, `get_dependency_graph`, `run_govulncheck`, `read_source`, `search_source`, `run_build`, `run_tests` — LLM-агент не может сам получить advisory/diff/версии или запустить сборку/тесты |
 | Hypothesis loop | §18 + agent §6,§16: OPEN→CONFIRMED/REJECTED, gap-driven planner | `Hypothesis` тип есть в domain | **Не инстанцируется нигде** — нет цикла select UNKNOWN → hypothesis → tool → claim → gap analysis; есть только однопроходный evaluate + fallback evaluator |
 | Persistence | §22: hypotheses, tool_executions с version/input/cmd/exit/stdout/stderr/hash | кейс + raw govulncheck в evidence.Content | `tool_executions` как отдельная сущность нет; `Evidence.ToolVersion` объявлен, но не заполняется; `EvidenceGraph.Runtime` не заполняется |
@@ -172,8 +172,8 @@ Issues/Jira) — deferred by design.
 4. ~~Interface-impl + build-tag paths в negative check~~ — `done`:
    `GatedRefs` + `InterfaceDispatchSites` деградируют VERIFIED в
    INSUFFICIENT_SCOPE при находках вне typed-скоупа.
-5. **DATABASE/INTERNAL_SERVICE origins** — расширяет ATTACKER_CONTROL
-   для не-HTTP источников.
+5. ~~DATABASE/INTERNAL_SERVICE origins~~ — `done` (первый слой, §таблица
+   origins; `16-data-origins-plan.md`); authenticated-vs-trusted — отдельно.
 6. **Недостающие 10 typed tools** — нужны полноценному hypothesis loop.
 7. **Hypothesis/gap-analysis loop** — каркас, который все это связывает.
 8. ~~Eval harness + false-safe metric~~ — `done` (первый слой, §3.7);

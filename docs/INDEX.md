@@ -18,6 +18,7 @@
 | `current/13-config-reading-plan.md` | done | Configuration reading: `config_flag`/`config_key`, `C-TLS-VERIFY` |
 | `current/14-eval-harness-plan.md` | done | Eval harness: корпус, метрики, false-safe; `analyzer eval` |
 | `current/15-toolchain-plan.md` | done | Target Go toolchain: SDK/GOTOOLCHAIN/docker, toolchain provenance |
+| `current/16-data-origins-plan.md` | done | Provenance: DATABASE/INTERNAL_SERVICE origins, populate/passthrough |
 | `history/01-initial-architecture.md` | исторический | Исходная архитектура до разбора OSS |
 | `history/README.md` | исторический | Что изменилось и почему |
 

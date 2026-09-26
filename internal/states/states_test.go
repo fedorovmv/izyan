@@ -805,6 +805,109 @@ func TestE2EConfigInputStaysUnknown(t *testing.T) {
 	}
 }
 
+// Database-populated input is neither attacker-controlled nor safe:
+// DATABASE provenance -> deploy-dependent UNKNOWN -> INCONCLUSIVE.
+func TestE2EDatabaseOriginStaysUnknown(t *testing.T) {
+	repo := initRepoFrom(t, "dbprod")
+	dir := t.TempDir()
+	model := `{"impact":"t","mandatory_conditions":[
+		{"id":"C-REACH","kind":"SYMBOL_REACHABLE","mandatory":true,
+		 "subject":{"package":"example.com/dep/vuln","symbol":"Parse"}},
+		{"id":"C-INPUT","kind":"ATTACKER_CONTROL","mandatory":true,
+		 "subject":{"package":"example.com/dep/vuln","symbol":"Parse"},"arg_index":0}
+	]}`
+	mp := filepath.Join(dir, "model.json")
+	if err := os.WriteFile(mp, []byte(model), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gv := `{"protocol_version":"v1.0.0"}
+{"finding":{"osv":"GO-TEST-1","fixed_version":"v1.2.0","trace":[
+ {"module":"example.com/dbprod","package":"example.com/dbprod","function":"main","position":{"filename":"main.go","line":19}},
+ {"module":"example.com/dep","package":"example.com/dep/vuln","function":"Parse","position":{"filename":"vuln.go","line":4}}
+]}}`
+	c := runEngine(t, engineDeps{
+		RepoPath: repo,
+		VulnSrc: vulnerability.StaticSource{Vulns: map[string]*domain.Vulnerability{
+			"GO-TEST-1": {ID: "GO-TEST-1", Module: "example.com/dep"},
+		}},
+		VulnID:      "GO-TEST-1",
+		Resolver:    stubResolver{},
+		ManualRC:    []domain.RootCause{{Package: "example.com/dep/vuln", Symbol: "Parse"}},
+		Model:       mp,
+		CaseDir:     filepath.Join(dir, "cases"),
+		Govulncheck: fakeGovulncheck{out: []byte(gv)},
+		UseSource:   true,
+	})
+	var sawDB bool
+	for _, f := range c.EvidenceGraph.DataFlows {
+		if f.Origin == domain.OriginDatabase {
+			sawDB = true
+		}
+	}
+	if !sawDB {
+		t.Fatalf("no DATABASE flow recorded; flows=%+v", c.EvidenceGraph.DataFlows)
+	}
+	input := findClaimT(t, c.Claims, "C-INPUT")
+	if input.Result != domain.ClaimUnknown {
+		t.Fatalf("C-INPUT=%s want UNKNOWN (database is deploy-dependent)", input.Result)
+	}
+	if c.Verdict == nil || c.Verdict.Verdict != domain.VerdictInconclusive {
+		t.Fatalf("verdict=%+v want INCONCLUSIVE", c.Verdict)
+	}
+}
+
+// A configured internal-service endpoint produces INTERNAL_SERVICE
+// provenance: not externally attacker-controlled, not constant —
+// deploy-dependent UNKNOWN -> INCONCLUSIVE.
+func TestE2EInternalServiceOriginStaysUnknown(t *testing.T) {
+	repo := initRepoFrom(t, "svcprod")
+	dir := t.TempDir()
+	model := `{"impact":"t","mandatory_conditions":[
+		{"id":"C-REACH","kind":"SYMBOL_REACHABLE","mandatory":true,
+		 "subject":{"package":"example.com/dep/vuln","symbol":"Parse"}},
+		{"id":"C-INPUT","kind":"ATTACKER_CONTROL","mandatory":true,
+		 "subject":{"package":"example.com/dep/vuln","symbol":"Parse"},"arg_index":0}
+	]}`
+	mp := filepath.Join(dir, "model.json")
+	if err := os.WriteFile(mp, []byte(model), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gv := `{"protocol_version":"v1.0.0"}
+{"finding":{"osv":"GO-TEST-1","fixed_version":"v1.2.0","trace":[
+ {"module":"example.com/svcprod","package":"example.com/svcprod","function":"main","position":{"filename":"main.go","line":21}},
+ {"module":"example.com/dep","package":"example.com/dep/vuln","function":"Parse","position":{"filename":"vuln.go","line":4}}
+]}}`
+	c := runEngine(t, engineDeps{
+		RepoPath: repo,
+		VulnSrc: vulnerability.StaticSource{Vulns: map[string]*domain.Vulnerability{
+			"GO-TEST-1": {ID: "GO-TEST-1", Module: "example.com/dep"},
+		}},
+		VulnID:      "GO-TEST-1",
+		Resolver:    stubResolver{},
+		ManualRC:    []domain.RootCause{{Package: "example.com/dep/vuln", Symbol: "Parse"}},
+		Model:       mp,
+		CaseDir:     filepath.Join(dir, "cases"),
+		Govulncheck: fakeGovulncheck{out: []byte(gv)},
+		UseSource:   true,
+	})
+	var sawSvc bool
+	for _, f := range c.EvidenceGraph.DataFlows {
+		if f.Origin == domain.OriginInternalService {
+			sawSvc = true
+		}
+	}
+	if !sawSvc {
+		t.Fatalf("no INTERNAL_SERVICE flow recorded; flows=%+v", c.EvidenceGraph.DataFlows)
+	}
+	input := findClaimT(t, c.Claims, "C-INPUT")
+	if input.Result != domain.ClaimUnknown {
+		t.Fatalf("C-INPUT=%s want UNKNOWN (internal service is deploy-dependent)", input.Result)
+	}
+	if c.Verdict == nil || c.Verdict.Verdict != domain.VerdictInconclusive {
+		t.Fatalf("verdict=%+v want INCONCLUSIVE", c.Verdict)
+	}
+}
+
 // Advisory names a symbol that does not exist in the dependency source:
 // all candidates fail verification -> AMBIGUOUS -> INCONCLUSIVE.
 func TestE2EAmbiguousRootCause(t *testing.T) {

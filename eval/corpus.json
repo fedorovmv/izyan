@@ -83,6 +83,24 @@
       "expect_claims": {"C-TLS-VERIFY": "FALSE"}
     },
     {
+      "id": "db-populated-input",
+      "vuln": "GO-EVAL-PARSE",
+      "vuln_file": "advisories/dep-parse.json",
+      "repo": "../testdata/dbprod",
+      "root_causes": ["example.com/dep/vuln.Parse"],
+      "expect": ["INCONCLUSIVE"],
+      "expect_claims": {"C-PEER-INPUT": "UNKNOWN"}
+    },
+    {
+      "id": "svc-config-endpoint",
+      "vuln": "GO-EVAL-PARSE",
+      "vuln_file": "advisories/dep-parse.json",
+      "repo": "../testdata/svcprod",
+      "root_causes": ["example.com/dep/vuln.Parse"],
+      "expect": ["INCONCLUSIVE"],
+      "expect_claims": {"C-PEER-INPUT": "UNKNOWN"}
+    },
+    {
       "id": "iface-dispatch",
       "vuln": "GO-EVAL-URI",
       "vuln_file": "advisories/dep-uri.json",

@@ -95,7 +95,7 @@ func (ix *Index) classify(pkg *packages.Package, enc *ast.FuncDecl, expr ast.Exp
 	case *ast.Ident:
 		return ix.classifyIdent(pkg, enc, e, depth)
 	case *ast.SelectorExpr:
-		return ix.classifySelector(pkg, e, depth)
+		return ix.classifySelector(pkg, enc, e, depth)
 	case *ast.CallExpr:
 		return ix.classifyCall(pkg, enc, e, depth)
 	case *ast.BinaryExpr:
@@ -145,7 +145,144 @@ func (ix *Index) classifyIdent(pkg *packages.Package, enc *ast.FuncDecl, id *ast
 		o, why := ix.classify(pkg, enc, rhs, depth)
 		return o, fmt.Sprintf("local %s <- %s", id.Name, why)
 	}
+	// populated by a call taking &v — rows.Scan(&v), json.Unmarshal(data,&v):
+	// the variable is written in place, not assigned.
+	if o, why, ok := ix.populateOrigin(pkg, enc, obj, depth); ok {
+		return o, fmt.Sprintf("local %s <- %s", id.Name, why)
+	}
 	return domain.OriginUnknown, fmt.Sprintf("identifier %s without resolvable initializer", id.Name)
+}
+
+// populateOrigin detects out-parameter writes: calls of the form
+// `f(..., &v)` inside the enclosing function where `v` is our variable.
+// DB-ish receivers (`rows.Scan(&v)`, `row.Scan(&v)`) → DATABASE;
+// unmarshal/decode families propagate the origin of the data argument;
+// grpc/stub out-params → INTERNAL_SERVICE.
+func (ix *Index) populateOrigin(pkg *packages.Package, enc *ast.FuncDecl, obj types.Object, depth int) (domain.DataOrigin, string, bool) {
+	if enc == nil || enc.Body == nil || depth >= maxTraceHops {
+		return "", "", false
+	}
+	var found *ast.CallExpr
+	ast.Inspect(enc.Body, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok || found != nil {
+			return !ok
+		}
+		for _, a := range call.Args {
+			u, ok := a.(*ast.UnaryExpr)
+			if !ok || u.Op != token.AND {
+				continue
+			}
+			id, ok := u.X.(*ast.Ident)
+			if !ok {
+				continue
+			}
+			if pkg.TypesInfo.ObjectOf(id) == obj {
+				found = call
+				return false
+			}
+		}
+		return true
+	})
+	if found == nil {
+		return "", "", false
+	}
+	fn, _ := calleeObject(pkg.TypesInfo, found.Fun).(*types.Func)
+	if fn == nil {
+		return "", "", false
+	}
+	if isDBFunc(fn) {
+		return domain.OriginDatabase, fmt.Sprintf("%s populates &%s", fn.Name(), obj.Name()), true
+	}
+	if isServiceCall(fn) {
+		return domain.OriginInternalService, fmt.Sprintf("%s populates &%s", fn.Name(), obj.Name()), true
+	}
+	// unmarshal/decode: origin of the *source* propagates — for methods
+	// the source is the receiver (`dec.Decode(&x)`), for package funcs the
+	// data argument (`json.Unmarshal(data, &x)`).
+	switch fn.Name() {
+	case "Unmarshal", "Decode", "DecodeElement", "UnmarshalExact", "DecodeValues":
+		var src ast.Expr
+		if sig, ok := fn.Type().(*types.Signature); ok && sig.Recv() != nil {
+			if sel, ok := found.Fun.(*ast.SelectorExpr); ok {
+				src = sel.X
+			}
+		} else if len(found.Args) > 0 {
+			src = found.Args[0]
+		}
+		if src != nil {
+			o, why := ix.classify(pkg, enc, src, depth+1)
+			return o, fmt.Sprintf("%s into &%s: %s", fn.Name(), obj.Name(), why), true
+		}
+	}
+	return "", "", false
+}
+
+// isDBFunc reports whether fn is a database/kv-store API — method on a
+// driver type (sql.Rows, gorm.DB, mongo.Collection, redis.Client...) or a
+// package-level helper in a known data-store package.
+func isDBFunc(fn *types.Func) bool {
+	pkgPath := ""
+	if fn.Pkg() != nil {
+		pkgPath = fn.Pkg().Path()
+	}
+	switch {
+	case pkgPath == "database/sql",
+		strings.Contains(pkgPath, "sqlx"),
+		strings.Contains(pkgPath, "gorm"),
+		strings.Contains(pkgPath, "pgx"),
+		strings.Contains(pkgPath, "mongo"),
+		strings.Contains(pkgPath, "redis"),
+		strings.Contains(pkgPath, "etcd"),
+		strings.Contains(pkgPath, "gocql"),
+		strings.Contains(pkgPath, "elasticsearch"):
+		return true
+	}
+	// receiver type in a data-store package (method values too)
+	if sig, ok := fn.Type().(*types.Signature); ok && sig.Recv() != nil {
+		if n := recvNamed(sig.Recv().Type()); n != nil && n.Obj() != nil && n.Obj().Pkg() != nil {
+			p := n.Obj().Pkg().Path()
+			switch {
+			case p == "database/sql",
+				strings.Contains(p, "sqlx"), strings.Contains(p, "gorm"),
+				strings.Contains(p, "pgx"), strings.Contains(p, "mongo"),
+				strings.Contains(p, "redis"), strings.Contains(p, "etcd"),
+				strings.Contains(p, "gocql"), strings.Contains(p, "elasticsearch"):
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// recvNamed unwraps a receiver type to its *types.Named.
+func recvNamed(t types.Type) *types.Named {
+	if p, ok := t.(*types.Pointer); ok {
+		t = p.Elem()
+	}
+	if n, ok := t.(*types.Named); ok {
+		return n
+	}
+	return nil
+}
+
+// isServiceCall detects RPC-stub methods: a receiver type whose package
+// imports google.golang.org/grpc — generated *Client stubs.
+func isServiceCall(fn *types.Func) bool {
+	sig, ok := fn.Type().(*types.Signature)
+	if !ok || sig.Recv() == nil {
+		return false
+	}
+	n := recvNamed(sig.Recv().Type())
+	if n == nil || n.Obj() == nil || n.Obj().Pkg() == nil {
+		return false
+	}
+	for _, imp := range n.Obj().Pkg().Imports() {
+		if strings.Contains(imp.Path(), "google.golang.org/grpc") {
+			return true
+		}
+	}
+	return false
 }
 
 func isParam(enc *ast.FuncDecl, v *types.Var) bool {
@@ -235,7 +372,7 @@ func findLocalAssign(enc *ast.FuncDecl, obj types.Object) ast.Expr {
 }
 
 // classifySelector handles field/method selections like r.Body, r.URL, os.Args.
-func (ix *Index) classifySelector(pkg *packages.Package, e *ast.SelectorExpr, depth int) (domain.DataOrigin, string) {
+func (ix *Index) classifySelector(pkg *packages.Package, enc *ast.FuncDecl, e *ast.SelectorExpr, depth int) (domain.DataOrigin, string) {
 	sel, ok := pkg.TypesInfo.Selections[e]
 	if ok {
 		recv := sel.Recv()
@@ -249,8 +386,9 @@ func (ix *Index) classifySelector(pkg *packages.Package, e *ast.SelectorExpr, de
 			return domain.OriginExternalUntrusted, "os.Args"
 		}
 	}
-	// transparent selector: classify base
-	return ix.classify(pkg, nil, e.X, depth)
+	// transparent selector: classify base — keep the enclosing func so the
+	// base can resolve to a local variable (resp.Body -> resp assignment).
+	return ix.classify(pkg, enc, e.X, depth)
 }
 
 func isHTTPRequest(t types.Type) bool {
@@ -264,8 +402,31 @@ func (ix *Index) classifyCall(pkg *packages.Package, enc *ast.FuncDecl, call *as
 	obj := calleeObject(pkg.TypesInfo, call.Fun)
 	if fn, ok := obj.(*types.Func); ok && fn.Pkg() != nil {
 		key := fn.Pkg().Path() + "." + fn.Name()
+		// DB/RPC source calls: result value is store- or service-provided.
+		if isDBFunc(fn) {
+			return domain.OriginDatabase, fmt.Sprintf("result of %s", key)
+		}
+		if isServiceCall(fn) {
+			return domain.OriginInternalService, fmt.Sprintf("gRPC stub %s", key)
+		}
+		// Outbound HTTP calls: an internal/configured endpoint is a service
+		// boundary, a literal/explicit URL is plain external data.
+		if o, why, ok := ix.httpClientOrigin(pkg, enc, fn, call, depth); ok {
+			return o, why
+		}
 		if o, ok := knownSourceFuncs[key]; ok {
 			return o, key
+		}
+		// Carrier constructors/accessors: the result derives from one
+		// input — io.ReadAll(r), NewDecoder(r), NewRequest(m,url,b), or
+		// accessor methods like scanner.Text()/b.String().
+		if idx, ok := passthroughFuncs[key]; ok && idx < len(call.Args) {
+			o, why := ix.classify(pkg, enc, call.Args[idx], depth+1)
+			return o, fmt.Sprintf("%s(%s)", key, why)
+		}
+		if sel, ok := call.Fun.(*ast.SelectorExpr); ok && passthroughMethods[fn.Name()] {
+			o, why := ix.classify(pkg, enc, sel.X, depth)
+			return o, fmt.Sprintf("%s() on %s", fn.Name(), why)
 		}
 		if sig, ok2 := fn.Type().(*types.Signature); ok2 && sig.Recv() != nil && isHTTPRequest(sig.Recv().Type()) {
 			return domain.OriginExternalUntrusted, "method on *http.Request"
@@ -283,6 +444,41 @@ func (ix *Index) classifyCall(pkg *packages.Package, enc *ast.FuncDecl, call *as
 		return ix.classify(pkg, enc, call.Args[0], depth)
 	}
 	return domain.OriginUnknown, "unresolvable call"
+}
+
+// httpClientOrigin refines outbound HTTP calls: `http.Get(url)`,
+// `client.Do(req)`. When the endpoint argument resolves to configuration
+// the response is an INTERNAL_SERVICE value (service chosen by
+// deployment); a literal or externally-derived URL stays
+// EXTERNAL_UNTRUSTED. Returns ok=false for non-HTTP-client calls.
+func (ix *Index) httpClientOrigin(pkg *packages.Package, enc *ast.FuncDecl, fn *types.Func, call *ast.CallExpr, depth int) (domain.DataOrigin, string, bool) {
+	pkgPath := fn.Pkg().Path()
+	isClientMethod := false
+	if sig, ok := fn.Type().(*types.Signature); ok && sig.Recv() != nil {
+		if n := recvNamed(sig.Recv().Type()); n != nil && n.Obj() != nil &&
+			n.Obj().Pkg() != nil && n.Obj().Pkg().Path() == "net/http" {
+			isClientMethod = true
+		}
+	}
+	isPkgFunc := pkgPath == "net/http" &&
+		(fn.Name() == "Get" || fn.Name() == "Post" || fn.Name() == "Head" ||
+			fn.Name() == "PostForm")
+	if !isPkgFunc && !(isClientMethod && (fn.Name() == "Get" || fn.Name() == "Post" ||
+		fn.Name() == "Do" || fn.Name() == "Head" || fn.Name() == "PostForm")) {
+		return "", "", false
+	}
+	// Endpoint argument: url string for Get/Post, *http.Request for Do.
+	var endpoint ast.Expr
+	if len(call.Args) > 0 {
+		endpoint = call.Args[0]
+	}
+	if endpoint != nil && depth < maxTraceHops {
+		if o, _ := ix.classify(pkg, enc, endpoint, depth+1); o == domain.OriginConfiguration || o == domain.OriginDatabase {
+			return domain.OriginInternalService,
+				fmt.Sprintf("http %s to configured endpoint", fn.Name()), true
+		}
+	}
+	return domain.OriginExternalUntrusted, fmt.Sprintf("http %s response body", fn.Name()), true
 }
 
 // exprEval evaluates an expression in the frame where it syntactically
@@ -619,22 +815,43 @@ func inputScore(t string) int {
 // knownSourceFuncs maps pkgpath.Func to a data origin. Extend as needed —
 // this is provenance, not pattern matching for verdicts.
 var knownSourceFuncs = map[string]domain.DataOrigin{
-	"os.Getenv":                domain.OriginConfiguration,
-	"os.ReadFile":              domain.OriginConfiguration,
-	"io/ioutil.ReadFile":       domain.OriginConfiguration,
-	"flag.String":              domain.OriginConfiguration,
-	"flag.Int":                 domain.OriginConfiguration,
-	"flag.Bool":                domain.OriginConfiguration,
-	"flag.Parse":               domain.OriginConfiguration,
-	"fmt.Sscanf":               domain.OriginUnknown,
-	"os.Open":                  domain.OriginConfiguration,
-	"net/http.Get":             domain.OriginExternalUntrusted,
-	"net/http.Post":            domain.OriginExternalUntrusted,
-	"net/http.ReadRequest":     domain.OriginExternalUntrusted,
-	"io.ReadAll":               domain.OriginUnknown, // depends on arg
-	"bufio.NewScanner":         domain.OriginUnknown,
-	"encoding/json.Unmarshal":  domain.OriginUnknown,
-	"encoding/json.NewDecoder": domain.OriginUnknown,
+	"os.Getenv":               domain.OriginConfiguration,
+	"os.ReadFile":             domain.OriginConfiguration,
+	"io/ioutil.ReadFile":      domain.OriginConfiguration,
+	"flag.String":             domain.OriginConfiguration,
+	"flag.Int":                domain.OriginConfiguration,
+	"flag.Bool":               domain.OriginConfiguration,
+	"flag.Parse":              domain.OriginConfiguration,
+	"fmt.Sscanf":              domain.OriginUnknown,
+	"os.Open":                 domain.OriginConfiguration,
+	"net/http.Get":            domain.OriginExternalUntrusted,
+	"net/http.Post":           domain.OriginExternalUntrusted,
+	"net/http.ReadRequest":    domain.OriginExternalUntrusted,
+	"encoding/json.Unmarshal": domain.OriginUnknown,
+}
+
+// passthroughFuncs maps pkgpath.Func to the argument index whose origin
+// the call result carries — readers, decoders, request builders.
+var passthroughFuncs = map[string]int{
+	"io.ReadAll":                     0,
+	"io/ioutil.ReadAll":              0,
+	"bufio.NewScanner":               0,
+	"bytes.NewReader":                0,
+	"bytes.NewBuffer":                0,
+	"bytes.NewBufferString":          0,
+	"strings.NewReader":              0,
+	"encoding/json.NewDecoder":       0,
+	"encoding/xml.NewDecoder":        0,
+	"net/http.NewRequest":            1, // (method, url, body)
+	"net/http.NewRequestWithContext": 2, // (ctx, method, url, body)
+	"net/url.Parse":                  0,
+	"net/url.ParseQuery":             0,
+}
+
+// passthroughMethods: accessor methods whose result carries the receiver's
+// data origin — scanner.Text(), buffer.Bytes(), builder.String().
+var passthroughMethods = map[string]bool{
+	"Text": true, "Bytes": true, "String": true,
 }
 
 // traceParam resolves an argument bound to an enclosing function parameter by
