@@ -177,7 +177,28 @@ composite-literal ключи матчатся по declaring struct); `sequence=
 | `ArgumentOrigin` | `ATTACKER_CONTROL` | `DataFlows`: external origin → TRUE; все non-external → FALSE-кандидат |
 | `Validation` | `INPUT_CONSTRAINT` | `FindValidations` — guard-выражения до sink |
 | `Presence` | `check=symbol_present` | `SymbolDecls`: subject объявлен в dep source → TRUE; проверен и отсутствует → FALSE-кандидат (INFO_LEAK) |
+| `Exposure` | `check=exposure` | `Exposures`: факты есть → TRUE (перечисление + scope, caveat'ы в limitations); фактов нет или скан не запускался → UNKNOWN — FALSE не выдаётся никогда: отсутствие listener/dial-сайта в коде не доказывает недостижимость (proxy/ingress вне кода) |
 | `VersionFact` | `BUILD_CONDITION`, `CONFIGURATION` | semver-сравнение («prior to X.Y.Z», «нет в vulnerable versions») по `AffectedResult` |
+
+**Exposure facts** (`C-EXPOSURE`, supporting в peer-driven и NIL_DEREF
+паттернах — не гейтит вердикт, но получает claim и попадает в отчёт):
+
+- `ListenSites` — inbound surface: `net.Listen*`, `http.Server{Addr}`,
+  `grpc.NewServer`/`Serve`. Аргумент адреса резолвится через literal/
+  const/var/field/`os.Getenv`; server-shape вызовы (`srv.Serve(lis)`)
+  трассируют receiver до определяющего вызова в той же функции.
+- `DialSites` — outbound в уязвимый модуль (`amqp.Dial`, `grpc.Dial`…,
+  имя по `dialNameRe`, пакет по префиксу advisory-модуля).
+- `ExposureFact{Address, AddressSource, Scope}`: source = `literal`/
+  `const`/`var:`/`field:`/`env:`/`config:`; scope = `static`/`configured`/
+  `unknown` (`OutboundScope`: var/field/env/config → configured).
+- `env:`-адреса дозрезолвляются через `exposure.ScanRepo` — walk
+  yaml/env/toml/json конфигов репозитория по `(listen|bind|addr|host|
+  port|dsn|url|endpoint)`-ключам.
+- `_test.go`-файлы исключаются — тестовый код не deployed surface.
+- Claim несёт caveat «endpoint операторски конфигурируем» — доверие
+  настроенному сервису остаётся deployment-решением, факт лишь показывает
+  где поверхность.
 
 TRUE-claim обязан нести evidence ID — структурный ревьюер иначе
 демотирует (provenance-инвариант).
@@ -245,9 +266,10 @@ stdlib-advisory записывается явный limitation.
   внутримодульные цепочки не проверяются → UNKNOWN вместо FALSE.
 - `INPUT_CONSTRAINT` на формат данных («поле длиннее X») пока резолвится
   только по remote-input эвристике, не по реальным границам парсера.
-- Deployment-факты (кто может достучаться до listener'а/endpoint'а)
-  фиксируются caveat'ом, не резолвятся — следующий шаг: читать bind-
-  адрес из конфига/манифестов.
+- Deployment-факты резолвятся частично: listener/dial-сайты и
+  provenance адреса собираются (`C-EXPOSURE`), но остаются supporting-
+  уточнением, не гейтом; auth на entrypoint'ах, k8s/docker-манифесты и
+  связывание var→config-значений без `env:`-источника не покрыты.
 - gRPC-кейс (`GHSA-vp52`) проходит до `EXPLOITABLE`; RabbitMQ —
   4 EXPLOITABLE (unexported sinks + module usage + vendor-цепочки).
   Два бывших INCONCLUSIVE моделируются паттернами: credential retention

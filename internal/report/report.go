@@ -66,6 +66,27 @@ func Markdown(c *domain.AnalysisCase) string {
 		writeConditions(&b, "Mandatory conditions", c.Exploit.MandatoryConditions)
 		writeConditions(&b, "Supporting factors", c.Exploit.SupportingFactors)
 	}
+	if exps := c.EvidenceGraph.ExposuresList(); len(exps) > 0 {
+		b.WriteString("## Exposure facts\n\n")
+		for _, f := range exps {
+			fmt.Fprintf(&b, "- `%s` %s via `%s`", f.Direction, f.Kind, f.Target)
+			if f.Address != "" {
+				fmt.Fprintf(&b, " — `%s`", f.Address)
+			}
+			var meta []string
+			if f.AddressSource != "" {
+				meta = append(meta, "source: "+f.AddressSource)
+			}
+			if f.Scope != "" {
+				meta = append(meta, "scope: "+f.Scope)
+			}
+			if len(meta) > 0 {
+				fmt.Fprintf(&b, " (%s)", strings.Join(meta, ", "))
+			}
+			fmt.Fprintf(&b, " — %s:%d\n", f.File, f.Line)
+		}
+		b.WriteString("\n")
+	}
 	if len(c.Claims) > 0 {
 		b.WriteString("## Claims\n\n| condition | result | evidence |\n|---|---|---|\n")
 		for _, cl := range c.Claims {

@@ -41,19 +41,21 @@
 
 ## 3. Отсутствует концептуально — сканер обязан, но не делает
 
-### 3.1 Deployment/exposure как факт, не caveat
+### 3.1 Deployment/exposure как факт, не caveat — `done` (первый слой)
 
-Каждый EXPLOITABLE/peer-input TRUE сейчас несёт caveat «peer identity/exposure —
-deployment property». Спека требует учитывать deployment configuration
-(§12 agent spec). Что можно детерминистично читать:
+Реализовано по `11-exposure-facts-plan.md`: `runExposure` в
+CollectEvidence собирает `ExposureFact` — inbound listener-сайты
+(`net.Listen*`/`http.Server`/`grpc`) с резолвом bind-аргумента
+(literal/const/var/field/env) и outbound dial-сайты в уязвимый модуль;
+`env:`-источники дозрезолвляются `exposure.ScanRepo` по конфигам
+репозитория; `Scope` = static/configured/unknown. Supporting-условие
+`C-EXPOSURE` (`check=exposure`) в peer-driven и NIL_DEREF паттернах
+получает claim и секцию «Exposure facts» в отчёте — не гейтит вердикт.
 
-- bind-адрес listener'а из конфига/кода (`0.0.0.0` vs `127.0.0.1` vs unix) —
-  разделяет internet-vs-local экспозицию;
-- endpoint'ы исходящих подключений из конфига/env — разделяет
-  «внутренний брокер» vs «конфигурируемый внешний адрес»;
-- auth middleware на entrypoint'ах.
-
-Это единственный блокер между «EXPLOITABLE с оговоркой» и полным ответом.
+Не покрыто: auth middleware на entrypoint'ах, k8s/docker-манифесты,
+связывание `var:`/`field:`-источников с конкретными config-значениями
+(только `env:` мэтчится по имени ключа), разделение `0.0.0.0`/`127.0.0.1`
+на mandatory-уровне (scope есть, в вердикт не идёт — осознанно).
 
 ### 3.2 Pattern library / vuln-class exploit models — `done` (базовый слой)
 
@@ -74,8 +76,9 @@ keywords → fix-diff), декларативный `exploit.Registry`, `Conditio
   биндится на паре exported API и проверяет, что продукт вызывает
   обоих членов пары; неполная пара → FALSE-кандидат;
 - peer-driven семейство (wire parser/OOB/int-overflow/exhaustion) —
-  `C-PEER-INPUT`+`C-CONSTRAINT`+`C-ENTRY` вместо generic input;
-- NIL_DEREF — `C-TRIGGER`+`C-HOT-PATH`.
+  `C-PEER-INPUT`+`C-CONSTRAINT` (+supporting `C-EXPOSURE`) вместо
+  generic input;
+- NIL_DEREF — `C-TRIGGER`+`C-HOT-PATH` (+supporting `C-EXPOSURE`).
 
 Остаток: остальные классы (PATH_TRAVERSAL, INJECTION, SSRF, AUTH_BYPASS,
 XXE, REDOS, RACE, DESERIALIZATION) классифицируются, но сидят на

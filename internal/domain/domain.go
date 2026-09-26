@@ -203,7 +203,8 @@ const (
 	// semantics land.
 	ParamBound = "bound"
 	// ParamCheck selects a structural check: "symbol_present" verifies the
-	// subject exists in the dependency source.
+	// subject exists in the dependency source; "exposure" resolves the
+	// network exposure of the vulnerable surface.
 	ParamCheck = "check"
 )
 
@@ -215,7 +216,42 @@ const (
 	DirectionRead = "read"
 
 	CheckSymbolPresent = "symbol_present"
+	CheckExposure      = "exposure"
 )
+
+// Exposure scope values — deterministic classification of a resolved
+// address. Inbound: how broadly a listener binds; outbound: where the
+// endpoint's value originates.
+const (
+	ScopeAllInterfaces = "all-interfaces"  // :port, 0.0.0.0, [::]
+	ScopeLoopback      = "loopback"        // 127.0.0.1, ::1, localhost
+	ScopeUnix          = "unix"            // unix socket path / "unix" network
+	ScopeHostSpecific  = "host-specific"   // bound to a concrete IP/DNS name
+	ScopeStatic        = "static-endpoint" // outbound literal/const address
+	ScopeConfigured    = "configured"      // outbound address from env/config/var
+	ScopeUnknown       = "unknown"
+)
+
+// ExposureFact is a resolved network-exposure fact: an inbound listener
+// bind or an outbound endpoint into the vulnerable module. It is
+// evidence, not a verdict — scope describes the fact, the caller decides
+// what it means for exploitation.
+type ExposureFact struct {
+	CallSite
+	// Direction: "inbound" (we listen) or "outbound" (we dial/connect).
+	Direction string `json:"direction"`
+	// Kind: "listener", "dial" or "endpoint-config".
+	Kind string `json:"kind"`
+	// Target is the callee that creates the exposure ("net.Listen",
+	// "amqp091-go.DialTLS").
+	Target string `json:"target,omitempty"`
+	// Address is the resolved value when statically determinable.
+	Address string `json:"address,omitempty"`
+	// AddressSource records where Address came from: "literal", "const",
+	// "var", "env:NAME", "config:key", "field:…" or "" when unresolved.
+	AddressSource string `json:"address_source,omitempty"`
+	Scope         string `json:"scope,omitempty"`
+}
 
 type Condition struct {
 	ID                ConditionID       `json:"id"`
@@ -403,13 +439,16 @@ type EvidenceGraph struct {
 	// dependency source: key "pkg.Symbol" -> declaration site. A present
 	// key with a nil site means "checked, not found"; an absent key means
 	// the lookup never ran or failed.
-	SymbolDecls     map[string]*CallSite `json:"symbol_decls,omitempty"`
-	Validations     []Validation         `json:"validations,omitempty"`
-	Configuration   []ConfigItem         `json:"configuration,omitempty"`
-	Runtime         []EvidenceID         `json:"runtime,omitempty"`
-	ToolLimitations []string             `json:"tool_limitations,omitempty"`
-	Limitations     []string             `json:"limitations,omitempty"`
-	Hash            string               `json:"hash,omitempty"`
+	SymbolDecls map[string]*CallSite `json:"symbol_decls,omitempty"`
+	// Exposures records resolved network-exposure facts: inbound listener
+	// binds and outbound endpoints into the vulnerable module.
+	Exposures       []ExposureFact `json:"exposures,omitempty"`
+	Validations     []Validation   `json:"validations,omitempty"`
+	Configuration   []ConfigItem   `json:"configuration,omitempty"`
+	Runtime         []EvidenceID   `json:"runtime,omitempty"`
+	ToolLimitations []string       `json:"tool_limitations,omitempty"`
+	Limitations     []string       `json:"limitations,omitempty"`
+	Hash            string         `json:"hash,omitempty"`
 }
 
 // AddEvidence appends e to the graph, assigning an ID when empty, and
@@ -521,6 +560,22 @@ func (g *EvidenceGraph) SymbolDeclFor(key string) (site *CallSite, checked bool)
 	defer g.mu.Unlock()
 	site, checked = g.SymbolDecls[key]
 	return site, checked
+}
+
+// AddExposure records a resolved exposure fact.
+func (g *EvidenceGraph) AddExposure(f ExposureFact) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.Exposures = append(g.Exposures, f)
+}
+
+// ExposuresList returns a copy of the recorded exposure facts.
+func (g *EvidenceGraph) ExposuresList() []ExposureFact {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	out := make([]ExposureFact, len(g.Exposures))
+	copy(out, g.Exposures)
+	return out
 }
 
 func (g *EvidenceGraph) AddEntrypoints(eps ...Entrypoint) {

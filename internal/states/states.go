@@ -14,6 +14,7 @@ import (
 	"example.com/vuln-analyzer/internal/affected"
 	"example.com/vuln-analyzer/internal/domain"
 	"example.com/vuln-analyzer/internal/evaluator"
+	"example.com/vuln-analyzer/internal/exposure"
 	"example.com/vuln-analyzer/internal/goanalysis"
 	"example.com/vuln-analyzer/internal/report"
 	"example.com/vuln-analyzer/internal/repository"
@@ -257,6 +258,7 @@ func (h CollectEvidence) Run(ctx context.Context, c *domain.AnalysisCase) (workf
 		h.runSourceAnalysis(ctx, c)
 		h.runListenerScan(ctx, c)
 		h.runModuleUsage(ctx, c)
+		h.runExposure(ctx, c)
 	}
 	if h.Govulncheck == nil && h.Source == nil {
 		c.EvidenceGraph.AddLimitation("no evidence collectors beyond affected resolution are wired yet")
@@ -352,6 +354,88 @@ func (h CollectEvidence) runListenerScan(ctx context.Context, c *domain.Analysis
 		Tool:    "goanalysis.Index.FindListeners",
 		Content: fmt.Sprintf("product opens %d network listener/server entrypoint(s)", len(lst)),
 	})
+}
+
+// runExposure resolves network-exposure facts: inbound listener binds
+// (ListenSites, with address arguments resolved through literals, consts,
+// env vars and struct fields) and outbound endpoints into the vulnerable
+// module (DialSites). env:/config:-sourced addresses are looked up in the
+// repository's config files so a fact carries the concrete value when
+// statically available. Facts are recorded unconditionally — evaluators
+// distinguish "no exposure found" from "scan never ran" via the evidence
+// record.
+func (h CollectEvidence) runExposure(ctx context.Context, c *domain.AnalysisCase) {
+	var facts []domain.ExposureFact
+	in, err := h.Source.ListenSites(ctx)
+	if err != nil {
+		c.EvidenceGraph.AddToolLimitation(fmt.Sprintf("listener address scan failed: %v", err))
+	} else {
+		for i := range in {
+			in[i].Scope = exposure.Scope(in[i].Address)
+		}
+		facts = append(facts, in...)
+	}
+	if module := c.Vulnerability.Module; module != "" && !isStdlibModule(module) {
+		out, err := h.Source.DialSites(ctx, module)
+		if err != nil {
+			c.EvidenceGraph.AddToolLimitation(fmt.Sprintf("dial-site scan failed: %v", err))
+		} else {
+			facts = append(facts, out...)
+		}
+	}
+
+	// Resolve env:/var:/field:-sourced addresses through the repo's config
+	// files when a matching key exists.
+	var items []exposure.Item
+	if dir := c.Product.Repository; dir != "" {
+		if scanned, err := exposure.ScanRepo(dir); err == nil {
+			items = scanned
+		} else {
+			c.EvidenceGraph.AddToolLimitation(fmt.Sprintf("config scan failed: %v", err))
+		}
+	}
+	for i := range facts {
+		f := &facts[i]
+		if f.Direction == "outbound" {
+			f.Scope = exposure.OutboundScope(f.AddressSource)
+		}
+		if f.Address != "" || !strings.HasPrefix(f.AddressSource, "env:") {
+			continue
+		}
+		if it := exposure.Lookup(items, strings.TrimPrefix(f.AddressSource, "env:")); it != nil {
+			f.Address = it.Value
+			f.AddressSource = fmt.Sprintf("env:%s (config %s:%d)", it.Key, filepathBase(it.File), it.Line)
+			f.Scope = exposure.OutboundScope("config:" + it.Key)
+		}
+	}
+	for _, f := range facts {
+		c.EvidenceGraph.AddExposure(f)
+	}
+	var summary strings.Builder
+	fmt.Fprintf(&summary, "%d exposure fact(s):", len(facts))
+	for _, f := range facts {
+		fmt.Fprintf(&summary, " %s %s", f.Direction, f.Target)
+		if f.Address != "" {
+			fmt.Fprintf(&summary, "=%s", f.Address)
+		}
+		if f.Scope != "" && f.Scope != domain.ScopeUnknown {
+			fmt.Fprintf(&summary, "(%s)", f.Scope)
+		}
+	}
+	c.EvidenceGraph.AddEvidence(domain.Evidence{
+		Kind:    domain.EvidenceConfiguration,
+		Quality: domain.QualityDeterministic,
+		Source:  "source index + repo config scan: exposure",
+		Tool:    "goanalysis.Index.ListenSites+DialSites, exposure.ScanRepo",
+		Content: summary.String(),
+	})
+}
+
+func filepathBase(p string) string {
+	if i := strings.LastIndexByte(p, '/'); i >= 0 {
+		return p[i+1:]
+	}
+	return p
 }
 
 // runModuleUsage records product call sites into the vulnerable module's API.
@@ -694,6 +778,27 @@ func (h EvaluateConditions) Run(_ context.Context, c *domain.AnalysisCase) (work
 	} else {
 		c.EvidenceGraph.AddLimitation(
 			"agent fallback skipped: a mandatory condition is already FALSE, so remaining UNKNOWNs cannot change the verdict")
+	}
+	// Supporting factors never gate the verdict, but they still get
+	// claims — exposure/priority facts belong in the report, not only in
+	// the raw evidence graph.
+	for _, cond := range c.Exploit.SupportingFactors {
+		if existing[cond.ID] {
+			continue
+		}
+		claim := domain.Claim{
+			ID:          domain.ClaimID("CL-" + string(cond.ID)),
+			ConditionID: cond.ID,
+			Result:      domain.ClaimUnknown,
+			Limitations: []string{"no evaluator handled this condition"},
+		}
+		for _, ev := range h.Evaluators {
+			if ev.CanEvaluate(cond) {
+				claim = ev.Evaluate(cond, c)
+				break
+			}
+		}
+		c.Claims = append(c.Claims, claim)
 	}
 	if hasFalse {
 		return workflow.Transition{Next: domain.StateNegativeCheck, Reason: "candidate FALSE requires negative verification"}, nil

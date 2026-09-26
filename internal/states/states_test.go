@@ -153,6 +153,7 @@ func runEngine(t *testing.T, d engineDeps) *domain.AnalysisCase {
 			evaluator.SymbolReachable{},
 			evaluator.ArgumentOrigin{},
 			evaluator.Validation{},
+			evaluator.Exposure{},
 			evaluator.Presence{},
 		}},
 		states.NegativeCheck{Verifier: &goanalysis.Verifier{Source: srcIndex}},
