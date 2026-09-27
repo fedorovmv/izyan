@@ -145,6 +145,8 @@ func (v Verifier) VerifyFalse(ctx context.Context, c *domain.AnalysisCase, claim
 			out = v.verifyInputFalse(ctx, c, claim, nv, subjects, cond.ArgIndex)
 		case domain.ConditionValidation:
 			out = v.verifyGuardFalse(c, claim, nv)
+		case domain.ConditionPlatform, domain.ConditionRuntime:
+			out = verifySnapshotFalse(claim, nv)
 		default:
 			nv.Status = domain.NegativeInsufficientScope
 			nv.Notes = "no falsification strategy for condition kind " + string(cond.Kind)
@@ -423,4 +425,18 @@ func symbolExported(s domain.SymbolRef) bool {
 // linknameNames reports whether a go:linkname pragma targets the subject.
 func linknameNames(detail string, s domain.SymbolRef) bool {
 	return strings.Contains(detail, s.Symbol)
+}
+
+// verifySnapshotFalse accepts FALSE claims that are decided by snapshot
+// facts (platform, runtime toolchain) rather than code-scope searches:
+// there is no call-site scope to widen, so the negative is VERIFIED when
+// the evaluator produced a mismatch explanation.
+func verifySnapshotFalse(claim domain.Claim, nv *domain.NegativeVerification) domain.Claim {
+	if claim.Explanation == "" {
+		nv.Status = domain.NegativeInsufficientScope
+		nv.Notes = "FALSE without a recorded snapshot-fact mismatch"
+		return setNeg(claim, nv)
+	}
+	nv.Notes = "FALSE is decided by product snapshot facts, not call-site scope"
+	return setNeg(claim, nv)
 }

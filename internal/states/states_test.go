@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -158,6 +159,7 @@ func runEngine(t *testing.T, d engineDeps) *domain.AnalysisCase {
 			evaluator.Exposure{},
 			evaluator.ConfigFlag{},
 			evaluator.Presence{},
+			evaluator.Platform{},
 		}},
 		states.GapAnalysis{Source: srcIndex, Evaluators: []evaluator.ConditionEvaluator{
 			evaluator.SymbolReachable{},
@@ -166,6 +168,7 @@ func runEngine(t *testing.T, d engineDeps) *domain.AnalysisCase {
 			evaluator.Exposure{},
 			evaluator.ConfigFlag{},
 			evaluator.Presence{},
+			evaluator.Platform{},
 		}},
 		states.NegativeCheck{Verifier: &goanalysis.Verifier{Source: srcIndex}},
 		states.Review{Reviewer: review.Structural{}, Evaluator: evaluator.VerdictEvaluator{}},
@@ -1577,5 +1580,57 @@ func TestE2ETransformationChainRecorded(t *testing.T) {
 	// chain makes that UNKNOWN auditable instead of silent.
 	if input.Result != domain.ClaimUnknown {
 		t.Fatalf("C-INPUT=%s want UNKNOWN (opaque transform)", input.Result)
+	}
+}
+
+// A platform fact FALSE is decided by the product snapshot, not code
+// scope — negative verification VERIFIED and the verdict is
+// NO_EXPLOIT_PATH_FOUND rather than an unresolved INCONCLUSIVE.
+func TestE2EPlatformFactFalseVerified(t *testing.T) {
+	repo := initRepoFrom(t, "extprod")
+	dir := t.TempDir()
+	other := "plan9"
+	if runtime.GOOS == "plan9" {
+		other = "haiku" // keep the mismatch impossible
+	}
+	model := `{"impact":"t","mandatory_conditions":[
+		{"id":"C-REACH","kind":"SYMBOL_REACHABLE","mandatory":true,
+		 "subject":{"package":"example.com/dep/vuln","symbol":"Parse"}},
+		{"id":"C-PLAT","kind":"PLATFORM_CONDITION","mandatory":true,
+		 "description":"exploit requires a different OS",
+		 "params":{"goos":"` + other + `"}}
+	]}`
+	mp := filepath.Join(dir, "model.json")
+	if err := os.WriteFile(mp, []byte(model), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gv := `{"protocol_version":"v1.0.0"}
+{"finding":{"osv":"GO-TEST-1","fixed_version":"v1.2.0","trace":[
+ {"module":"example.com/extprod","package":"example.com/extprod","function":"main","position":{"filename":"main.go","line":10}},
+ {"module":"example.com/dep","package":"example.com/dep/vuln","function":"Parse","position":{"filename":"vuln.go","line":4}}
+]}}`
+	c := runEngine(t, engineDeps{
+		RepoPath: repo,
+		VulnSrc: vulnerability.StaticSource{Vulns: map[string]*domain.Vulnerability{
+			"GO-TEST-1": {ID: "GO-TEST-1", Module: "example.com/dep"},
+		}},
+		VulnID:      "GO-TEST-1",
+		Resolver:    stubResolver{},
+		ManualRC:    []domain.RootCause{{Package: "example.com/dep/vuln", Symbol: "Parse"}},
+		Model:       mp,
+		CaseDir:     filepath.Join(dir, "cases"),
+		Govulncheck: fakeGovulncheck{out: []byte(gv)},
+		UseSource:   true,
+	})
+	plat := findClaimT(t, c.Claims, "C-PLAT")
+	if plat.Result != domain.ClaimFalse {
+		t.Fatalf("C-PLAT=%s want FALSE", plat.Result)
+	}
+	if plat.NegativeVerification == nil ||
+		plat.NegativeVerification.Status != domain.NegativeVerified {
+		t.Fatalf("NV=%+v want VERIFIED", plat.NegativeVerification)
+	}
+	if c.Verdict == nil || c.Verdict.Verdict != domain.VerdictNoExploitPathFound {
+		t.Fatalf("verdict=%+v want NO_EXPLOIT_PATH_FOUND", c.Verdict)
 	}
 }

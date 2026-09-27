@@ -237,6 +237,7 @@ func analyzeCase(ctx context.Context, o analyzeOpts) (*domain.AnalysisCase, erro
 		evaluator.ConfigFlag{},
 		evaluator.Presence{},
 		evaluator.VersionFact{},
+		evaluator.Platform{},
 	}
 	var fallbackEval evaluator.ConditionEvaluator
 	var gapPlanner states.HypothesisPlanner
