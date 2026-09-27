@@ -33,8 +33,8 @@
 | Condition kinds | §8 минимум 10 типов | enum есть | `PLATFORM_CONDITION`/`RUNTIME_CONDITION` — `evaluator.Platform` (params `goos`/`goarch`/`go_version` bound против snapshot-фактов; FALSE = snapshot fact → NV `verifySnapshotFalse` VERIFIED); `AUTHENTICATION_CONDITION`, `CUSTOM` без evaluators → UNKNOWN |
 | Data origins | §15: EXTERNAL_UNTRUSTED/AUTHENTICATED, CONFIGURATION, DATABASE, INTERNAL_SERVICE, CONSTANT, GENERATED | enum есть; provenance покрывает http.Request/os.Args/net/config/generated + `populateOrigin` (Scan/Unmarshal out-params), DB-драйверы по pkg path, gRPC-стабы и http-клиенты с config-endpoint → INTERNAL_SERVICE (`16`) | `EXTERNAL_AUTHENTICATED` различается для outbound HTTP (auth-маркеры в enclosing-функции: Authorization-заголовок, SetBasicAuth, oauth/credentials-хелперы); inbound auth не определяется (middleware за пределами фрейма); детекция драйверов по pkg path — эвристика, кастомные обёртки не покрыты |
 | Transformations | §15: `source → transformations → validation → sink`, security-relevant transforms | `TraceArgument` даёт origin конечного аргумента | Цепочка записывается: `DataFlow.Transformations` — все вызовы, через которые проходит трейсимое значение (под mu в Trace*); security-relevant (`escape|quote|valid|check|…` по `IsSecurityTransform`) флагируются в claim limitations + секция «Data flows» в отчёте | Семантика трансформов не моделируется: opaque call → UNKNOWN (честно); escape/quote не считаются гардами |
-| Negative check | §19: callers, **interface implementations**, runtime registration, **build-tagged code**, configuration overrides, alternate entrypoints | func_value/linkname/reflect/unsafe/plugin по scoped rules | interface-impl и build-tag покрыты (`GatedRefs`/`InterfaceDispatchSites`); `configuration overrides` как NV-концепт нет — `config_flag`/`config_key` читают knob'ы условий, но не конфигурацию, меняющую reachability |
-| Typed tools | §17: 17 инструментов | все 17 реализованы в `llm.Tools` (`19-typed-tools-plan.md`): source-инструменты + get_vulnerability/get_advisory/get_fix_references/get_fix_diff/get_module_version/get_dependency_graph/run_govulncheck/read_source/search_source/run_build/run_tests; exec-инструменты за `--allow-exec` | LLM-agent сам не выбирает инструменты (planner детерминистичен); read_source/search_source ограничены product-деревом — dep-файлы в module cache не видны |
+| Negative check | §19: callers, **interface implementations**, runtime registration, **build-tagged code**, configuration overrides, alternate entrypoints | func_value/linkname/reflect/unsafe/plugin по scoped rules | interface-impl и build-tag покрыты (`GatedRefs`/`InterfaceDispatchSites`); `configuration overrides` — первый слой: `Index.ConfigGated` + `verifyGuardFalse` деградируют VERIFIED→INSUFFICIENT_SCOPE, когда единственное покрытие sink'а — conditional-гарда (особенно config-читающая); конфигурация, меняющая саму reachability (не гарды), — в резерве |
+| Typed tools | §17: 17 инструментов | все 17 реализованы в `llm.Tools` (`19-typed-tools-plan.md`): source-инструменты + get_vulnerability/get_advisory/get_fix_references/get_fix_diff/get_module_version/get_dependency_graph/run_govulncheck/read_source/search_source/run_build/run_tests; exec-инструменты за `--allow-exec` | LLM-agent сам не выбирает инструменты (planner детерминистичен); read_source/search_source допускают product-дерево + GOMODCACHE/GOPATH module cache (dep-файлы видны как evidence) |
 | Hypothesis loop | §18 + agent §6,§16: OPEN→CONFIRMED/REJECTED, gap-driven planner | `GAP_ANALYSIS` state: UNKNOWN mandatory → Hypothesis → tool action (deep-trace/ScanDynamic/dispatch-scan) → re-evaluate → fixpoint≤3/MaxToolCalls; гипотезы персистятся (`18`) | LLM-planner в `GAP_ANALYSIS` реализован (`llm.Planner`, multi-step bounded: ≤3 шага на condition внутри outer-loop ≤3 итераций, глобальный MaxLLMCalls; tool-miss → REJECTED и retry с другим инструментом, UNRESOLVED/unparseable → стоп) |
 | Persistence | §22: hypotheses, tool_executions с version/input/cmd/exit/stdout/stderr/hash | кейс + raw govulncheck в evidence.Content + `EvidenceGraph.ToolExecutions` (tool, version, args, exit, sha256 обоих потоков, ms) через ctx-рекордер; `Evidence.ToolVersion` заполнен для govulncheck | `EvidenceGraph.Runtime` заполняется (snapshot-facts + `go version -m` build info при `--binary`); env прогонов не пишется (секреты); reproducibility-diff есть: повторный прогон того же vuln/repo в тот же case-dir сверяет stdout/stderr-хэши `tool_executions` с предыдущим кейсом (`prior_case`, RUNTIME-evidence + limitation при drift) |
 | Reviewer | §21: root cause, missed conditions, patch misinterpretation, scope mismatch, contradictions | Structural проверяет: TRUE без evidence, FALSE без NV, dangling refs, model без root cause | Pattern coverage проверяется: class-matched модель без mandatory-шаблона паттерна → finding (high при отсутствии skip-limitation, medium при записанном bind-skip); не проверяются «patch misinterpretation», «scope mismatch» |
@@ -151,18 +151,31 @@ evidence (hash-сравнение графов между прогонами).
 `vulnerable_code_not_in_execute_path` (выдаётся только после NV),
 `INCONCLUSIVE`→under_investigation + action_statement. Product пинится
 purl'ом на анализируемый коммит, уязвимый модуль — subcomponent с
-resolved version. CycloneDX — не реализовано.
+resolved version. CycloneDX VEX реализован (`internal/report/cyclonedx.go`,
+spec 1.5): каждый кейс пишет `cyclonedx.json` рядом с openvex.json,
+маппинг `EXPLOITABLE`→exploitable, `NOT_AFFECTED`→not_affected
+(code_not_present), `NO_EXPLOIT_PATH_FOUND`→not_affected +
+code_not_reachable, `INCONCLUSIVE`→in_triage + detail.
 
 ### 3.9 Remediation workflow
 
-§24 скетч: worktree → `go get` → build/tests → повторный анализ.
-Намеренно отложено (D15), но в архитектуру заложено; реализовано
-только текст remediation в отчёте.
+Минимальный слой реализован (`cmd/analyzer/remediate.go`):
+`vuln-analyzer remediate` → analyze → `report.FixTarget` (наименьшая
+fixed-версия выше resolved) → план `go get`/`go mod tidy`/`go build`
+(+`go test` по `--run-tests`); `--apply` исполняет шаги (мутирует
+go.mod/go.sum — explicit opt-in) и повторяет анализ, печатая
+`verdict -> verdict`. Проверено на фикстуре: EXPLOITABLE →
+NOT_AFFECTED. Worktree-изоляция — не реализована (apply идёт
+in-place).
 
 ### 3.10 Intake из tracker
 
-Только CLI `--vuln`/`--vuln-file`. Generic tracker-адаптер (GitHub
-Issues/Jira) — deferred by design.
+Generic intake реализован (`internal/tracker/intake.go` +
+`--ticket <path>`): тикет несёт vulnerability id, repo, embedded
+`osv`-документ или синтезируемый advisory (module + imports +
+symbols + fixed_versions → минимальный OSV JSON). CLI-флаги
+переопределяют поля тикета. Сетевые адаптеры конкретных трекеров
+(GitHub/Jira/SberTrack) — deferred by design.
 
 ## 4. Приоритет (по принципу «какой UNKNOWN закрывает»)
 
@@ -193,4 +206,8 @@ Issues/Jira) — deferred by design.
 9. ~~tool_executions/ToolVersion~~ — `done` (первый слой, §таблица
    Persistence; `17-tool-audit-plan.md`). `Runtime` evidence
    и reproducibility-diff реализованы.
-10. ~~VEX-экспорт~~ — `done` (OpenVEX, §3.8); CycloneDX — при нужде.
+10. ~~VEX-экспорт~~ — `done` (OpenVEX + CycloneDX, §3.8).
+11. ~~Remediation~~ — `done` (минимум, §3.9): plan/dry-run/apply +
+    re-analyze; worktree-изоляция в резерве.
+12. ~~Tracker intake~~ — `done` (generic JSON, §3.10); сетевые
+    адаптеры конкретных трекеров — deferred.

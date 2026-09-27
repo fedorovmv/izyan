@@ -43,6 +43,13 @@ vuln-analyzer scan \
   [--max-vulns 50] \
   [--deterministic-only] \
   [--case-dir .vuln-analyzer]
+
+vuln-analyzer remediate \
+  --repo /src/product --vuln GO-2025-3595 \
+  [--apply] [--run-tests]   # без --apply — только план
+
+vuln-analyzer analyze \
+  --ticket ticket.json      # generic tracker intake (embedded/synth advisory)
 ```
 
 `scan` опрашивает OSV по всем зависимостям (`go list -m all`), дёшево
@@ -50,7 +57,8 @@ vuln-analyzer scan \
 выжившие через полный пайплайн. Сводка — `<case-dir>/scan.json`.
 
 Состояние кейса атомарно сохраняется после каждого перехода workflow в
-`--case-dir`; отчёты пишутся в `<case-dir>/<case-id>/report.{json,md}`.
+`--case-dir`; отчёты пишутся в `<case-dir>/<case-id>/report.{json,md}`,
+`openvex.json` и `cyclonedx.json` (обе — проекции вердикта, не источники).
 
 ## Статус реализации
 
