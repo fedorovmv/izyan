@@ -56,5 +56,4 @@ model недетерминирован, корпус не мог служить 
 - `EvidenceGraph.Runtime []EvidenceID` — заполнен позже: snapshot-facts (GOOS/GOARCH/toolchain) и полный `go version -m` build info при `--binary` записываются как RUNTIME-evidence в `SnapshotProduct`.
 - Env-ключи прогонов не записываются (могут содержать секреты из
   наследованного окружения) — записываются только args/tool/version.
-- Повторный прогон кейса не сверяет хэши с прошлым (reproducibility
-  diff — отдельный backlog-пункт).
+- Повторный прогон сверяет хэши: `Store.PriorCase` находит последний кейс той же пары vuln/repo, `BuildReport` диффит `tool_executions` (tool+dir+args → stdout/stderr sha256, exit) через `toolaudit.DiffExecutions`; итог — RUNTIME-evidence «reproducibility-diff» + limitation при drift.

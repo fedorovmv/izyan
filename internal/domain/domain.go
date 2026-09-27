@@ -855,8 +855,11 @@ type AnalysisCase struct {
 	// GovulncheckCoverage: "" unknown | "covered" the advisory exists in the
 	// govulncheck DB | "not_in_db" it was never evaluated — silence is not
 	// evidence of no path.
-	GovulncheckCoverage string         `json:"govulncheck_coverage,omitempty"`
-	Workflow            WorkflowStatus `json:"workflow"`
+	GovulncheckCoverage string `json:"govulncheck_coverage,omitempty"`
+	// PriorCase references the previous stored run of the same
+	// vulnerability/repository pair — the reproducibility-diff baseline.
+	PriorCase CaseID         `json:"prior_case,omitempty"`
+	Workflow  WorkflowStatus `json:"workflow"`
 }
 
 // AddHypothesis appends a hypothesis with an assigned H-id.

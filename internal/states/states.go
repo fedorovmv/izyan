@@ -20,6 +20,7 @@ import (
 	"example.com/vuln-analyzer/internal/repository"
 	"example.com/vuln-analyzer/internal/review"
 	"example.com/vuln-analyzer/internal/rootcause"
+	"example.com/vuln-analyzer/internal/toolaudit"
 	"example.com/vuln-analyzer/internal/tracker"
 	"example.com/vuln-analyzer/internal/vulnerability"
 	"example.com/vuln-analyzer/internal/workflow"
@@ -1146,11 +1147,38 @@ func (h EvaluateVerdict) Run(_ context.Context, c *domain.AnalysisCase) (workflo
 type BuildReport struct {
 	Dir     string
 	Tracker tracker.Sink
+	// Prior is the previous stored run of the same vuln/repo pair; when
+	// set, its tool_executions hashes are diffed against this run's.
+	Prior *domain.AnalysisCase
+}
+
+// diffToolExecutions records the reproducibility-diff between a prior
+// run's audit trail and this one as RUNTIME evidence — drift means the
+// deterministic layer produced different outputs across runs.
+func diffToolExecutions(c, prior *domain.AnalysisCase) {
+	drift := toolaudit.DiffExecutions(prior.EvidenceGraph.ToolExecutions, c.EvidenceGraph.ToolExecutions)
+	content := fmt.Sprintf("baseline=%s invocations: prior=%d current=%d drift=%d",
+		prior.ID, len(prior.EvidenceGraph.ToolExecutions), len(c.EvidenceGraph.ToolExecutions), len(drift))
+	if len(drift) > 0 {
+		content += "\n" + strings.Join(drift, "\n")
+	}
+	c.EvidenceGraph.AddRuntimeEvidence(domain.Evidence{
+		Quality: domain.QualityDeterministic,
+		Source:  "reproducibility-diff",
+		Content: content,
+	})
+	if len(drift) > 0 {
+		c.EvidenceGraph.AddLimitation(fmt.Sprintf(
+			"reproducibility: %d tool invocation(s) drifted vs prior run %s", len(drift), prior.ID))
+	}
 }
 
 func (BuildReport) State() domain.WorkflowState { return domain.StateBuildReport }
 
 func (h BuildReport) Run(ctx context.Context, c *domain.AnalysisCase) (workflow.Transition, error) {
+	if h.Prior != nil {
+		diffToolExecutions(c, h.Prior)
+	}
 	if err := report.Write(h.Dir, c); err != nil {
 		return workflow.Transition{}, fmt.Errorf("build report: %w", err)
 	}

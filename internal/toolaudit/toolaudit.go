@@ -14,7 +14,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os/exec"
+	"sort"
+	"strings"
 	"time"
 
 	"example.com/vuln-analyzer/internal/domain"
@@ -92,4 +95,49 @@ func hashOf(b []byte) string {
 	}
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
+}
+
+// DiffExecutions compares two tool-execution trails — the prior run's and the
+// current one — and reports drift lines: outputs whose sha256 changed for the
+// same tool+dir+args, and invocations present on only one side. Deterministic
+// analyzers should produce identical hashes for an unchanged snapshot; drift
+// is informational, never a verdict input.
+func DiffExecutions(prev, cur []domain.ToolExecution) (drift []string) {
+	key := func(t domain.ToolExecution) string {
+		return t.Tool + "|" + t.Dir + "|" + strings.Join(t.Args, " ")
+	}
+	prevs := map[string]domain.ToolExecution{}
+	for _, t := range prev {
+		prevs[key(t)] = t
+	}
+	curs := map[string]bool{}
+	for _, t := range cur {
+		k := key(t)
+		curs[k] = true
+		p, ok := prevs[k]
+		if !ok {
+			drift = append(drift, fmt.Sprintf("new invocation: %s", k))
+			continue
+		}
+		var what []string
+		if p.StdoutSHA256 != t.StdoutSHA256 {
+			what = append(what, "stdout")
+		}
+		if p.StderrSHA256 != t.StderrSHA256 {
+			what = append(what, "stderr")
+		}
+		if p.ExitCode != t.ExitCode {
+			what = append(what, fmt.Sprintf("exit %d→%d", p.ExitCode, t.ExitCode))
+		}
+		if len(what) > 0 {
+			drift = append(drift, fmt.Sprintf("%s: %s changed", k, strings.Join(what, ", ")))
+		}
+	}
+	for k := range prevs {
+		if !curs[k] {
+			drift = append(drift, fmt.Sprintf("missing invocation: %s", k))
+		}
+	}
+	sort.Strings(drift)
+	return drift
 }

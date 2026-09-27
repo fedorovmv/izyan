@@ -159,6 +159,7 @@ func analyzeCase(ctx context.Context, o analyzeOpts) (*domain.AnalysisCase, erro
 	}
 
 	store := filesystem.New(o.caseDir)
+	prior := store.PriorCase(ctx, o.vulnID, absRepo, "")
 	caseID := domain.CaseID(fmt.Sprintf("%s-%d", sanitizeID(o.vulnID), time.Now().Unix()))
 	c := &domain.AnalysisCase{
 		ID: caseID,
@@ -176,6 +177,9 @@ func analyzeCase(ctx context.Context, o analyzeOpts) (*domain.AnalysisCase, erro
 		},
 	}
 	c.EvidenceGraph.Version = "1"
+	if prior != nil {
+		c.PriorCase = prior.ID
+	}
 	if err := store.Create(ctx, c); err != nil {
 		return nil, err
 	}
@@ -295,7 +299,8 @@ func analyzeCase(ctx context.Context, o analyzeOpts) (*domain.AnalysisCase, erro
 		states.RepairAnalysis{},
 		states.EvaluateVerdict{Evaluator: evaluator.VerdictEvaluator{}},
 		states.BuildReport{Dir: filepath.Join(o.caseDir, string(caseID)),
-			Tracker: tracker.FileSink{Dir: filepath.Join(o.caseDir, string(caseID))}},
+			Tracker: tracker.FileSink{Dir: filepath.Join(o.caseDir, string(caseID))},
+			Prior:   prior},
 	)
 
 	if err := engine.Run(ctx, c); err != nil {
