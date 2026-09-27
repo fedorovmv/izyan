@@ -44,6 +44,8 @@ func main() {
 		err = runScan(os.Args[2:])
 	case "eval":
 		err = runEval(os.Args[2:])
+	case "remediate":
+		err = runRemediate(os.Args[2:])
 	default:
 		usage()
 	}
@@ -58,9 +60,11 @@ func usage() {
   vuln-analyzer analyze --repo <path> --vuln <GO-/CVE-/GHSA-id> [options]
   vuln-analyzer scan    --repo <path> [options]   # all advisories for all modules
   vuln-analyzer eval    --corpus <path> --repo <path> [options]  # corpus regression run
+  vuln-analyzer remediate --repo <path> --vuln <id> [--apply] [--run-tests]  # plan/apply fix + re-analyze
 
 options:
   --vuln-file <path>     load advisory from local OSV JSON instead of api.osv.dev
+  --ticket <path>        generic tracker ticket JSON (see internal/tracker/intake.go)
   --osv-url <url>        override OSV API base URL
   --case-dir <dir>       analysis state directory (default .vuln-analyzer)
   --goos/--goarch        target platform (default: host)
@@ -127,12 +131,18 @@ func runAnalyze(args []string) error {
 	fs.StringVar(&o.vulnID, "vuln", "", "vulnerability id (GO-/CVE-/GHSA-)")
 	fs.StringVar(&o.vulnFile, "vuln-file", "", "local OSV JSON file")
 	fs.StringVar(&o.exploitModel, "exploit-model", "", "manual exploit model JSON")
+	ticketPath := fs.String("ticket", "", "generic tracker ticket JSON (vulnerability id, repo, embedded/synthesized advisory)")
 	var rootCauseFlags stringList
 	fs.Var(&rootCauseFlags, "root-cause", "manual root cause as pkg/path.Symbol (repeatable)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	o.rootCauseArgs = rootCauseFlags
+	if *ticketPath != "" {
+		if err := applyTicket(&o, *ticketPath); err != nil {
+			return err
+		}
+	}
 	if o.repo == "" || o.vulnID == "" {
 		usage()
 	}
@@ -141,6 +151,34 @@ func runAnalyze(args []string) error {
 		return err
 	}
 	printCase(c, o.caseDir)
+	return nil
+}
+
+// applyTicket folds a generic tracker ticket into analyze options:
+// explicit CLI flags win over ticket fields (ticket is the default, not
+// an override). Advisory material (embedded osv doc, or module +
+// fixed_versions) is materialized to a file and fed via --vuln-file.
+func applyTicket(o *analyzeOpts, path string) error {
+	t, err := tracker.LoadTicket(path)
+	if err != nil {
+		return err
+	}
+	if o.vulnID == "" {
+		o.vulnID = t.Vulnerability
+	}
+	if o.repo == "" && t.Repo != "" {
+		o.repo = t.Repo
+	}
+	if o.vulnFile == "" && (len(t.OSV) > 0 || t.Module != "") {
+		dir := filepath.Join(o.caseDir, "intake")
+		f, err := t.AdvisoryFile(dir, o.vulnID)
+		if err != nil {
+			return fmt.Errorf("ticket advisory: %w", err)
+		}
+		if f != "" {
+			o.vulnFile = f
+		}
+	}
 	return nil
 }
 

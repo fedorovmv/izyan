@@ -15,7 +15,8 @@ import (
 	"example.com/vuln-analyzer/internal/domain"
 )
 
-// Write stores report.json, report.md and openvex.json inside dir.
+// Write stores report.json, report.md, openvex.json and cyclonedx.json
+// inside dir.
 func Write(dir string, c *domain.AnalysisCase) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
@@ -32,6 +33,13 @@ func Write(dir string, c *domain.AnalysisCase) error {
 		return fmt.Errorf("openvex: %w", err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "openvex.json"), vb, 0o644); err != nil {
+		return err
+	}
+	cb, err := CycloneDX(c)
+	if err != nil {
+		return fmt.Errorf("cyclonedx: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "cyclonedx.json"), cb, 0o644); err != nil {
 		return err
 	}
 	return os.WriteFile(filepath.Join(dir, "report.md"), []byte(Markdown(c)), 0o644)
@@ -250,19 +258,19 @@ func rationale(c *domain.AnalysisCase) string {
 	}
 }
 
-// remediation renders a deterministic fix recommendation: the smallest
-// fixed version above the resolved one, plus the go command to apply it.
-// Empty when the component is not affected or no fix is published.
-func remediation(c *domain.AnalysisCase) string {
+// FixTarget picks the smallest published fixed version above the
+// resolved one. ok=false when the component is not affected or the
+// module cannot be named; version="" with ok=true means no fix exists.
+func FixTarget(c *domain.AnalysisCase) (module, version string, ok bool) {
 	if c.Affected == nil || c.Affected.VersionAffected != domain.ClaimTrue {
-		return ""
+		return "", "", false
 	}
 	mod := c.Vulnerability.Module
 	if mod == "" && len(c.Vulnerability.AffectedPackages) > 0 {
 		mod = c.Vulnerability.AffectedPackages[0].Path
 	}
 	if mod == "" {
-		return ""
+		return "", "", false
 	}
 	resolved := c.Affected.ResolvedVersion
 	var best string
@@ -278,6 +286,18 @@ func remediation(c *domain.AnalysisCase) string {
 			best = fv
 		}
 	}
+	return mod, best, true
+}
+
+// remediation renders a deterministic fix recommendation: the smallest
+// fixed version above the resolved one, plus the go command to apply it.
+// Empty when the component is not affected or no fix is published.
+func remediation(c *domain.AnalysisCase) string {
+	mod, best, ok := FixTarget(c)
+	if !ok {
+		return ""
+	}
+	resolved := c.Affected.ResolvedVersion
 	if best == "" {
 		return fmt.Sprintf("No fixed version published for `%s` (current: `%s`). "+
 			"Consider pinning an unaffected release or vendoring a patch.", mod, resolved)
