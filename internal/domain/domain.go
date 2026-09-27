@@ -530,6 +530,30 @@ func (g *EvidenceGraph) AddEvidence(e Evidence) EvidenceID {
 	return e.ID
 }
 
+// EvidenceByID returns the evidence with the given id, or nil.
+func (g *EvidenceGraph) EvidenceByID(id EvidenceID) *Evidence {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for i := range g.Evidence {
+		if g.Evidence[i].ID == id {
+			return &g.Evidence[i]
+		}
+	}
+	return nil
+}
+
+// AddRuntimeEvidence records e as RUNTIME evidence and links its id into
+// Runtime — the graph slice enumerating facts about the analyzed artifact's
+// build/runtime environment (binary build info, target platform).
+func (g *EvidenceGraph) AddRuntimeEvidence(e Evidence) EvidenceID {
+	e.Kind = EvidenceRuntime
+	id := g.AddEvidence(e)
+	g.mu.Lock()
+	g.Runtime = append(g.Runtime, id)
+	g.mu.Unlock()
+	return id
+}
+
 // AddToolExecution appends an audit record, assigning a TX-id.
 func (g *EvidenceGraph) AddToolExecution(t ToolExecution) {
 	g.mu.Lock()

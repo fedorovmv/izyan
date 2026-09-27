@@ -53,7 +53,7 @@ model недетерминирован, корпус не мог служить 
 - `Evidence.ToolVersion` заполнен только для govulncheck; `go list`
   evidence версию берёт из `ToolExecution.Version` по args, не
   денормализовано.
-- `EvidenceGraph.Runtime []EvidenceID` по-прежнему не заполняется.
+- `EvidenceGraph.Runtime []EvidenceID` — заполнен позже: snapshot-facts (GOOS/GOARCH/toolchain) и полный `go version -m` build info при `--binary` записываются как RUNTIME-evidence в `SnapshotProduct`.
 - Env-ключи прогонов не записываются (могут содержать секреты из
   наследованного окружения) — записываются только args/tool/version.
 - Повторный прогон кейса не сверяет хэши с прошлым (reproducibility

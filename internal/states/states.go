@@ -50,6 +50,26 @@ func (h SnapshotProduct) Run(ctx context.Context, c *domain.AnalysisCase) (workf
 		}, nil
 	}
 	c.Product = snap
+	c.EvidenceGraph.AddRuntimeEvidence(domain.Evidence{
+		Quality: domain.QualityAuthoritative,
+		Source:  "product snapshot",
+		Content: fmt.Sprintf("go_version=%q goos=%s goarch=%s release_toolchain=%q go_mod=%q build_tags=%v",
+			snap.GoVersion, snap.GOOS, snap.GOARCH, snap.ReleaseGoVersion, snap.GoModDirective, snap.BuildTags),
+	})
+	if snap.BinaryPath != "" {
+		if info, err := repository.BinaryBuildInfo(ctx, snap.BinaryPath); err == nil {
+			c.EvidenceGraph.AddRuntimeEvidence(domain.Evidence{
+				Quality: domain.QualityAuthoritative,
+				Source:  "binary build info",
+				File:    snap.BinaryPath,
+				Tool:    "go",
+				Command: "go version -m " + snap.BinaryPath,
+				Content: info,
+			})
+		} else {
+			c.EvidenceGraph.AddLimitation("binary build info unavailable: " + err.Error())
+		}
+	}
 	return workflow.Transition{Next: domain.StateResolveVulnerability, Reason: "product snapshot captured"}, nil
 }
 

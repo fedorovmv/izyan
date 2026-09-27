@@ -36,7 +36,7 @@
 | Negative check | §19: callers, **interface implementations**, runtime registration, **build-tagged code**, configuration overrides, alternate entrypoints | func_value/linkname/reflect/unsafe/plugin по scoped rules | interface-impl и build-tag покрыты (`GatedRefs`/`InterfaceDispatchSites`); `configuration overrides` как NV-концепт нет — `config_flag`/`config_key` читают knob'ы условий, но не конфигурацию, меняющую reachability |
 | Typed tools | §17: 17 инструментов | все 17 реализованы в `llm.Tools` (`19-typed-tools-plan.md`): source-инструменты + get_vulnerability/get_advisory/get_fix_references/get_fix_diff/get_module_version/get_dependency_graph/run_govulncheck/read_source/search_source/run_build/run_tests; exec-инструменты за `--allow-exec` | LLM-agent сам не выбирает инструменты (planner детерминистичен); read_source/search_source ограничены product-деревом — dep-файлы в module cache не видны |
 | Hypothesis loop | §18 + agent §6,§16: OPEN→CONFIRMED/REJECTED, gap-driven planner | `GAP_ANALYSIS` state: UNKNOWN mandatory → Hypothesis → tool action (deep-trace/ScanDynamic/dispatch-scan) → re-evaluate → fixpoint≤3/MaxToolCalls; гипотезы персистятся (`18`) | LLM-planner в `GAP_ANALYSIS` реализован (`llm.Planner`, один bounded шаг: гипотеза+tool call → evidence → детерминистичная переоценка); многошаговое планирование и retry-логика — минимальные |
-| Persistence | §22: hypotheses, tool_executions с version/input/cmd/exit/stdout/stderr/hash | кейс + raw govulncheck в evidence.Content + `EvidenceGraph.ToolExecutions` (tool, version, args, exit, sha256 обоих потоков, ms) через ctx-рекордер; `Evidence.ToolVersion` заполнен для govulncheck | `EvidenceGraph.Runtime` не заполняется; env прогонов не пишется (секреты); reproducibility-diff хэшей между прогонами не делается |
+| Persistence | §22: hypotheses, tool_executions с version/input/cmd/exit/stdout/stderr/hash | кейс + raw govulncheck в evidence.Content + `EvidenceGraph.ToolExecutions` (tool, version, args, exit, sha256 обоих потоков, ms) через ctx-рекордер; `Evidence.ToolVersion` заполнен для govulncheck | `EvidenceGraph.Runtime` заполняется (snapshot-facts + `go version -m` build info при `--binary`); env прогонов не пишется (секреты); reproducibility-diff хэшей между прогонами не делается |
 | Reviewer | §21: root cause, missed conditions, patch misinterpretation, scope mismatch, contradictions | Structural проверяет: TRUE без evidence, FALSE без NV, dangling refs, model без root cause | Не проверяются: пропущенные mandatory conditions (если LLM выкинул условие — не поймаем), «patch misinterpretation», «scope mismatch» |
 
 ## 3. Отсутствует концептуально — сканер обязан, но не делает
@@ -190,6 +190,6 @@ Issues/Jira) — deferred by design.
    advisory × продукт-референс, 11/11, false-safe=0); далее — независимая
    ground-truth разметка и метрики root-cause/FALSE precision.
 9. ~~tool_executions/ToolVersion~~ — `done` (первый слой, §таблица
-   Persistence; `17-tool-audit-plan.md`). Остаток: `Runtime` evidence,
-   reproducibility-diff.
+   Persistence; `17-tool-audit-plan.md`). `Runtime` evidence
+   заполнен; остаток — reproducibility-diff.
 10. ~~VEX-экспорт~~ — `done` (OpenVEX, §3.8); CycloneDX — при нужде.

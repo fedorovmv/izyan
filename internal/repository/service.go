@@ -76,10 +76,17 @@ func BinaryGoVersion(ctx context.Context, bin string) (string, error) {
 	return binaryGoVersion(ctx, bin)
 }
 
+// BinaryBuildInfo returns the full `go version -m` output for a release
+// binary: embedded toolchain, module versions and build settings — the
+// artifact's own runtime facts, authoritative over go.mod claims.
+func BinaryBuildInfo(ctx context.Context, bin string) (string, error) {
+	return command(ctx, filepath.Dir(bin), "go", "version", "-m", bin)
+}
+
 // binaryGoVersion extracts the toolchain embedded in a Go binary via
 // `go version -m`: the first line ends with the toolchain version.
 func binaryGoVersion(ctx context.Context, bin string) (string, error) {
-	out, err := command(ctx, filepath.Dir(bin), "go", "version", "-m", bin)
+	out, err := BinaryBuildInfo(ctx, bin)
 	if err != nil {
 		return "", err
 	}

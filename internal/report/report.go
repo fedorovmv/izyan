@@ -94,6 +94,14 @@ func Markdown(c *domain.AnalysisCase) string {
 		}
 		b.WriteString("\n")
 	}
+	if len(c.EvidenceGraph.Runtime) > 0 {
+		b.WriteString("## Runtime facts\n\n")
+		for _, id := range c.EvidenceGraph.Runtime {
+			if e := c.EvidenceGraph.EvidenceByID(id); e != nil {
+				fmt.Fprintf(&b, "- %s: %s\n\n", e.Source, e.Content)
+			}
+		}
+	}
 	if len(c.Claims) > 0 {
 		b.WriteString("## Claims\n\n| condition | result | evidence |\n|---|---|---|\n")
 		for _, cl := range c.Claims {
