@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"example.com/vuln-analyzer/internal/domain"
+	"example.com/vuln-analyzer/internal/exploit"
 )
 
 // Reviewer audits a case against its proposed verdict.
@@ -124,6 +125,40 @@ func (Structural) Review(c *domain.AnalysisCase, proposed domain.VerdictResult) 
 			TargetType: "model", Severity: "high",
 			Problem: "exploit model exists without a resolved root cause",
 		})
+	}
+
+	// Class-pattern coverage: a class-matched model must instantiate every
+	// mandatory template of its pattern. A missing condition may be a
+	// legitimate bind skip (recorded in graph limitations) or a dropped
+	// check in a hand/LLM-built model — medium severity, never blocking.
+	if c.Exploit != nil && c.Exploit.Class != "" {
+		if pat := exploit.Lookup(exploit.Class(c.Exploit.Class)); pat != nil {
+			present := map[string]bool{}
+			for _, cond := range c.Exploit.MandatoryConditions {
+				present[string(cond.ID)] = true
+			}
+			for _, t := range pat.Mandatory {
+				if present[t.ID] {
+					continue
+				}
+				var skipped bool
+				for _, l := range c.EvidenceGraph.Limitations {
+					if strings.Contains(l, t.ID) || strings.Contains(l, t.Description) {
+						skipped = true
+						break
+					}
+				}
+				sev := "medium"
+				if !skipped {
+					sev = "high" // absent and not a recorded bind skip — likely dropped
+				}
+				findings = append(findings, domain.ReviewFinding{
+					TargetType: "model", TargetID: t.ID, Severity: sev,
+					Problem: fmt.Sprintf("class %s pattern expects mandatory %s; model lacks it (skipped=%v)",
+						c.Exploit.Class, t.ID, skipped),
+				})
+			}
+		}
 	}
 
 	if (proposed.Verdict == domain.VerdictExploitable || proposed.Verdict == domain.VerdictNoExploitPathFound) &&

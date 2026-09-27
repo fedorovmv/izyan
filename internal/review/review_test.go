@@ -1,6 +1,7 @@
 package review
 
 import (
+	"strings"
 	"testing"
 
 	"example.com/vuln-analyzer/internal/domain"
@@ -124,5 +125,49 @@ func TestReviewNotesToolLimitationsOnStrongVerdict(t *testing.T) {
 	}
 	if !seen {
 		t.Fatal("expected verdict-level finding about tool limitations")
+	}
+}
+
+func TestStructuralPatternCoverage(t *testing.T) {
+	mkCase := func(conds []domain.Condition, lims []string) *domain.AnalysisCase {
+		return &domain.AnalysisCase{
+			Exploit: &domain.ExploitModel{
+				Class:               "WIRE_PARSER",
+				RootCauses:          []domain.SymbolRef{{Package: "p", Symbol: "Parse"}},
+				MandatoryConditions: conds,
+			},
+			RootCause: &domain.RootCauseModel{},
+		}
+	}
+	// Dropped conditions (no skip limitation) -> high findings -> REVISE.
+	c := mkCase([]domain.Condition{
+		{ID: "C-REACH", Kind: domain.ConditionSymbolReachable, Mandatory: true},
+	}, nil)
+	r := Structural{}.Review(c, domain.VerdictResult{})
+	var highs int
+	for _, f := range r.Findings {
+		if f.TargetType == "model" && f.Severity == "high" &&
+			strings.Contains(f.Problem, "pattern expects") {
+			highs++
+		}
+	}
+	if highs != 2 {
+		t.Fatalf("expected 2 high findings for C-PEER-INPUT/C-CONSTRAINT, got %+v", r.Findings)
+	}
+	if r.Result != domain.ReviewRevise {
+		t.Fatalf("result=%s want REVISE", r.Result)
+	}
+
+	// A recorded bind skip downgrades the finding to medium.
+	c2 := mkCase([]domain.Condition{
+		{ID: "C-REACH", Kind: domain.ConditionSymbolReachable, Mandatory: true},
+		{ID: "C-PEER-INPUT", Kind: domain.ConditionAttackerControl, Mandatory: true},
+		{ID: "C-CONSTRAINT", Kind: domain.ConditionInputConstraint, Mandatory: true},
+	}, nil)
+	r2 := Structural{}.Review(c2, domain.VerdictResult{})
+	for _, f := range r2.Findings {
+		if strings.Contains(f.Problem, "pattern expects") {
+			t.Fatalf("complete model must not be flagged: %+v", f)
+		}
 	}
 }
