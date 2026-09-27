@@ -140,6 +140,151 @@ func (ix *Index) DialSites(ctx context.Context, module string) ([]domain.Exposur
 	return out, nil
 }
 
+// authNameRe matches middleware/interceptor names that plausibly carry
+// an authentication or authorization check. It is only applied in
+// middleware positions (Use/With args, grpc interceptor options, the
+// handler argument of an http listener) — never to arbitrary calls.
+var authNameRe = regexp.MustCompile(`(?i)(auth|jwt|oauth|token|authoriz|rbac|permission|session|login|verify)`)
+
+// InboundAuthFacts reports authentication-middleware wiring observed in
+// functions that also contain a listener primitive or grpc.NewServer —
+// "this server is wired behind an auth check". Facts are deployment
+// hints, not request-level proof: a middleware named authX in the same
+// function suggests inbound requests are filtered, but which routes are
+// covered is beyond this static pass.
+func (ix *Index) InboundAuthFacts(ctx context.Context) ([]domain.ExposureFact, error) {
+	ix.mu.Lock()
+	defer ix.mu.Unlock()
+	if err := ix.load(ctx); err != nil {
+		return nil, err
+	}
+	var out []domain.ExposureFact
+	for _, pkg := range ix.pkgs {
+		info := pkg.TypesInfo
+		if info == nil {
+			continue
+		}
+		for _, f := range pkg.Syntax {
+			if ix.isTestFile(f) {
+				continue
+			}
+			for _, decl := range f.Decls {
+				fn, ok := decl.(*ast.FuncDecl)
+				if !ok || fn.Body == nil {
+					continue
+				}
+				if !fnWiresServer(info, fn.Body) {
+					continue
+				}
+				ast.Inspect(fn.Body, func(n ast.Node) bool {
+					call, ok := n.(*ast.CallExpr)
+					if !ok {
+						return true
+					}
+					name, ok := middlewareAuthName(info, call)
+					if !ok {
+						return true
+					}
+					out = append(out, domain.ExposureFact{
+						Direction: "inbound",
+						Kind:      "auth-middleware",
+						Target:    name,
+						CallSite:  ix.callSiteAt(pkg, fn, call),
+					})
+					return true
+				})
+			}
+		}
+	}
+	return out, nil
+}
+
+// fnWiresServer reports whether the function body contains a listener
+// primitive or constructs a server (grpc.NewServer).
+func fnWiresServer(info *types.Info, body *ast.BlockStmt) bool {
+	found := false
+	ast.Inspect(body, func(n ast.Node) bool {
+		if found {
+			return false
+		}
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		for _, prim := range listenerPrimitives {
+			if callIsSymbol(info, call.Fun, prim) {
+				found = true
+				return false
+			}
+		}
+		if callIsSymbol(info, call.Fun, domain.SymbolRef{
+			Package: "google.golang.org/grpc", Symbol: "NewServer"}) {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
+}
+
+// middlewareAuthName recognizes auth-marked names in middleware
+// positions: r.Use(mw)/r.With(mw) args, grpc interceptor options and
+// wrapped handlers passed to listeners. Returns the matched name.
+func middlewareAuthName(info *types.Info, call *ast.CallExpr) (string, bool) {
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return "", false
+	}
+	method := sel.Sel.Name
+	// r.Use(authMw) / r.With(authMw): middleware arg name.
+	if method == "Use" || method == "With" {
+		for _, a := range call.Args {
+			if n := exprName(info, a); authNameRe.MatchString(n) {
+				return method + ":" + n, true
+			}
+		}
+		return "", false
+	}
+	// grpc.NewServer(grpc.UnaryInterceptor(authFn)) — the option callee
+	// is the interceptor constructor; its argument is the middleware.
+	if method == "UnaryInterceptor" || method == "StreamInterceptor" {
+		for _, a := range call.Args {
+			if n := exprName(info, a); authNameRe.MatchString(n) {
+				return "grpc." + method + ":" + n, true
+			}
+		}
+		return "", false
+	}
+	// http.ListenAndServe(addr, authWrap(h)) — wrapped handler arg.
+	for _, prim := range listenerPrimitives {
+		if !callIsSymbol(info, call.Fun, prim) {
+			continue
+		}
+		for _, a := range call.Args {
+			if wc, ok := a.(*ast.CallExpr); ok {
+				if n := exprName(info, wc.Fun); authNameRe.MatchString(n) {
+					return "handler-wrap:" + n, true
+				}
+			}
+		}
+	}
+	return "", false
+}
+
+// exprName yields the bare callable/identifier name for an expression —
+// identifier, selector, or the callee of a call expression.
+func exprName(info *types.Info, e ast.Expr) string {
+	switch x := e.(type) {
+	case *ast.Ident:
+		return x.Name
+	case *ast.SelectorExpr:
+		return x.Sel.Name
+	case *ast.CallExpr:
+		return exprName(info, x.Fun)
+	}
+	return ""
+}
+
 // resolveListenAddr fills fact.Address/AddressSource for a listener call.
 func (ix *Index) resolveListenAddr(info *types.Info, pkg *packages.Package, fn *ast.FuncDecl, call *ast.CallExpr, key string, fact *domain.ExposureFact) {
 	idx, known := listenAddrArg[key]

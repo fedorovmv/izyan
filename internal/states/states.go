@@ -411,6 +411,11 @@ func (h CollectEvidence) runExposure(ctx context.Context, c *domain.AnalysisCase
 			facts = append(facts, out...)
 		}
 	}
+	if auth, err := h.Source.InboundAuthFacts(ctx); err != nil {
+		c.EvidenceGraph.AddToolLimitation(fmt.Sprintf("inbound auth-middleware scan failed: %v", err))
+	} else {
+		facts = append(facts, auth...)
+	}
 
 	// Resolve env:/var:/field:-sourced addresses through the repo's config
 	// files when a matching key exists.
@@ -454,7 +459,7 @@ func (h CollectEvidence) runExposure(ctx context.Context, c *domain.AnalysisCase
 		Kind:    domain.EvidenceConfiguration,
 		Quality: domain.QualityDeterministic,
 		Source:  "source index + repo config scan: exposure",
-		Tool:    "goanalysis.Index.ListenSites+DialSites, exposure.ScanRepo",
+		Tool:    "goanalysis.Index.ListenSites+DialSites+InboundAuthFacts, exposure.ScanRepo",
 		Content: summary.String(),
 	})
 }
