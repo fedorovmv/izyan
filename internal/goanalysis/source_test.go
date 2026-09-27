@@ -157,10 +157,13 @@ func TestTraceFieldOrigin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// r.s <- setS param <- cfg.s <- config literal <- os.Getenv.
+	// r.s <- setS param <- cfg.s <- mapstructure tag (no literal writes).
 	if flow.Origin != domain.OriginConfiguration {
 		t.Fatalf("origin=%s want CONFIGURATION via field write sites (%s)",
 			flow.Origin, flow.Summary)
+	}
+	if !strings.Contains(flow.Summary, "mapstructure") {
+		t.Fatalf("tag-based provenance missing from summary: %s", flow.Summary)
 	}
 }
 

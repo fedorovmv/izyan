@@ -69,6 +69,29 @@ func (ArgumentOrigin) Evaluate(cond domain.Condition, c *domain.AnalysisCase) do
 		claim.Limitations = append(claim.Limitations,
 			"security-relevant transform(s) on traced path (not modeled as guards): "+strings.Join(sec, ", "))
 	}
+	// Constraint coverage: an INPUT_CONSTRAINT can be falsified by guards
+	// bounding the value at the sink or at its field write sites — but only
+	// when every traced argument's origin is resolved (an UNKNOWN origin
+	// could be unbounded input we failed to see). Stricter than
+	// hasGuardBefore: only real non-conditional guards count.
+	if cond.Kind == domain.ConditionInputConstraint && unknown == 0 && len(flows) > 0 {
+		covered := true
+		for _, f := range flows {
+			if !guardCovers(c.EvidenceGraph.Validations, f.Sink) {
+				covered = false
+				break
+			}
+		}
+		if covered {
+			claim.Result = domain.ClaimFalse
+			claim.Explanation = fmt.Sprintf(
+				"all %d traced sink site(s) are covered by bound guards; input cannot violate the constraint",
+				len(flows))
+			claim.Limitations = append(claim.Limitations,
+				"FALSE is a candidate: sanitize guards are heuristic (comparison+clean reassign shape)")
+			return claim
+		}
+	}
 	switch {
 	case external > 0:
 		claim.Result = domain.ClaimTrue
@@ -96,4 +119,22 @@ func flowsFor(c *domain.AnalysisCase, id domain.ConditionID) []domain.DataFlow {
 		}
 	}
 	return out
+}
+
+// guardCovers reports whether a genuine, unconditional guard covers the
+// sink — a caller-frame Covers record or a same-file guard before the
+// call. Origin records (Guard=false) and conditional guards do not count.
+func guardCovers(vals []domain.Validation, sink domain.CallSite) bool {
+	for _, v := range vals {
+		if !v.Guard || v.Conditional {
+			continue
+		}
+		if v.Covers != nil && v.Covers.File == sink.File && v.Covers.Line == sink.Line {
+			return true
+		}
+		if v.Covers == nil && v.File == sink.File && v.Line > 0 && sink.Line > 0 && v.Line < sink.Line {
+			return true
+		}
+	}
+	return false
 }

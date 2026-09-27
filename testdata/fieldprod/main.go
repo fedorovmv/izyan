@@ -13,7 +13,7 @@ import (
 // -> cfg.s field -> os.Getenv -> CONFIGURATION.
 
 type config struct {
-	s string
+	s string `mapstructure:"prefetch_input"`
 }
 
 type reader struct {
@@ -21,7 +21,10 @@ type reader struct {
 }
 
 func loadCfg() config {
-	return config{s: os.Getenv("PREFETCH_INPUT")}
+	// decode via tag machinery: no literal write sites exist.
+	var c config
+	_ = os.Getenv("unused")
+	return c
 }
 
 // setS clamps the stored value: every case sanitizes or rejects, so the

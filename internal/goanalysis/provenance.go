@@ -6,6 +6,7 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"reflect"
 	"strings"
 
 	"golang.org/x/tools/go/packages"
@@ -430,11 +431,64 @@ func (ix *Index) classifySelector(pkg *packages.Package, enc *ast.FuncDecl, e *a
 			if o, why, ok3 := ix.fieldOrigin(fv, depth+1); ok3 {
 				return o, fmt.Sprintf("field %s: %s", e.Sel.Name, why)
 			}
+			// No textual write sites: a mapstructure/env-tagged field is
+			// populated by config-decoding machinery (viper, envconfig) —
+			// reflection writes are invisible, but the tag is the honest
+			// provenance marker. json/yaml tags stay UNKNOWN — they mark
+			// API payload surfaces, not configuration.
+			if ix.fieldConfigTagged(fv) {
+				return domain.OriginConfiguration,
+					fmt.Sprintf("field %s carries a config-decode tag (mapstructure/env)", e.Sel.Name)
+			}
 		}
 	}
 	// transparent selector: classify base — keep the enclosing func so the
 	// base can resolve to a local variable (resp.Body -> resp assignment).
 	return ix.classify(pkg, enc, e.X, depth)
+}
+
+// configTagKeys are struct tags whose fields are populated by
+// configuration decoding, not request payloads.
+var configTagKeys = []string{"mapstructure", "env", "envconfig", "toml", "ini"}
+
+// fieldConfigTagged locates the field's declaration and reports whether
+// its struct tag marks a configuration-decoded value.
+func (ix *Index) fieldConfigTagged(field *types.Var) bool {
+	for _, pkg := range ix.pkgs {
+		info := pkg.TypesInfo
+		for _, f := range pkg.Syntax {
+			found := false
+			tagged := false
+			ast.Inspect(f, func(n ast.Node) bool {
+				if found {
+					return false
+				}
+				fd, ok := n.(*ast.Field)
+				if !ok {
+					return true
+				}
+				for _, name := range fd.Names {
+					if info.ObjectOf(name) == types.Object(field) {
+						found = true
+						if fd.Tag != nil {
+							tag := strings.Trim(fd.Tag.Value, "`")
+							for _, k := range configTagKeys {
+								if _, ok := reflect.StructTag(tag).Lookup(k); ok {
+									tagged = true
+								}
+							}
+						}
+						return false
+					}
+				}
+				return true
+			})
+			if found {
+				return tagged
+			}
+		}
+	}
+	return false
 }
 
 // fieldOrigin resolves the provenance of a struct field by scanning
@@ -1427,7 +1481,7 @@ func stmtValidation(ix *Index, pkg *packages.Package, stmt ast.Stmt, ident strin
 		// `if count > max { count = max }` — a clamp: the branch reassigns
 		// ident to a value not derived from ident whenever the violation
 		// check fires; the false path keeps the already-in-range value.
-		if p, ok := sanitizeIf(ix, s, ident); ok {
+		if p, ok := sanitizeIf(ix, pkg, s, ident); ok {
 			return &domain.Validation{Property: p, Guard: true}
 		}
 	case *ast.SwitchStmt:
@@ -1435,7 +1489,7 @@ func stmtValidation(ix *Index, pkg *packages.Package, stmt ast.Stmt, ident strin
 		// every listed case sanitizes or terminates ident, and inputs
 		// matching no case pass through already-in-range. Only marked a
 		// guard when every clause conforms.
-		if p, ok := sanitizeSwitch(ix, s, ident); ok {
+		if p, ok := sanitizeSwitch(ix, pkg, s, ident); ok {
 			return &domain.Validation{Property: p, Guard: true}
 		}
 	case *ast.AssignStmt:
@@ -1454,21 +1508,21 @@ func stmtValidation(ix *Index, pkg *packages.Package, stmt ast.Stmt, ident strin
 // sanitizeIf reports whether an if-statement bounds ident: the condition
 // compares ident, the body reassigns it with a clean RHS or terminates,
 // and any else-branch does the same or is empty.
-func sanitizeIf(ix *Index, s *ast.IfStmt, ident string) (string, bool) {
+func sanitizeIf(ix *Index, pkg *packages.Package, s *ast.IfStmt, ident string) (string, bool) {
 	if ident == "" || !exprMentions(s.Cond, ident) || !isComparison(s.Cond) {
 		return "", false
 	}
-	if !branchBounds(s.Body, ident) {
+	if !branchBounds(pkg.TypesInfo, s.Body, ident) {
 		return "", false
 	}
 	switch e := s.Else.(type) {
 	case nil:
 	case *ast.BlockStmt:
-		if len(e.List) > 0 && !branchBounds(e, ident) {
+		if len(e.List) > 0 && !branchBounds(pkg.TypesInfo, e, ident) {
 			return "", false
 		}
 	case *ast.IfStmt:
-		if _, ok := sanitizeIf(ix, e, ident); !ok {
+		if _, ok := sanitizeIf(ix, pkg, e, ident); !ok {
 			return "", false
 		}
 	default:
@@ -1482,7 +1536,7 @@ func sanitizeIf(ix *Index, s *ast.IfStmt, ident string) (string, bool) {
 // case condition references ident and every clause body reassigns it
 // (clean RHS) or terminates. A default that does neither means some
 // input passes through untouched — not a guard.
-func sanitizeSwitch(ix *Index, s *ast.SwitchStmt, ident string) (string, bool) {
+func sanitizeSwitch(ix *Index, pkg *packages.Package, s *ast.SwitchStmt, ident string) (string, bool) {
 	if ident == "" || s.Tag != nil || s.Body == nil || len(s.Body.List) == 0 {
 		return "", false
 	}
@@ -1505,7 +1559,7 @@ func sanitizeSwitch(ix *Index, s *ast.SwitchStmt, ident string) (string, bool) {
 			}
 		}
 		// default and case clauses alike must sanitize or terminate.
-		if !branchBounds(&ast.BlockStmt{List: cc.Body}, ident) {
+		if !branchBounds(pkg.TypesInfo, &ast.BlockStmt{List: cc.Body}, ident) {
 			return "", false
 		}
 	}
@@ -1530,8 +1584,9 @@ func isComparison(e ast.Expr) bool {
 }
 
 // branchBounds reports whether a block bounds ident: it terminates, or it
-// reassigns ident with an RHS that does not read ident back (a clamp).
-func branchBounds(b *ast.BlockStmt, ident string) bool {
+// reassigns ident to a provably bounded value — a literal or a named
+// constant. `x = compute()` reassigns ident but bounds nothing.
+func branchBounds(info *types.Info, b *ast.BlockStmt, ident string) bool {
 	if b == nil {
 		return false
 	}
@@ -1549,13 +1604,31 @@ func branchBounds(b *ast.BlockStmt, ident string) bool {
 			if !ok || id.Name != ident || i >= len(as.Rhs) {
 				continue
 			}
-			if exprMentions(as.Rhs[i], ident) {
-				return false // reassigned from itself — not a bound
+			if exprMentions(as.Rhs[i], ident) || !isBoundedRHS(info, as.Rhs[i]) {
+				return false // reassigned from itself or an unbounded value
 			}
 			assigns = true
 		}
 	}
 	return assigns
+}
+
+// isBoundedRHS reports whether e is provably bounded: a literal or a
+// named constant (including qualified ones like pkg.MaxInt).
+func isBoundedRHS(info *types.Info, e ast.Expr) bool {
+	switch v := e.(type) {
+	case *ast.BasicLit:
+		return true
+	case *ast.Ident:
+		_, ok := info.ObjectOf(v).(*types.Const)
+		return ok
+	case *ast.SelectorExpr:
+		_, ok := info.ObjectOf(v.Sel).(*types.Const)
+		return ok
+	case *ast.UnaryExpr:
+		return isBoundedRHS(info, v.X) // -1, ^0, etc.
+	}
+	return false
 }
 
 func exprMentions(e ast.Expr, ident string) bool {

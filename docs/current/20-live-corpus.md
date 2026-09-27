@@ -103,9 +103,18 @@ flooding). Два отдельных вывода:
 декод фреймворка: цепь >8 hops и терминально упирается в reflect-популяцию,
 которую статически не резолвить — честный terminal UNKNOWN.
 
-После фиксов: arg0 `Qos` теперь трейсится до write-site поля
-(`r.prefetchCount = count` в setPrefetchCount), sanitize-switch кламп
-(`count<0→0`, `count>1024→1024`) записан Guard=true + Covers — значение,
-достигающее sink'а, ограничено на всех write-site'ах. Нерезолвленным
-остался только *origin* (config plumbing через reflect) — поэтому
-INCONCLUSIVE сохраняется по peer-input, но bound-evidence зафиксирован.
+После фиксов: arg0 `Qos` резолвится полностью — `r.prefetchCount` ←
+`count` (param setPrefetchCount) ← `cfg.PrefetchCount` ←
+`mapstructure:"prefetch_count"`-тег → **CONFIGURATION** (hypothesis
+CONFIRMED). Sanitize-switch кламп (`count<0→0`, `count>1024→1024`)
+записан Guard=true + Covers — значение ограничено на всех write-site'ах.
+arg2 (`global=false`) — CONSTANT (builtin-иденты больше не UNKNOWN).
+
+Что держит INCONCLUSIVE: arg1 `r.prefetchSize` — write-site `int(fs.Bytes())`
+через local-переменную, цепь глубже 8 hops упирается в framework-
+конструкторы + reflect-популяцию (terminal UNKNOWN). Плюс config-origin →
+deployDependent: CONFIGURATION-ввод может быть attacker-influenced
+(хостильный конфиг), поэтому peer-input FALSE не утверждается — честный
+INCONCLUSIVE, не баг. INPUT_CONSTRAINT теперь умеет FALSE по полному
+bound-покрытию (Covers), но требует все аргументы resolved — arg1
+честно блокирует.
