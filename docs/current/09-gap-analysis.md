@@ -186,7 +186,9 @@ Issues/Jira) — deferred by design.
    неразрешённый claim, `llm.Planner`) подключён; REVIEW→REPAIR петля
    работает (demotion-only, bounded MaxReviewIterations).
 8. ~~Eval harness + false-safe metric~~ — `done` (первый слой, §3.7);
-   далее — живой корпус и ground-truth метрики.
+   живой корпус реализован (`20-live-corpus.md`: 11 amqp091-go
+   advisory × продукт-референс, 11/11, false-safe=0); далее — независимая
+   ground-truth разметка и метрики root-cause/FALSE precision.
 9. ~~tool_executions/ToolVersion~~ — `done` (первый слой, §таблица
    Persistence; `17-tool-audit-plan.md`). Остаток: `Runtime` evidence,
    reproducibility-diff.

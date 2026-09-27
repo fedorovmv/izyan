@@ -22,6 +22,7 @@
 | `current/17-tool-audit-plan.md` | done | `tool_executions` audit: ctx-рекордер, ToolVersion, отчёт |
 | `current/18-gap-loop-plan.md` | done | Gap-analysis: GAP_ANALYSIS state, гипотезы, bounded loop |
 | `current/19-typed-tools-plan.md` | done | Все 17 typed tools §17; exec-gate `--allow-exec` |
+| `current/20-live-corpus.md` | done | Live-корпус: 11 amqp091-go advisory на продукт-референс |
 | `history/01-initial-architecture.md` | исторический | Исходная архитектура до разбора OSS |
 | `history/README.md` | исторический | Что изменилось и почему |
 

@@ -1,0 +1,103 @@
+{
+ "cases": [
+  {
+   "id": "ghsa-27gv-rfvv-22mv",
+   "vuln": "GHSA-27gv-rfvv-22mv",
+   "vuln_file": "advisories/live/GHSA-27gv-rfvv-22mv.json",
+   "repo": "$VA_PRODUCT_REPO",
+   "expect": [
+    "INCONCLUSIVE"
+   ]
+  },
+  {
+   "id": "ghsa-33mj-cw25-m34h",
+   "vuln": "GHSA-33mj-cw25-m34h",
+   "vuln_file": "advisories/live/GHSA-33mj-cw25-m34h.json",
+   "repo": "$VA_PRODUCT_REPO",
+   "expect": [
+    "INCONCLUSIVE"
+   ]
+  },
+  {
+   "id": "ghsa-465g-fh3v-9jw4",
+   "vuln": "GHSA-465g-fh3v-9jw4",
+   "vuln_file": "advisories/live/GHSA-465g-fh3v-9jw4.json",
+   "repo": "$VA_PRODUCT_REPO",
+   "expect": [
+    "INCONCLUSIVE"
+   ]
+  },
+  {
+   "id": "ghsa-4v58-74mf-rjx3",
+   "vuln": "GHSA-4v58-74mf-rjx3",
+   "vuln_file": "advisories/live/GHSA-4v58-74mf-rjx3.json",
+   "repo": "$VA_PRODUCT_REPO",
+   "expect": [
+    "EXPLOITABLE"
+   ]
+  },
+  {
+   "id": "ghsa-6c5v-hqjr-5xxp",
+   "vuln": "GHSA-6c5v-hqjr-5xxp",
+   "vuln_file": "advisories/live/GHSA-6c5v-hqjr-5xxp.json",
+   "repo": "$VA_PRODUCT_REPO",
+   "expect": [
+    "NO_EXPLOIT_PATH_FOUND"
+   ]
+  },
+  {
+   "id": "ghsa-c5pq-fr2g-9jpf",
+   "vuln": "GHSA-c5pq-fr2g-9jpf",
+   "vuln_file": "advisories/live/GHSA-c5pq-fr2g-9jpf.json",
+   "repo": "$VA_PRODUCT_REPO",
+   "expect": [
+    "EXPLOITABLE"
+   ]
+  },
+  {
+   "id": "ghsa-j497-x9hr-x34x",
+   "vuln": "GHSA-j497-x9hr-x34x",
+   "vuln_file": "advisories/live/GHSA-j497-x9hr-x34x.json",
+   "repo": "$VA_PRODUCT_REPO",
+   "expect": [
+    "EXPLOITABLE"
+   ]
+  },
+  {
+   "id": "ghsa-r9c8-gcjp-xfwh",
+   "vuln": "GHSA-r9c8-gcjp-xfwh",
+   "vuln_file": "advisories/live/GHSA-r9c8-gcjp-xfwh.json",
+   "repo": "$VA_PRODUCT_REPO",
+   "expect": [
+    "EXPLOITABLE"
+   ]
+  },
+  {
+   "id": "ghsa-rm6m-hrcw-jw33",
+   "vuln": "GHSA-rm6m-hrcw-jw33",
+   "vuln_file": "advisories/live/GHSA-rm6m-hrcw-jw33.json",
+   "repo": "$VA_PRODUCT_REPO",
+   "expect": [
+    "INCONCLUSIVE"
+   ]
+  },
+  {
+   "id": "ghsa-xwwf-m8fg-p9q2",
+   "vuln": "GHSA-xwwf-m8fg-p9q2",
+   "vuln_file": "advisories/live/GHSA-xwwf-m8fg-p9q2.json",
+   "repo": "$VA_PRODUCT_REPO",
+   "expect": [
+    "EXPLOITABLE"
+   ]
+  },
+  {
+   "id": "go-2026-6372",
+   "vuln": "GO-2026-6372",
+   "vuln_file": "advisories/live/GO-2026-6372.json",
+   "repo": "$VA_PRODUCT_REPO",
+   "expect": [
+    "NO_EXPLOIT_PATH_FOUND"
+   ]
+  }
+ ]
+}
