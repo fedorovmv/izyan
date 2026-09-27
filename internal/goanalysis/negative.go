@@ -144,7 +144,7 @@ func (v Verifier) VerifyFalse(ctx context.Context, c *domain.AnalysisCase, claim
 		case domain.ConditionAttackerControl, domain.ConditionInputConstraint:
 			out = v.verifyInputFalse(ctx, c, claim, nv, subjects, cond.ArgIndex)
 		case domain.ConditionValidation:
-			out = v.verifyGuardFalse(c, claim, nv)
+			out = v.verifyGuardFalse(ctx, c, claim, nv)
 		case domain.ConditionPlatform, domain.ConditionRuntime:
 			out = verifySnapshotFalse(claim, nv)
 		default:
@@ -364,7 +364,7 @@ func (v Verifier) verifyInputFalse(ctx context.Context, c *domain.AnalysisCase, 
 // coverage are INSUFFICIENT_SCOPE, not contradictions. extendNegativeScope
 // still applies: a dynamic or build-gated call into the sink bypasses
 // caller guards entirely.
-func (v Verifier) verifyGuardFalse(c *domain.AnalysisCase, claim domain.Claim,
+func (v Verifier) verifyGuardFalse(ctx context.Context, c *domain.AnalysisCase, claim domain.Claim,
 	nv *domain.NegativeVerification) domain.Claim {
 
 	sinks := map[string]domain.CallSite{}
@@ -377,21 +377,67 @@ func (v Verifier) verifyGuardFalse(c *domain.AnalysisCase, claim domain.Claim,
 		return setNeg(claim, nv)
 	}
 	var uncovered []string
+	var gated []string
+	var conditional []string
 	for key, s := range sinks {
 		guarded := false
+		var condSites []domain.CallSite
 		for _, val := range c.EvidenceGraph.Validations {
 			if val.Covers != nil && val.Covers.File == s.File && val.Covers.Line == s.Line {
 				guarded = true
-				break
+				continue
 			}
-			if val.File == s.File && val.Line > 0 && val.Line < s.Line {
-				guarded = true
-				break
+			// Only genuine guards can cover a sink — origin-assignment
+			// records (Guard=false) just document where the value came
+			// from. A guard nested in control flow is conditional: it
+			// covers the sink only when the enclosing condition holds,
+			// which is not something a FALSE claim may assume.
+			if !val.Guard || val.File != s.File || val.Line <= 0 || val.Line >= s.Line {
+				continue
 			}
+			if val.Conditional {
+				condSites = append(condSites, val.CallSite)
+				continue
+			}
+			guarded = true
 		}
-		if !guarded {
-			uncovered = append(uncovered, key)
+		if guarded {
+			continue
 		}
+		// Conditional guards are the only records for this sink: check
+		// whether the enclosing condition reads configuration — a knob the
+		// analysis may not have resolved (spec §19 configuration
+		// overrides). Downgrade either way, never silently accept.
+		if len(condSites) > 0 {
+			configHit := false
+			if v.Source != nil {
+				for _, gs := range condSites {
+					if g, detail, err := v.Source.ConfigGated(ctx, gs); err == nil && g {
+						configHit = true
+						gated = append(gated, detail)
+					}
+				}
+			}
+			if !configHit {
+				for _, gs := range condSites {
+					conditional = append(conditional,
+						fmt.Sprintf("%s:%d", gs.File, gs.Line))
+				}
+			}
+			continue
+		}
+		uncovered = append(uncovered, key)
+	}
+	if len(gated) > 0 {
+		nv.Status = domain.NegativeInsufficientScope
+		nv.Notes = "covering guard(s) are conditional on configuration: " + strings.Join(gated, "; ")
+		return setNeg(claim, nv)
+	}
+	if len(conditional) > 0 {
+		nv.Status = domain.NegativeInsufficientScope
+		nv.Notes = "guard(s) only hold under enclosing control-flow conditions: " +
+			strings.Join(conditional, ", ")
+		return setNeg(claim, nv)
 	}
 	if len(uncovered) > 0 {
 		nv.Status = domain.NegativeInsufficientScope

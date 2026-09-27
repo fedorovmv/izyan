@@ -171,3 +171,50 @@ func TestStructuralPatternCoverage(t *testing.T) {
 		}
 	}
 }
+
+func TestStructuralPatchAndScopeChecks(t *testing.T) {
+	// Patch misinterpretation: fix diff exists but names no RC symbol.
+	c := baseCase()
+	c.EvidenceGraph.Evidence = append(c.EvidenceGraph.Evidence, domain.Evidence{
+		ID: "EV-D", Kind: domain.EvidenceFixDiff, Content: "diff --git a/x.go\n-func other() {}",
+	})
+	r := Structural{}.Review(c, domain.VerdictResult{})
+	var sawPatch bool
+	for _, f := range r.Findings {
+		if strings.Contains(f.Problem, "patch misinterpretation") {
+			sawPatch = true
+		}
+	}
+	if !sawPatch {
+		t.Fatal("patch misinterpretation finding expected")
+	}
+
+	// Same diff naming the RC symbol -> clean.
+	c2 := baseCase()
+	c2.EvidenceGraph.Evidence = append(c2.EvidenceGraph.Evidence, domain.Evidence{
+		ID: "EV-D", Kind: domain.EvidenceFixDiff, Content: "-func Parse(s string) {",
+	})
+	r2 := Structural{}.Review(c2, domain.VerdictResult{})
+	for _, f := range r2.Findings {
+		if strings.Contains(f.Problem, "patch misinterpretation") {
+			t.Fatal("false positive patch finding")
+		}
+	}
+
+	// Scope mismatch: source evidence outside the product tree.
+	c3 := baseCase()
+	c3.Product.Repository = "/tmp/prod"
+	c3.EvidenceGraph.Evidence = append(c3.EvidenceGraph.Evidence, domain.Evidence{
+		ID: "EV-X", Kind: domain.EvidenceSourceSnippet, File: "/elsewhere/x.go",
+	})
+	r3 := Structural{}.Review(c3, domain.VerdictResult{})
+	var sawScope bool
+	for _, f := range r3.Findings {
+		if strings.Contains(f.Problem, "outside analyzed scope") {
+			sawScope = true
+		}
+	}
+	if !sawScope {
+		t.Fatal("scope mismatch finding expected")
+	}
+}

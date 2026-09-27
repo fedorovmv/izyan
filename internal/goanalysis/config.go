@@ -2,8 +2,11 @@ package goanalysis
 
 import (
 	"context"
+	"fmt"
 	"go/ast"
+	"go/token"
 	"go/types"
+	"regexp"
 	"strings"
 
 	"example.com/vuln-analyzer/internal/domain"
@@ -154,4 +157,163 @@ func (ix *Index) SymbolFieldType(ctx context.Context, ref domain.SymbolRef) (str
 		return "", err
 	}
 	return find(extra), nil
+}
+
+// configRefRe matches identifier prefixes conventionally bound to
+// configuration: cfg, config, opts, settings, env, flag.
+var configRefRe = regexp.MustCompile(`(?i)^(cfg|config|opts?|settings?|env|flags?)[_.]?`)
+
+// ConfigGated reports whether the statement at site sits inside an `if`
+// whose condition reads configuration — os.Getenv/flag.* calls, idents
+// assigned from them, or config-named fields (cfg.X, opts.Y). Reachability
+// through such a site is conditional on a knob the analyzer may not have
+// resolved: a guard/call under it cannot silently count as unconditional.
+func (ix *Index) ConfigGated(ctx context.Context, site domain.CallSite) (bool, string, error) {
+	ix.mu.Lock()
+	defer ix.mu.Unlock()
+	if err := ix.load(ctx); err != nil {
+		return false, "", err
+	}
+	for _, pkg := range ix.pkgs {
+		for _, f := range pkg.Syntax {
+			pos := ix.fset.Position(f.Pos())
+			if pos.Filename != site.File {
+				continue
+			}
+			enc := funcAt(ix.fset, f, site.Line)
+			if enc == nil || enc.Body == nil {
+				continue
+			}
+			gated := false
+			var condSrc string
+			ast.Inspect(enc.Body, func(n ast.Node) bool {
+				ifs, ok := n.(*ast.IfStmt)
+				if !ok || gated {
+					return true
+				}
+				// Does the site's line live inside this if's branches?
+				beg := ix.fset.Position(ifs.Body.Pos()).Line
+				end := ix.fset.Position(ifs.End()).Line
+				if site.Line < beg || site.Line > end {
+					return true
+				}
+				if c := condConfigRef(ifs.Cond); c != "" {
+					gated = true
+					condSrc = fmt.Sprintf("%s:%d guarded by config condition %q",
+						site.File, site.Line, c)
+					return false
+				}
+				// Ident in cond assigned from a config read earlier in enc?
+				for _, id := range condIdents(ifs.Cond) {
+					if isConfigAssigned(enc.Body, id, pkg.TypesInfo) {
+						gated = true
+						condSrc = fmt.Sprintf("%s:%d guarded by config-bound %s",
+							site.File, site.Line, id)
+						return false
+					}
+				}
+				return true
+			})
+			if gated {
+				return true, condSrc, nil
+			}
+		}
+	}
+	return false, "", nil
+}
+
+// funcAt returns the function declaration whose body contains line.
+func funcAt(fset *token.FileSet, f *ast.File, line int) *ast.FuncDecl {
+	var hit *ast.FuncDecl
+	for _, d := range f.Decls {
+		fn, ok := d.(*ast.FuncDecl)
+		if !ok {
+			continue
+		}
+		if fset.Position(fn.Pos()).Line <= line && line <= fset.Position(fn.End()).Line {
+			hit = fn
+		}
+	}
+	return hit
+}
+
+// condConfigRef reports a config-reading call inside a condition
+// expression: os.Getenv / flag.* calls, or config-named selector roots.
+func condConfigRef(cond ast.Expr) string {
+	var found string
+	ast.Inspect(cond, func(n ast.Node) bool {
+		if found != "" {
+			return false
+		}
+		switch e := n.(type) {
+		case *ast.CallExpr:
+			if sel, ok := e.Fun.(*ast.SelectorExpr); ok {
+				if x, ok2 := sel.X.(*ast.Ident); ok2 {
+					if (x.Name == "os" && (sel.Sel.Name == "Getenv" || sel.Sel.Name == "LookupEnv")) ||
+						x.Name == "flag" {
+						found = x.Name + "." + sel.Sel.Name
+						return false
+					}
+				}
+			}
+			if name := callName(e.Fun); name == "Getenv" || name == "LookupEnv" {
+				found = name
+				return false
+			}
+		case *ast.SelectorExpr:
+			if id, ok := e.X.(*ast.Ident); ok && configRefRe.MatchString(id.Name) {
+				found = id.Name + "." + e.Sel.Name
+				return false
+			}
+		}
+		return true
+	})
+	return found
+}
+
+// condIdents returns bare identifiers used in a condition expression.
+func condIdents(cond ast.Expr) []string {
+	var out []string
+	ast.Inspect(cond, func(n ast.Node) bool {
+		if id, ok := n.(*ast.Ident); ok {
+			out = append(out, id.Name)
+		}
+		return true
+	})
+	return out
+}
+
+// isConfigAssigned reports whether ident id is assigned a config-reading
+// expression anywhere in the function body (os.Getenv/flag.* call or a
+// config-named selector).
+func isConfigAssigned(body *ast.BlockStmt, id string, _ *types.Info) bool {
+	found := false
+	ast.Inspect(body, func(n ast.Node) bool {
+		if found {
+			return false
+		}
+		as, ok := n.(*ast.AssignStmt)
+		if !ok {
+			return true
+		}
+		for i, lhs := range as.Lhs {
+			lid, ok := lhs.(*ast.Ident)
+			if !ok || lid.Name != id || i >= len(as.Rhs) {
+				continue
+			}
+			rhs := as.Rhs[i]
+			if c := condConfigRef(rhs); c != "" {
+				found = true
+				return false
+			}
+			if s, ok2 := rhs.(*ast.StarExpr); ok2 {
+				if id2, ok3 := s.X.(*ast.Ident); ok3 && configRefRe.MatchString(id2.Name) {
+					found = true
+					return false
+				}
+			}
+		}
+		return true
+	})
+	return found
 }

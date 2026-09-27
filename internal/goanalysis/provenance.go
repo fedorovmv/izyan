@@ -1080,19 +1080,60 @@ func (ix *Index) frameGuards(pkg *packages.Package, enc *ast.FuncDecl, call *ast
 	if enc == nil || enc.Body == nil {
 		return nil
 	}
-	for _, stmt := range enc.Body.List {
-		if stmt.Pos() >= call.Pos() {
+	ix.scanGuardStmts(pkg, enc.Body.List, call.Pos(), ident, false, &vals)
+	return vals
+}
+
+// scanGuardStmts walks statements that precede callPos, recording guards and
+// origin assignments on ident. Statements nested inside if/else/for/switch
+// bodies are conditional: the guard fires only when the enclosing condition
+// holds, so it is recorded with Conditional=true and cannot unconditionally
+// cover a sink. Guards found in the same body that contains the call are
+// still conditional on that body's guard condition.
+func (ix *Index) scanGuardStmts(pkg *packages.Package, list []ast.Stmt, callPos token.Pos,
+	ident string, conditional bool, out *[]domain.Validation) {
+	for _, stmt := range list {
+		if stmt.Pos() >= callPos {
 			break
 		}
-		v := stmtValidation(ix, pkg, stmt, ident)
-		if v != nil {
+		if v := stmtValidation(ix, pkg, stmt, ident); v != nil {
 			p := ix.fset.Position(stmt.Pos())
-			vals = append(vals, *v)
-			vals[len(vals)-1].File = p.Filename
-			vals[len(vals)-1].Line = p.Line
+			v.File = p.Filename
+			v.Line = p.Line
+			v.Conditional = conditional
+			*out = append(*out, *v)
+			continue
+		}
+		switch s := stmt.(type) {
+		case *ast.IfStmt:
+			ix.scanGuardStmts(pkg, s.Body.List, callPos, ident, true, out)
+			switch e := s.Else.(type) {
+			case *ast.BlockStmt:
+				ix.scanGuardStmts(pkg, e.List, callPos, ident, true, out)
+			case *ast.IfStmt:
+				ix.scanGuardStmts(pkg, []ast.Stmt{e}, callPos, ident, true, out)
+			}
+		case *ast.ForStmt:
+			ix.scanGuardStmts(pkg, s.Body.List, callPos, ident, true, out)
+		case *ast.RangeStmt:
+			ix.scanGuardStmts(pkg, s.Body.List, callPos, ident, true, out)
+		case *ast.SwitchStmt:
+			if s.Body != nil {
+				ix.scanGuardStmts(pkg, s.Body.List, callPos, ident, true, out)
+			}
+		case *ast.SelectStmt:
+			if s.Body != nil {
+				ix.scanGuardStmts(pkg, s.Body.List, callPos, ident, true, out)
+			}
+		case *ast.CaseClause:
+			ix.scanGuardStmts(pkg, s.Body, callPos, ident, true, out)
+		case *ast.CommClause:
+			ix.scanGuardStmts(pkg, s.Body, callPos, ident, true, out)
+		case *ast.BlockStmt:
+			// A bare block does not add a condition; keep the flag.
+			ix.scanGuardStmts(pkg, s.List, callPos, ident, conditional, out)
 		}
 	}
-	return vals
 }
 
 // FindValidationsBound extends FindValidations up the caller chain: the
@@ -1204,7 +1245,7 @@ func stmtValidation(ix *Index, pkg *packages.Package, stmt ast.Stmt, ident strin
 		}
 		if terminates(s.Body) {
 			condSrc, _ := ix.nodeSource(s.Cond)
-			return &domain.Validation{Property: condSrc}
+			return &domain.Validation{Property: condSrc, Guard: true}
 		}
 	case *ast.AssignStmt:
 		for i, lhs := range s.Lhs {

@@ -432,6 +432,14 @@ type Entrypoint struct {
 type Validation struct {
 	CallSite
 	Property string `json:"property"`
+	// Guard marks a terminating if-check on the argument. Origin-assignment
+	// records (Guard=false) document where the value came from — they are
+	// not guards and cannot cover a sink.
+	Guard bool `json:"guard,omitempty"`
+	// Conditional marks a guard nested inside control flow: it applies only
+	// when the enclosing condition holds, so it cannot unconditionally
+	// cover the sink.
+	Conditional bool `json:"conditional,omitempty"`
 	// Covers marks a guard found in a caller frame (a different file/line)
 	// that constrains the argument reaching this sink. Nil for guards that
 	// precede the sink call in its own frame.

@@ -12,6 +12,7 @@ import (
 
 	"example.com/vuln-analyzer/internal/domain"
 	"example.com/vuln-analyzer/internal/exploit"
+	"path/filepath"
 )
 
 // Reviewer audits a case against its proposed verdict.
@@ -158,6 +159,58 @@ func (Structural) Review(c *domain.AnalysisCase, proposed domain.VerdictResult) 
 						c.Exploit.Class, t.ID, skipped),
 				})
 			}
+		}
+	}
+
+	// Patch misinterpretation: when fix-diff evidence exists, at least one
+	// resolved root-cause symbol should appear in it — the root cause may
+	// legitimately come from advisory symbols instead, so this is a
+	// medium-severity signal, not a verdict blocker.
+	if c.RootCause != nil && len(c.RootCause.RootCauses) > 0 {
+		var diffs []string
+		for _, e := range c.EvidenceGraph.Evidence {
+			if e.Kind == domain.EvidenceFixDiff {
+				diffs = append(diffs, e.Content)
+			}
+		}
+		if len(diffs) > 0 {
+			joined := strings.Join(diffs, "\n")
+			var named []string
+			for _, rc := range c.RootCause.RootCauses {
+				base := rc.Symbol
+				if i := strings.LastIndex(base, "."); i >= 0 {
+					base = base[i+1:]
+				}
+				if strings.Contains(joined, base) {
+					named = append(named, rc.Symbol)
+				}
+			}
+			if len(named) == 0 {
+				findings = append(findings, domain.ReviewFinding{
+					TargetType: "model", Severity: "medium",
+					Problem: "no root-cause symbol appears in any fix diff — possible patch misinterpretation or advisory-derived root cause",
+				})
+			}
+		}
+	}
+
+	// Scope mismatch: evidence files must live under the analyzed product
+	// tree or a Go module cache — anywhere else means a source/tool
+	// produced evidence outside the declared scope.
+	if c.Product.Repository != "" {
+		repo := filepath.Clean(c.Product.Repository) + string(filepath.Separator)
+		for _, e := range c.EvidenceGraph.Evidence {
+			f := e.File
+			if f == "" || !filepath.IsAbs(f) || !strings.HasSuffix(f, ".go") {
+				continue // only source files carry a meaningful scope
+			}
+			if strings.HasPrefix(filepath.Clean(f), repo) || strings.Contains(f, "/pkg/mod/") {
+				continue
+			}
+			findings = append(findings, domain.ReviewFinding{
+				TargetType: "claim", TargetID: string(e.ID), Severity: "medium",
+				Problem: fmt.Sprintf("evidence %s references file outside analyzed scope: %s", e.ID, f),
+			})
 		}
 	}
 

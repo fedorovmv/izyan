@@ -1634,3 +1634,47 @@ func TestE2EPlatformFactFalseVerified(t *testing.T) {
 		t.Fatalf("verdict=%+v want NO_EXPLOIT_PATH_FOUND", c.Verdict)
 	}
 }
+
+// A guard wrapped in a config-reading conditional does not unconditionally
+// cover the sink (spec §19 configuration overrides): negative verification
+// must downgrade to INSUFFICIENT_SCOPE and the verdict stays INCONCLUSIVE.
+func TestE2EConfigGatedGuardStaysInconclusive(t *testing.T) {
+	repo := initRepoFrom(t, "cfggateprod")
+	dir := t.TempDir()
+	model := `{"impact":"t","mandatory_conditions":[
+		{"id":"C-REACH","kind":"SYMBOL_REACHABLE","mandatory":true,
+		 "subject":{"package":"example.com/dep/vuln","symbol":"Parse"}},
+		{"id":"C-VALID","kind":"VALIDATION","mandatory":true,
+		 "subject":{"package":"example.com/dep/vuln","symbol":"Parse"},"arg_index":0}
+	]}`
+	mp := filepath.Join(dir, "model.json")
+	if err := os.WriteFile(mp, []byte(model), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gv := `{"protocol_version":"v1.0.0"}
+{"finding":{"osv":"GO-TEST-1","fixed_version":"v1.2.0","trace":[
+ {"module":"example.com/cfggateprod","package":"example.com/cfggateprod","function":"main","position":{"filename":"main.go","line":20}},
+ {"module":"example.com/dep","package":"example.com/dep/vuln","function":"Parse","position":{"filename":"vuln.go","line":4}}
+]}}`
+	c := runEngine(t, engineDeps{
+		RepoPath: repo,
+		VulnSrc: vulnerability.StaticSource{Vulns: map[string]*domain.Vulnerability{
+			"GO-TEST-1": {ID: "GO-TEST-1", Module: "example.com/dep"},
+		}},
+		VulnID:      "GO-TEST-1",
+		Resolver:    stubResolver{},
+		ManualRC:    []domain.RootCause{{Package: "example.com/dep/vuln", Symbol: "Parse"}},
+		Model:       mp,
+		CaseDir:     filepath.Join(dir, "cases"),
+		Govulncheck: fakeGovulncheck{out: []byte(gv)},
+		UseSource:   true,
+	})
+	valid := findClaimT(t, c.Claims, "C-VALID")
+	if valid.NegativeVerification == nil ||
+		valid.NegativeVerification.Status != domain.NegativeInsufficientScope {
+		t.Fatalf("NV=%+v want INSUFFICIENT_SCOPE (guard is config-gated)", valid.NegativeVerification)
+	}
+	if c.Verdict == nil || c.Verdict.Verdict != domain.VerdictInconclusive {
+		t.Fatalf("verdict=%+v want INCONCLUSIVE", c.Verdict)
+	}
+}
