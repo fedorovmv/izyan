@@ -242,14 +242,16 @@ func TestPlannerRejectsBadProposals(t *testing.T) {
 		t.Fatalf("hypothesis=%+v want UNRESOLVED", h)
 	}
 
-	// Valid name, bad args: tool error -> REJECTED hypothesis.
+	// Valid name, bad args: tool error -> REJECTED hypothesis; the miss is
+	// knowledge, so the step counts as attempted and may be retried with a
+	// different tool on the next iteration.
 	client2, srv2, _ := scriptServer(t,
 		`{"hypothesis":{"statement":"x"},"tool_call":{"name":"find_symbol","args":{"nope":1},"purpose":"y"}}`)
 	defer srv2.Close()
 	p2 := Planner{Client: client2, Tools: Tools{Source: toolIndex(t)}}
 	c2 := newCase()
-	if p2.Plan(context.Background(), plannerCond(), c2) {
-		t.Fatal("tool miss must not report progress")
+	if !p2.Plan(context.Background(), plannerCond(), c2) {
+		t.Fatal("tool miss is an attempted step — worth retrying")
 	}
 	if h := c2.Hypotheses[0]; h.Status != domain.HypothesisRejected {
 		t.Fatalf("hypothesis=%+v want REJECTED", h)

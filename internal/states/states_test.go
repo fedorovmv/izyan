@@ -1421,3 +1421,47 @@ func TestReviewRepairLoopConverges(t *testing.T) {
 		t.Fatalf("second review should accept the repaired claim set: %+v", c.Reviews)
 	}
 }
+
+// Multi-step LLM planner: Plan is retried per iteration while it reports an
+// attempted step, bounded by maxLLMPlanSteps per condition.
+type countingPlanner struct {
+	calls  int
+	result bool
+}
+
+func (p *countingPlanner) Plan(_ context.Context, _ domain.Condition, _ *domain.AnalysisCase) bool {
+	p.calls++
+	return p.result
+}
+
+func TestGapLLMPlannerMultiStepBound(t *testing.T) {
+	newCase := func() *domain.AnalysisCase {
+		return &domain.AnalysisCase{
+			Exploit: &domain.ExploitModel{MandatoryConditions: []domain.Condition{
+				{ID: "C-RUNTIME", Kind: domain.ConditionRuntime, Mandatory: true},
+			}},
+			Claims: []domain.Claim{{ConditionID: "C-RUNTIME", Result: domain.ClaimUnknown}},
+		}
+	}
+
+	// A planner that always finds more to do is capped at maxLLMPlanSteps.
+	p := &countingPlanner{result: true}
+	c := newCase()
+	c.Workflow.Limits.MaxToolCalls = 0 // unlimited
+	if _, err := (states.GapAnalysis{Source: &goanalysis.Index{Dir: t.TempDir()}, Planner: p}).Run(context.Background(), c); err != nil {
+		t.Fatal(err)
+	}
+	if p.calls != 3 {
+		t.Fatalf("planner calls=%d want %d (bounded per condition)", p.calls, 3)
+	}
+
+	// A planner that reports nothing actionable is asked exactly once.
+	p2 := &countingPlanner{result: false}
+	c2 := newCase()
+	if _, err := (states.GapAnalysis{Source: &goanalysis.Index{Dir: t.TempDir()}, Planner: p2}).Run(context.Background(), c2); err != nil {
+		t.Fatal(err)
+	}
+	if p2.calls != 1 {
+		t.Fatalf("planner calls=%d want 1 (no retry on non-attempt)", p2.calls)
+	}
+}

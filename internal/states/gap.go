@@ -37,6 +37,7 @@ type HypothesisPlanner interface {
 
 const (
 	maxGapIterations = 3
+	maxLLMPlanSteps  = 3 // LLM planner steps per condition per run
 	deepTraceHops    = 6 // extended caller-climb bound for gap traces
 )
 
@@ -47,6 +48,7 @@ func (h GapAnalysis) Run(ctx context.Context, c *domain.AnalysisCase) (workflow.
 		return h.dispatch(c, "no source index — gap analysis skipped")
 	}
 	planned := map[string]bool{}
+	llmSteps := map[domain.ConditionID]int{}
 	for iter := 0; iter < maxGapIterations; iter++ {
 		progress := false
 		for _, cond := range c.Exploit.MandatoryConditions {
@@ -64,18 +66,17 @@ func (h GapAnalysis) Run(ctx context.Context, c *domain.AnalysisCase) (workflow.
 			}
 			moved := h.plan(ctx, c, cond, planned)
 			// The deterministic planner had nothing for this condition —
-			// let the LLM planner pick the next check (once per run).
-			if !moved && h.Planner != nil {
-				key := string(cond.ID) + ":llm-plan"
-				if !planned[key] {
-					planned[key] = true
-					if max := c.Workflow.Limits.MaxLLMCalls; max > 0 &&
-						c.UsageSnapshot().LLMCalls >= max {
-						c.EvidenceGraph.AddLimitation(
-							"gap analysis: LLM planner skipped, MaxLLMCalls exhausted")
-					} else {
-						moved = h.Planner.Plan(ctx, cond, c)
-					}
+			// let the LLM planner pick the next check, up to
+			// maxLLMPlanSteps per condition. Plan returning false means
+			// the model declined or produced nothing actionable — stop.
+			if !moved && h.Planner != nil && llmSteps[cond.ID] < maxLLMPlanSteps {
+				if max := c.Workflow.Limits.MaxLLMCalls; max > 0 &&
+					c.UsageSnapshot().LLMCalls >= max {
+					c.EvidenceGraph.AddLimitation(
+						"gap analysis: LLM planner skipped, MaxLLMCalls exhausted")
+				} else {
+					llmSteps[cond.ID]++
+					moved = h.Planner.Plan(ctx, cond, c)
 				}
 			}
 			progress = moved || progress

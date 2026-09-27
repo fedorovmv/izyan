@@ -72,6 +72,7 @@ FALSE капает вердикт, тратить tool-budget бессмысле
 - Reviewer-driven repair loop реализован: REVIEW → REPAIR_ANALYSIS →
   REVIEW (demotion-only, bounded MaxReviewIterations).
 - Глубокий трейс всё ещё bounded (6); цепочки глубже остаются UNKNOWN.
-- LLM-planner реализован: `llm.Planner` — один шаг «гипотеза + tool
-  call» на неразрешённый claim, когда детерминистичные экшены исчерпаны
-  (персистится как Hypothesis; claim решают evaluators).
+- LLM-planner реализован: `llm.Planner` — multi-step, ≤3 шага на
+  неразрешённый claim за прогон (tool-miss → REJECTED + retry; модель,
+  отказавшаяся или вернувшая мусор, больше не спрашивается). Персистится
+  как Hypothesis; claim решают evaluators.

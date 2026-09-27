@@ -15,6 +15,11 @@ import (
 // (budgets, evidence registration), the hypothesis is persisted on the
 // case, and claim re-evaluation stays deterministic — the model proposes
 // where to look, never what the claim means.
+//
+// Multi-step: GAP_ANALYSIS may call Plan again on the next iteration for
+// the same condition, up to its per-condition step cap — a tool miss is a
+// REJECTED hypothesis and worth retrying with a different tool, while
+// UNRESOLVED (model declined / unparseable / malformed) ends planning.
 type Planner struct {
 	Client *Client
 	Tools  Tools
@@ -39,7 +44,10 @@ type planStep struct {
 var toolName = regexp.MustCompile(`^[a-z_]+$`)
 
 // Plan runs one planner step for an unresolved condition. Returns true
-// when the step produced new evidence worth re-evaluating.
+// when a tool call was actually attempted — confirmed or rejected — so the
+// caller may plan another step; false when the model produced nothing
+// actionable (declined, unparseable, malformed name) and should not be
+// asked again for this condition.
 func (p Planner) Plan(ctx context.Context, cond domain.Condition, c *domain.AnalysisCase) bool {
 	if p.Client == nil || p.Tools.Source == nil || llmBudgetExhausted(c) {
 		return false
@@ -95,7 +103,7 @@ func (p Planner) Plan(ctx context.Context, cond domain.Condition, c *domain.Anal
 		hyp.Status = domain.HypothesisRejected
 		hyp.Notes = fmt.Sprintf("tool %s: %s", st.ToolCall.Name, tr.Error)
 		record(hyp)
-		return false
+		return true // a miss is knowledge — the next step may pick another tool
 	}
 	hyp.Status = domain.HypothesisConfirmed
 	hyp.Notes = fmt.Sprintf("tool %s (%s) produced %s", st.ToolCall.Name, st.ToolCall.Purpose, tr.EvidenceID)
@@ -117,6 +125,8 @@ Rules:
 - The hypothesis must state what the tool call could prove or disprove.
 - Prefer tools that add evidence the loop has not seen; do not re-run a
   check whose result is already in the evidence list.
+- You may be asked again for a follow-up step: build on prior hypotheses
+  instead of repeating a REJECTED tool call.
 - If no useful action exists, return "tool_call": null.
 - You never assert claim results — deterministic evaluation does that.
 
