@@ -662,11 +662,17 @@ func (h CollectEvidence) collectProvenance(ctx context.Context, c *domain.Analys
 		for _, e := range evs {
 			c.EvidenceGraph.AddEvidence(e)
 		}
-		argIdx := cond.ArgIndex
-		if argIdx < 0 {
-			argIdx = 0
+		// Unpinned input position scans every argument; a pinned one
+		// scans just that arg — records carry the Arg index either way.
+		var vals []domain.Validation
+		var vev []domain.Evidence
+		var verr error
+		if cond.ArgIndex < 0 {
+			vals, vev, verr = h.Source.FindAllValidations(ctx, site)
+		} else {
+			vals, vev, verr = h.Source.FindValidations(ctx, site, cond.ArgIndex)
 		}
-		vals, vev, err := h.Source.FindValidations(ctx, site, argIdx)
+		err = verr
 		if err == nil {
 			for _, v := range vals {
 				v.Property = fmt.Sprintf("cond=%s %s", cond.ID, v.Property)

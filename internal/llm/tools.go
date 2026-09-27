@@ -177,8 +177,16 @@ func (t Tools) Call(ctx context.Context, c *domain.AnalysisCase, name string, ar
 		if err := json.Unmarshal(args, &a); err != nil {
 			return fail(err)
 		}
-		vals, evs, err := t.Source.FindValidations(ctx,
-			domain.CallSite{File: a.File, Line: a.Line, Column: a.Column}, a.ArgIndex)
+		var vals []domain.Validation
+		var evs []domain.Evidence
+		var err error
+		if a.ArgIndex < 0 {
+			vals, evs, err = t.Source.FindAllValidations(ctx,
+				domain.CallSite{File: a.File, Line: a.Line, Column: a.Column})
+		} else {
+			vals, evs, err = t.Source.FindValidations(ctx,
+				domain.CallSite{File: a.File, Line: a.Line, Column: a.Column}, a.ArgIndex)
+		}
 		if err != nil {
 			return fail(err)
 		}

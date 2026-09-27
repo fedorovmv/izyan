@@ -37,8 +37,8 @@ type HypothesisPlanner interface {
 
 const (
 	maxGapIterations = 3
-	maxLLMPlanSteps  = 3 // LLM planner steps per condition per run
-	deepTraceHops    = 8 // extended caller-climb bound for gap traces
+	maxLLMPlanSteps  = 3  // LLM planner steps per condition per run
+	deepTraceHops    = 16 // extended caller-climb bound for gap traces
 )
 
 func (GapAnalysis) State() domain.WorkflowState { return domain.StateGapAnalysis }
@@ -129,7 +129,7 @@ func (h GapAnalysis) plan(ctx context.Context, c *domain.AnalysisCase, cond doma
 			if f.Origin != domain.OriginUnknown {
 				continue
 			}
-			key := fmt.Sprintf("%s:deepen:%s:%d", cond.ID, f.Sink.File, f.Sink.Line)
+			key := fmt.Sprintf("%s:deepen:%s:%d:arg%d", cond.ID, f.Sink.File, f.Sink.Line, f.Arg)
 			if planned[key] {
 				continue
 			}
@@ -174,11 +174,14 @@ func (h GapAnalysis) actCallerGuards(ctx context.Context, c *domain.AnalysisCase
 	progress := false
 	var evIDs []domain.EvidenceID
 	var notes []string
-	arg := cond.ArgIndex
-	if arg < 0 {
-		arg = 0
-	}
 	for _, f := range flows {
+		arg := f.Arg
+		if arg < 0 {
+			arg = cond.ArgIndex
+		}
+		if arg < 0 {
+			arg = 0
+		}
 		c.IncToolCalls()
 		vals, evs, err := h.Source.FindValidationsBound(ctx, f.Sink, arg, deepTraceHops)
 		if err != nil {
@@ -223,7 +226,13 @@ func (h GapAnalysis) actCallerGuards(ctx context.Context, c *domain.AnalysisCase
 // actDeepTrace re-runs argument provenance with an extended caller-climb
 // budget. A resolved origin supersedes the shallow UNKNOWN flow.
 func (h GapAnalysis) actDeepTrace(ctx context.Context, c *domain.AnalysisCase, cond domain.Condition, f domain.DataFlow) bool {
-	arg := cond.ArgIndex
+	// Trace the argument this flow actually recorded — multi-arg sinks
+	// carry f.Arg per flow; falling back to cond.ArgIndex would re-trace
+	// arg 0 and leave the unknown arg untouched.
+	arg := f.Arg
+	if arg < 0 {
+		arg = cond.ArgIndex
+	}
 	if arg < 0 {
 		arg = 0
 	}

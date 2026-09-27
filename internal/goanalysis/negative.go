@@ -13,6 +13,11 @@ import (
 // bypasses that static analysis may have missed. A FALSE claim only survives
 // when the falsification pass finds no counterexample within the searchable
 // scope; contradictions demote it back to UNKNOWN.
+// verifyHops bounds the re-trace budget negative verification uses when
+// re-deriving argument origins — the same budget gap analysis applies,
+// so a claim resolved by a deep trace is not re-judged on a shallow one.
+const verifyHops = 16
+
 type Verifier struct {
 	Source *Index
 }
@@ -141,8 +146,14 @@ func (v Verifier) VerifyFalse(ctx context.Context, c *domain.AnalysisCase, claim
 		switch cond.Kind {
 		case domain.ConditionSymbolReachable:
 			out = v.verifyReachableFalse(claim, nv, subjects, allSites)
-		case domain.ConditionAttackerControl, domain.ConditionInputConstraint:
+		case domain.ConditionAttackerControl:
 			out = v.verifyInputFalse(ctx, c, claim, nv, subjects, cond.ArgIndex)
+		case domain.ConditionInputConstraint:
+			if claim.Falsifier == "guards" {
+				out = v.verifyGuardFalse(ctx, c, claim, nv)
+			} else {
+				out = v.verifyInputFalse(ctx, c, claim, nv, subjects, cond.ArgIndex)
+			}
 		case domain.ConditionValidation:
 			out = v.verifyGuardFalse(ctx, c, claim, nv)
 		case domain.ConditionPlatform, domain.ConditionRuntime:
@@ -318,10 +329,10 @@ func (v Verifier) verifyInputFalse(ctx context.Context, c *domain.AnalysisCase, 
 			var evs []domain.Evidence
 			var err error
 			if argIndex < 0 {
-				flows, evs, err = v.Source.TraceAllArguments(ctx, site)
+				flows, evs, err = v.Source.TraceAllArgumentsBound(ctx, site, verifyHops)
 			} else {
 				var f domain.DataFlow
-				f, evs, err = v.Source.TraceArgument(ctx, site, argIndex)
+				f, evs, err = v.Source.TraceArgumentBound(ctx, site, argIndex, verifyHops)
 				flows = []domain.DataFlow{f}
 			}
 			if err != nil {
@@ -333,15 +344,21 @@ func (v Verifier) verifyInputFalse(ctx context.Context, c *domain.AnalysisCase, 
 				nv.EvidenceIDs = append(nv.EvidenceIDs, c.EvidenceGraph.AddEvidence(e))
 			}
 			for _, flow := range flows {
-				if flow.Origin == domain.OriginUnknown ||
-					flow.Origin == domain.OriginExternalUntrusted ||
-					flow.Origin == domain.OriginExternalAuthenticated ||
-					flow.Origin == domain.OriginConfiguration ||
-					flow.Origin == domain.OriginDatabase ||
-					flow.Origin == domain.OriginInternalService {
+				switch flow.Origin {
+				case domain.OriginExternalUntrusted, domain.OriginExternalAuthenticated,
+					domain.OriginConfiguration, domain.OriginDatabase,
+					domain.OriginInternalService:
 					nv.Status = domain.NegativeContradicted
 					nv.Notes = fmt.Sprintf("call site %s passes %s input (%s); FALSE contradicted",
 						site.Function, flow.Origin, flow.Summary)
+					return setNeg(claim, nv)
+				case domain.OriginUnknown, "":
+					// Absence of evidence is not a contradiction: the
+					// verifier could not resolve this argument — scope
+					// insufficient to confirm the FALSE, not disproven.
+					nv.Status = domain.NegativeInsufficientScope
+					nv.Notes = fmt.Sprintf("call site %s argument %d unresolvable (%s); cannot verify FALSE",
+						site.Function, flow.Arg, flow.Summary)
 					return setNeg(claim, nv)
 				}
 			}
@@ -367,9 +384,27 @@ func (v Verifier) verifyInputFalse(ctx context.Context, c *domain.AnalysisCase, 
 func (v Verifier) verifyGuardFalse(ctx context.Context, c *domain.AnalysisCase, claim domain.Claim,
 	nv *domain.NegativeVerification) domain.Claim {
 
-	sinks := map[string]domain.CallSite{}
+	// (sink, arg) pairs recorded for this claim's condition — a guard on
+	// arg0 must not certify arg1 of the same call.
+	type sinkRef struct {
+		site   domain.CallSite
+		arg    int
+		origin domain.DataOrigin
+	}
+	sinks := map[string]sinkRef{}
 	for _, f := range c.EvidenceGraph.DataFlows {
-		sinks[f.Sink.File+":"+fmt.Sprint(f.Sink.Line)] = f.Sink
+		if claim.ConditionID != "" && f.ConditionID != claim.ConditionID {
+			continue
+		}
+		key := fmt.Sprintf("%s:%d:%d", f.Sink.File, f.Sink.Line, f.Arg)
+		sinks[key] = sinkRef{f.Sink, f.Arg, f.Origin}
+	}
+	if len(sinks) == 0 {
+		// Older producers may record flows without a condition id.
+		for _, f := range c.EvidenceGraph.DataFlows {
+			key := fmt.Sprintf("%s:%d:%d", f.Sink.File, f.Sink.Line, f.Arg)
+			sinks[key] = sinkRef{f.Sink, f.Arg, f.Origin}
+		}
 	}
 	if len(sinks) == 0 {
 		nv.Status = domain.NegativeInsufficientScope
@@ -380,10 +415,20 @@ func (v Verifier) verifyGuardFalse(ctx context.Context, c *domain.AnalysisCase, 
 	var gated []string
 	var conditional []string
 	for key, s := range sinks {
+		// A constant or generated argument is bounded by definition —
+		// it needs no guard to certify it cannot violate the constraint.
+		if s.origin == domain.OriginConstant || s.origin == domain.OriginGenerated {
+			continue
+		}
 		guarded := false
 		var condSites []domain.CallSite
 		for _, val := range c.EvidenceGraph.Validations {
-			if val.Covers != nil && val.Covers.File == s.File && val.Covers.Line == s.Line {
+			// An Arg-scoped record constrains only that argument of the
+			// sink call; Arg < 0 marks a record covering any position.
+			if val.Arg >= 0 && s.arg >= 0 && val.Arg != s.arg {
+				continue
+			}
+			if val.Covers != nil && val.Covers.File == s.site.File && val.Covers.Line == s.site.Line {
 				guarded = true
 				continue
 			}
@@ -392,7 +437,7 @@ func (v Verifier) verifyGuardFalse(ctx context.Context, c *domain.AnalysisCase, 
 			// from. A guard nested in control flow is conditional: it
 			// covers the sink only when the enclosing condition holds,
 			// which is not something a FALSE claim may assume.
-			if !val.Guard || val.File != s.File || val.Line <= 0 || val.Line >= s.Line {
+			if !val.Guard || val.File != s.site.File || val.Line <= 0 || val.Line >= s.site.Line {
 				continue
 			}
 			if val.Conditional {

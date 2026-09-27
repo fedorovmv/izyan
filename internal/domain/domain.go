@@ -344,6 +344,9 @@ type Claim struct {
 	// deterministic evaluators backed by deterministic evidence are immune
 	// to reviewer demotion — reinterpretation cannot undo a verified fact.
 	Producer string `json:"producer,omitempty"`
+	// Falsifier marks how a FALSE claim was derived so negative verification
+	// picks the matching strategy: "guards" = bound-guard coverage.
+	Falsifier string `json:"falsifier,omitempty"`
 }
 
 type EvidenceQuality string
@@ -414,12 +417,15 @@ type CallPath struct {
 }
 
 type DataFlow struct {
-	ConditionID     ConditionID `json:"condition_id,omitempty"`
-	Source          CallSite    `json:"source"`
-	Origin          DataOrigin  `json:"origin"`
-	Transformations []CallSite  `json:"transformations,omitempty"`
-	Sink            CallSite    `json:"sink"`
-	Summary         string      `json:"summary,omitempty"`
+	ConditionID ConditionID `json:"condition_id,omitempty"`
+	Source      CallSite    `json:"source"`
+	// Arg is the sink call's argument index this flow was traced for;
+	// -1 means the flow is not argument-scoped.
+	Arg             int        `json:"arg"`
+	Origin          DataOrigin `json:"origin"`
+	Transformations []CallSite `json:"transformations,omitempty"`
+	Sink            CallSite   `json:"sink"`
+	Summary         string     `json:"summary,omitempty"`
 }
 
 type Entrypoint struct {
@@ -444,6 +450,9 @@ type Validation struct {
 	// that constrains the argument reaching this sink. Nil for guards that
 	// precede the sink call in its own frame.
 	Covers *CallSite `json:"covers,omitempty"`
+	// Arg is the sink-call argument index this record constrains;
+	// -1 means it applies regardless of position.
+	Arg int `json:"arg"`
 }
 
 type ConfigItem struct {
@@ -605,14 +614,15 @@ func (g *EvidenceGraph) AddDataFlows(flows ...DataFlow) {
 	g.DataFlows = append(g.DataFlows, flows...)
 }
 
-// ReplaceDataFlow swaps the flow recorded for the same condition and
-// sink position (the gap-analysis loop's deeper trace supersedes the
-// shallower UNKNOWN one). Appends when nothing matches.
+// ReplaceDataFlow swaps the flow recorded for the same condition, sink
+// position and argument index (the gap-analysis loop's deeper trace
+// supersedes the shallower UNKNOWN one). Appends when nothing matches.
 func (g *EvidenceGraph) ReplaceDataFlow(f DataFlow) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	for i, ex := range g.DataFlows {
 		if ex.ConditionID == f.ConditionID &&
+			ex.Arg == f.Arg &&
 			ex.Sink.File == f.Sink.File && ex.Sink.Line == f.Sink.Line {
 			g.DataFlows[i] = f
 			return

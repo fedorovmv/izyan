@@ -34,7 +34,11 @@ type Index struct {
 	hopLimit int
 	// txBuf, when non-nil during TraceArgument, accumulates the calls a
 	// traced value passes through (DataFlow.Transformations). Guarded by mu.
-	txBuf        *[]domain.CallSite
+	txBuf *[]domain.CallSite
+	// traceSeen, when non-nil during TraceArgument, marks local vars whose
+	// assignment merge is in progress — breaks self-referential cycles
+	// (x = x + n re-entering x's assignments).
+	traceSeen    map[types.Object]bool
 	mu           sync.Mutex // serializes queries; shared across cases in scan mode
 	pkgs         []*packages.Package
 	fset         *token.FileSet

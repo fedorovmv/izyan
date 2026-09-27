@@ -59,6 +59,7 @@ func (ix *Index) TraceArgument(ctx context.Context, site domain.CallSite, argInd
 	if err != nil {
 		return flow, nil, err
 	}
+	flow.Arg = argIndex
 	if argIndex >= len(call.Args) {
 		return flow, nil, fmt.Errorf("call site has %d args, arg %d requested", len(call.Args), argIndex)
 	}
@@ -67,8 +68,10 @@ func (ix *Index) TraceArgument(ctx context.Context, site domain.CallSite, argInd
 	// same mutex as the rest of the trace — nil outside TraceArgument.
 	var tx []domain.CallSite
 	ix.txBuf = &tx
+	ix.traceSeen = map[types.Object]bool{}
 	origin, why := ix.classify(pkg, enc, call.Args[argIndex], 0)
 	ix.txBuf = nil
+	ix.traceSeen = nil
 	flow.Origin = origin
 	flow.Summary = why
 	flow.Transformations = dedupSites(tx)
@@ -167,6 +170,10 @@ func (ix *Index) classifyIdent(pkg *packages.Package, enc *ast.FuncDecl, id *ast
 	if obj == nil {
 		return domain.OriginUnknown, fmt.Sprintf("unresolved identifier %s", id.Name)
 	}
+	// named constant — definitionally constant regardless of declaration site
+	if _, ok := obj.(*types.Const); ok {
+		return domain.OriginConstant, "named constant " + id.Name
+	}
 	// function parameter: hop into callers of the enclosing function
 	if v, ok := obj.(*types.Var); ok && isParam(enc, v) {
 		return ix.traceParam(pkg, enc, v, depth)
@@ -176,10 +183,28 @@ func (ix *Index) classifyIdent(pkg *packages.Package, enc *ast.FuncDecl, id *ast
 		o, why := ix.classify(pkg, enc, decl, depth+1)
 		return o, fmt.Sprintf("package-level %s <- %s", obj.Name(), why)
 	}
-	// local var: find dominating assignment inside the function
-	if rhs := findLocalAssign(enc, obj); rhs != nil {
-		o, why := ix.classify(pkg, enc, rhs, depth)
-		return o, fmt.Sprintf("local %s <- %s", id.Name, why)
+	// local var: merge every assignment inside the function — branch and
+	// case writes all reach the read, so origins join (worst wins). A
+	// var already being resolved on this trace is a cycle (x = f(x)).
+	if rhsList := localAssigns(enc, obj); len(rhsList) > 0 {
+		if ix.traceSeen != nil && ix.traceSeen[obj] {
+			return domain.OriginUnknown, fmt.Sprintf("local %s: recursive assignment cycle", id.Name)
+		}
+		if ix.traceSeen != nil {
+			ix.traceSeen[obj] = true
+			defer delete(ix.traceSeen, obj)
+		}
+		var merged domain.DataOrigin
+		var whys []string
+		for _, rhs := range rhsList {
+			o, w := ix.classify(pkg, enc, rhs, depth)
+			whys = append(whys, w)
+			merged = mergeOrigin(merged, o)
+		}
+		if merged == "" {
+			return domain.OriginUnknown, fmt.Sprintf("local %s: no resolvable assignment", id.Name)
+		}
+		return merged, fmt.Sprintf("local %s <- {%s}", id.Name, strings.Join(whys, " | "))
 	}
 	// populated by a call taking &v — rows.Scan(&v), json.Unmarshal(data,&v):
 	// the variable is written in place, not assigned.
@@ -408,6 +433,35 @@ func findLocalAssign(enc *ast.FuncDecl, obj types.Object) ast.Expr {
 }
 
 // classifySelector handles field/method selections like r.Body, r.URL, os.Args.
+// localAssigns collects every AssignStmt/ValueSpec RHS bound to obj inside
+// enc — branch and case writes all reach the read, so the caller merges
+// their origins (worst wins). findLocalAssign keeps the single last-write
+// view for callers that only need a dominating statement.
+func localAssigns(enc *ast.FuncDecl, obj types.Object) []ast.Expr {
+	if enc == nil || enc.Body == nil || obj == nil {
+		return nil
+	}
+	var out []ast.Expr
+	ast.Inspect(enc.Body, func(n ast.Node) bool {
+		switch n := n.(type) {
+		case *ast.AssignStmt:
+			for i, lhs := range n.Lhs {
+				if id, ok := lhs.(*ast.Ident); ok && id.Name == obj.Name() && i < len(n.Rhs) {
+					out = append(out, n.Rhs[i])
+				}
+			}
+		case *ast.ValueSpec:
+			for i, n2 := range n.Names {
+				if n2.Name == obj.Name() && i < len(n.Values) {
+					out = append(out, n.Values[i])
+				}
+			}
+		}
+		return true
+	})
+	return out
+}
+
 func (ix *Index) classifySelector(pkg *packages.Package, enc *ast.FuncDecl, e *ast.SelectorExpr, depth int) (domain.DataOrigin, string) {
 	sel, ok := pkg.TypesInfo.Selections[e]
 	if ok {
@@ -835,8 +889,15 @@ func (ix *Index) evalCalleeExpr(dp *packages.Package, decl *ast.FuncDecl, e ast.
 			o, w := evalArg(arg, depth+1)
 			return o, "param " + v.Name + " <- " + w
 		}
-		if rhs := findLocalAssign(decl, dp.TypesInfo.ObjectOf(v)); rhs != nil {
-			return ix.evalCalleeExpr(dp, decl, rhs, argAt, evalArg, depth)
+		if rhsList := localAssigns(decl, dp.TypesInfo.ObjectOf(v)); len(rhsList) > 0 {
+			var merged domain.DataOrigin
+			for _, rhs := range rhsList {
+				o, _ := ix.evalCalleeExpr(dp, decl, rhs, argAt, evalArg, depth)
+				merged = mergeOrigin(merged, o)
+			}
+			if merged != "" {
+				return merged, "local " + v.Name + " <- merged assignments"
+			}
 		}
 		return domain.OriginUnknown, "unresolvable ident " + v.Name
 	case *ast.ParenExpr:
@@ -957,6 +1018,20 @@ func (ix *Index) funcDecl(fn *types.Func) (*ast.FuncDecl, *packages.Package) {
 
 // TraceAllArguments classifies every argument of the call site — used when
 // the attacker-controlled parameter index is not known in advance.
+// TraceAllArgumentsBound is TraceAllArguments with an explicit
+// caller-climb budget — used by negative verification's re-trace.
+func (ix *Index) TraceAllArgumentsBound(ctx context.Context, site domain.CallSite, hops int) ([]domain.DataFlow, []domain.Evidence, error) {
+	ix.mu.Lock()
+	ix.hopLimit = hops
+	ix.mu.Unlock()
+	defer func() {
+		ix.mu.Lock()
+		ix.hopLimit = 0
+		ix.mu.Unlock()
+	}()
+	return ix.TraceAllArguments(ctx, site)
+}
+
 func (ix *Index) TraceAllArguments(ctx context.Context, site domain.CallSite) ([]domain.DataFlow, []domain.Evidence, error) {
 	ix.mu.Lock()
 	defer ix.mu.Unlock()
@@ -978,9 +1053,12 @@ func (ix *Index) TraceAllArguments(ctx context.Context, site domain.CallSite) ([
 	for i := range call.Args {
 		var tx []domain.CallSite
 		ix.txBuf = &tx
+		ix.traceSeen = map[types.Object]bool{}
 		origin, why := ix.classify(pkg, enc, call.Args[i], 0)
 		ix.txBuf = nil
+		ix.traceSeen = nil
 		flows = append(flows, domain.DataFlow{
+			Arg:             i,
 			Sink:            site,
 			Source:          site,
 			Origin:          origin,
@@ -1123,7 +1201,7 @@ var passthroughMethods = map[string]bool{
 // looking at the callers of that function (one hop).
 func (ix *Index) traceParam(pkg *packages.Package, enc *ast.FuncDecl, v *types.Var, depth int) (domain.DataOrigin, string) {
 	if depth >= ix.hops() || enc == nil || enc.Name == nil {
-		return domain.OriginUnknown, fmt.Sprintf("parameter %s of %s: caller tracing depth exceeded", v.Name(), enc.Name)
+		return domain.OriginUnknown, fmt.Sprintf("parameter %s of %s: caller tracing depth exceeded (depth=%d)", v.Name(), enc.Name, depth)
 	}
 	// find which parameter index this is
 	paramIdx := paramIndexOf(enc, v.Name())
@@ -1212,11 +1290,40 @@ var rank = map[domain.DataOrigin]int{
 	domain.OriginExternalUntrusted:     7,
 }
 
+// FindAllValidations runs the per-argument validation scan over every
+// argument of the sink call — for conditions whose input position is not
+// pinned (ArgIndex < 0).
+func (ix *Index) FindAllValidations(ctx context.Context, site domain.CallSite) ([]domain.Validation, []domain.Evidence, error) {
+	ix.mu.Lock()
+	defer ix.mu.Unlock()
+	if err := ix.load(ctx); err != nil {
+		return nil, nil, err
+	}
+	call, _, _, err := ix.callAt(site)
+	if err != nil {
+		return nil, nil, err
+	}
+	var vals []domain.Validation
+	var ev []domain.Evidence
+	for i := range call.Args {
+		v, _, err := ix.findValidations(ctx, site, i)
+		if err != nil {
+			return vals, ev, err
+		}
+		vals = append(vals, v...)
+	}
+	return vals, ev, nil
+}
+
 // FindValidations locates guard statements in the enclosing function that
 // constrain the argument before the sink call.
 func (ix *Index) FindValidations(ctx context.Context, site domain.CallSite, argIndex int) ([]domain.Validation, []domain.Evidence, error) {
 	ix.mu.Lock()
 	defer ix.mu.Unlock()
+	return ix.findValidations(ctx, site, argIndex)
+}
+
+func (ix *Index) findValidations(ctx context.Context, site domain.CallSite, argIndex int) ([]domain.Validation, []domain.Evidence, error) {
 	var vals []domain.Validation
 	var ev []domain.Evidence
 	if err := ix.load(ctx); err != nil {
@@ -1226,12 +1333,15 @@ func (ix *Index) FindValidations(ctx context.Context, site domain.CallSite, argI
 	if err != nil {
 		return nil, nil, err
 	}
-	if enc == nil || enc.Body == nil || argIndex >= len(call.Args) {
+	if enc == nil || enc.Body == nil || argIndex < 0 || argIndex >= len(call.Args) {
 		return nil, nil, nil
 	}
 	argIdent := argIdentifier(call.Args[argIndex])
 	vals = append(vals, ix.frameGuards(pkg, enc, call, argIdent)...)
 	vals = append(vals, ix.fieldWriteGuards(pkg, site, call.Args[argIndex])...)
+	for i := range vals {
+		vals[i].Arg = argIndex
+	}
 	return vals, ev, nil
 }
 
@@ -1384,12 +1494,15 @@ func (ix *Index) FindValidationsBound(ctx context.Context, site domain.CallSite,
 	if err != nil {
 		return nil, nil, err
 	}
-	if enc == nil || enc.Body == nil || argIndex >= len(call.Args) {
+	if enc == nil || enc.Body == nil || argIndex < 0 || argIndex >= len(call.Args) {
 		return nil, nil, nil
 	}
 	argIdent := argIdentifier(call.Args[argIndex])
 	vals := ix.frameGuards(pkg, enc, call, argIdent)
 	vals = append(vals, ix.fieldWriteGuards(pkg, site, call.Args[argIndex])...)
+	for i := range vals {
+		vals[i].Arg = argIndex
+	}
 	if len(vals) > 0 {
 		return vals, ev, nil // sink frame already guards — nothing to climb
 	}
@@ -1447,6 +1560,9 @@ func (ix *Index) FindValidationsBound(ctx context.Context, site domain.CallSite,
 			Covers:   &covered,
 		})
 	}
+	for i := range vals {
+		vals[i].Arg = argIndex
+	}
 	return vals, ev, nil
 }
 
@@ -1459,6 +1575,11 @@ func argIdentifier(e ast.Expr) string {
 	case *ast.CallExpr:
 		if len(v.Args) > 0 {
 			return argIdentifier(v.Args[0])
+		}
+		// `x.Bytes()` / `x.String()` — zero-arg accessor: the guarded value
+		// is the receiver.
+		if sel, ok := v.Fun.(*ast.SelectorExpr); ok {
+			return argIdentifier(sel.X)
 		}
 	}
 	return ""
@@ -1532,41 +1653,200 @@ func sanitizeIf(ix *Index, pkg *packages.Package, s *ast.IfStmt, ident string) (
 	return "sanitize-if " + condSrc, true
 }
 
-// sanitizeSwitch reports whether a tagless switch bounds ident: every
-// case condition references ident and every clause body reassigns it
-// (clean RHS) or terminates. A default that does neither means some
-// input passes through untouched — not a guard.
+// sanitizeSwitch reports whether a tagless switch bounds ident. Two
+// shapes are accepted:
+//
+//   - self-sanitize: every case condition compares ident itself and every
+//     clause body reassigns it to a bounded value or terminates
+//     (`case count>max: count=max`).
+//   - range-gated write: the cases compare one other variable cv and
+//     bound it on both sides (`case size<0`, `case size>max`), while
+//     every clause assigns ident a bounded value — the default clause may
+//     additionally assign `ident = T(cv)`/bare cv, since a value reaching
+//     it already sits inside the checked range
+//     (`default: prefetchSize = FileSize(size)`).
+//
+// A case condition mentioning no variable, or mixing several, makes the
+// switch unanalyzable — not a guard.
 func sanitizeSwitch(ix *Index, pkg *packages.Package, s *ast.SwitchStmt, ident string) (string, bool) {
 	if ident == "" || s.Tag != nil || s.Body == nil || len(s.Body.List) == 0 {
 		return "", false
 	}
-	cases := 0
+	// First pass: find the single compared variable across case
+	// conditions and whether it is bounded on both sides.
+	cmpVar := ident
+	vars := map[string]bool{}
+	lower, upper := false, false
 	for _, stmt := range s.Body.List {
 		cc, ok := stmt.(*ast.CaseClause)
 		if !ok {
 			return "", false
 		}
-		if cc.List != nil {
-			cases++
-			mentions := false
-			for _, e := range cc.List {
-				if exprMentions(e, ident) && isComparison(e) {
-					mentions = true
-				}
-			}
-			if !mentions {
+		for _, e := range cc.List {
+			if !isComparison(e) {
 				return "", false
 			}
+			b := e.(*ast.BinaryExpr)
+			vs := exprVarIdents(pkg.TypesInfo, b)
+			if len(vs) != 1 {
+				return "", false
+			}
+			for v := range vs {
+				vars[v] = true
+			}
+			lo, hi := boundsDirection(pkg.TypesInfo, b)
+			lower = lower || lo
+			upper = upper || hi
 		}
-		// default and case clauses alike must sanitize or terminate.
-		if !branchBounds(pkg.TypesInfo, &ast.BlockStmt{List: cc.Body}, ident) {
-			return "", false
+	}
+	if len(vars) > 1 {
+		return "", false
+	}
+	for v := range vars {
+		cmpVar = v
+	}
+	cases := 0
+	hasDefault := false
+	for _, stmt := range s.Body.List {
+		cc := stmt.(*ast.CaseClause)
+		if cc.List != nil {
+			cases++
+		} else {
+			hasDefault = true
 		}
+		block := &ast.BlockStmt{List: cc.Body}
+		if branchBounds(pkg.TypesInfo, block, ident) {
+			continue
+		}
+		// Range-gated write: only the default clause sees values that
+		// survived every bound check; assigning it a conversion of the
+		// two-side-bounded compared var keeps ident bounded.
+		if cc.List == nil && cmpVar != ident && lower && upper &&
+			branchBoundsGated(pkg.TypesInfo, block, ident, cmpVar) {
+			continue
+		}
+		return "", false
 	}
 	if cases == 0 {
 		return "", false
 	}
+	// Range-gated mode needs a default: without it an unmatched cv leaves
+	// ident's previous value in place, which is not provably bounded. In
+	// self-sanitize mode the pass-through keeps the already-in-range ident.
+	if cmpVar != ident && !hasDefault {
+		return "", false
+	}
+	if cmpVar != ident {
+		return fmt.Sprintf("sanitize-switch on %s range-gated by %s (%d case(s))", ident, cmpVar, cases), true
+	}
 	return fmt.Sprintf("sanitize-switch on %s (%d case(s))", ident, cases), true
+}
+
+// exprVarIdents collects the distinct variable identifiers (types.Var)
+// inside e — the candidates for the variable a comparison bounds.
+// Constants, type names and function names are not variables.
+func exprVarIdents(info *types.Info, e ast.Expr) map[string]bool {
+	out := map[string]bool{}
+	ast.Inspect(e, func(n ast.Node) bool {
+		id, ok := n.(*ast.Ident)
+		if !ok {
+			return true
+		}
+		if _, ok := info.ObjectOf(id).(*types.Var); ok {
+			out[id.Name] = true
+		}
+		return true
+	})
+	return out
+}
+
+// boundsDirection classifies a comparison `a OP b` as a lower- and/or
+// upper-bound check on the surviving range: `v < x` diverts values below
+// x (lower bound on what passes), `v > x` diverts above (upper bound).
+// The side holding the variable decides the direction; when both sides
+// are variables the bound is ambiguous and neither flag is set.
+func boundsDirection(info *types.Info, b *ast.BinaryExpr) (lower, upper bool) {
+	lv := len(exprVarIdents(info, b.X)) > 0
+	rv := len(exprVarIdents(info, b.Y)) > 0
+	if lv == rv {
+		return false, false
+	}
+	op := b.Op
+	if rv {
+		// Mirror the comparison so the variable is on the left.
+		op = mirrorOp(op)
+	}
+	switch op {
+	case token.LSS, token.LEQ:
+		return true, false // v < x: passing values are >= x
+	case token.GTR, token.GEQ:
+		return false, true // v > x: passing values are <= x
+	}
+	return false, false
+}
+
+func mirrorOp(op token.Token) token.Token {
+	switch op {
+	case token.LSS:
+		return token.GTR
+	case token.LEQ:
+		return token.GEQ
+	case token.GTR:
+		return token.LSS
+	case token.GEQ:
+		return token.LEQ
+	}
+	return op
+}
+
+// branchBoundsGated is branchBounds extended: an assignment to ident is
+// also bounded when its RHS is the range-gated variable cv — bare or
+// under a conversion/accessor — because the caller has already proven cv
+// is bounded on both sides.
+func branchBoundsGated(info *types.Info, b *ast.BlockStmt, ident, cv string) bool {
+	if b == nil {
+		return false
+	}
+	if terminates(b) {
+		return true
+	}
+	assigns := false
+	for _, st := range b.List {
+		as, ok := st.(*ast.AssignStmt)
+		if !ok {
+			continue
+		}
+		for i, lhs := range as.Lhs {
+			id, ok := lhs.(*ast.Ident)
+			if !ok || id.Name != ident || i >= len(as.Rhs) {
+				continue
+			}
+			if exprMentions(as.Rhs[i], ident) {
+				return false
+			}
+			if !isBoundedRHS(info, as.Rhs[i]) && !onlyVarsOf(info, as.Rhs[i], cv) {
+				return false
+			}
+			assigns = true
+		}
+	}
+	return assigns
+}
+
+// onlyVarsOf reports whether every variable identifier in e is cv — the
+// RHS derives only from the range-bounded variable (plus constants and
+// conversions).
+func onlyVarsOf(info *types.Info, e ast.Expr, cv string) bool {
+	vars := exprVarIdents(info, e)
+	if len(vars) == 0 {
+		return false
+	}
+	for v := range vars {
+		if v != cv {
+			return false
+		}
+	}
+	return true
 }
 
 // isComparison reports whether e is a binary comparison — the bound-check

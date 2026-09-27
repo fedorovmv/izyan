@@ -110,11 +110,38 @@ CONFIRMED). Sanitize-switch кламп (`count<0→0`, `count>1024→1024`)
 записан Guard=true + Covers — значение ограничено на всех write-site'ах.
 arg2 (`global=false`) — CONSTANT (builtin-иденты больше не UNKNOWN).
 
-Что держит INCONCLUSIVE: arg1 `r.prefetchSize` — write-site `int(fs.Bytes())`
-через local-переменную, цепь глубже 8 hops упирается в framework-
-конструкторы + reflect-популяцию (terminal UNKNOWN). Плюс config-origin →
-deployDependent: CONFIGURATION-ввод может быть attacker-influenced
-(хостильный конфиг), поэтому peer-input FALSE не утверждается — честный
-INCONCLUSIVE, не баг. INPUT_CONSTRAINT теперь умеет FALSE по полному
-bound-покрытию (Covers), но требует все аргументы resolved — arg1
-честно блокирует.
+Что держит INCONCLUSIVE: config-origin → deployDependent —
+CONFIGURATION-ввод может быть attacker-influenced (хостильный конфиг),
+поэтому peer-input FALSE не утверждается. Финальная цепь честная:
+peer-input UNKNOWN (deploy-dependent), constraint TRUE (LLM-агент
+по fix-diff — безопасное направление), вердикт INCONCLUSIVE.
+
+Следующий раунд фиксов (per-arg + range-gated):
+
+- **Per-arg deep-trace**: gap-loop и NV теперь работают по `f.Arg`, а не
+  всегда по `cond.ArgIndex` — arg1 больше не пропускается; ключи
+  планировщика и `ReplaceDataFlow` матчат (cond, sink, arg). Все три
+  аргумента `Qos` резолвлены: arg0/arg1 → CONFIGURATION
+  (mapstructure-теги через полные цепи field→setter-param→caller→cfg),
+  arg2 → CONSTANT.
+- **Range-gated sanitize-switch**: `setPrefetchSize`-форма —
+  switch сравнивает `size`, присваивает `prefetchSize`; default-ветка
+  `fs = FileSize(size)` засчитывается bounded, когда compared-var
+  ограничен с двух сторон (`size<0` и `FileSize(size)>max`), и default
+  присутствует. Без default или при односторонней границе — не гарда
+  (onesidedprod-фикстура). Accessor-обёртки `int(fs.Bytes())` в RHS
+  write-site разворачиваются к локалу.
+- **NV re-trace на глубоком бюджете** (`verifyHops=16`): раньше
+  verifyInputFalse перетрейсил на depth=2 и объявлял UNKNOWN-origin
+  «contradicted». Теперь UNKNOWN → INSUFFICIENT_SCOPE (отсутствие
+  доказательства ≠ контрадикция), а реально внешние/конфиг-ориджины →
+  CONTRADICTED. LIVE: NV для C-PEER-INPUT честно показал полную цепь
+  до `cfg.PrefetchCount` mapstructure-тега и корректно контрадиктнул
+  агентский FALSE (config = deploy-dependent).
+- **LLM-tool panic**: `find_validations` с arg_index=-1 падал в
+  `call.Args[-1]`; теперь -1 делегирует в `FindAllValidations`.
+- Const/generated-аргументы не требуют Covers — константа не нарушает
+  constraint (`arg2=false` не блокирует guard-coverage).
+
+Bound-параметр C-CONSTRAINT теперь честный: `prefetchCount < 0 or
+prefetchSize < 0` — signed→unsigned cast именно в этих аргументах.

@@ -193,3 +193,56 @@ func TestFieldWriteGuards(t *testing.T) {
 		t.Fatalf("field write sites fully bounded but no Covers record: %+v", vals)
 	}
 }
+
+// The rm6m setPrefetchSize shape: the switch compares `size` while every
+// clause assigns a different sanitized var; the field write wraps the
+// local in `int(fs.Bytes())`. Covers must still be emitted — the compared
+// var is bounded on both sides and the default converts it.
+func TestFieldWriteGuardsRangeGated(t *testing.T) {
+	ix := fixture(t, "fieldprod")
+	sites, err := ix.FindCallers(context.Background(),
+		domain.SymbolRef{Package: "example.com/dep/vuln", Symbol: "Qos"})
+	if err != nil || len(sites) != 1 {
+		t.Fatalf("sites=%v err=%v", sites, err)
+	}
+	vals, _, err := ix.FindValidations(context.Background(), sites[0], 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gated, covers bool
+	for _, v := range vals {
+		if v.Guard && strings.Contains(v.Property, "range-gated") {
+			gated = true
+		}
+		if v.Covers != nil && v.Covers.Line == sites[0].Line {
+			covers = true
+		}
+	}
+	if !gated {
+		t.Fatalf("no range-gated sanitize-switch guard recorded: %+v", vals)
+	}
+	if !covers {
+		t.Fatalf("range-gated write sites fully bounded but no Covers record: %+v", vals)
+	}
+}
+
+// A switch that bounds the compared var on one side only must not be a
+// guard for a different var — the default assignment of an unbounded
+// half-range is not bounded.
+func TestSanitizeSwitchOneSidedNoGuard(t *testing.T) {
+	ix := fixture(t, "onesidedprod")
+	sites, err := ix.FindCallers(context.Background(),
+		domain.SymbolRef{Package: "example.com/dep/vuln", Symbol: "Qos"})
+	if err != nil || len(sites) != 1 {
+		t.Fatalf("sites=%v err=%v", sites, err)
+	}
+	vals, _, err := ix.FindValidations(context.Background(), sites[0], 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range vals {
+		if v.Covers != nil && v.Covers.Line == sites[0].Line {
+			t.Fatalf("one-sided switch wrongly covers the sink: %+v", vals)
+		}
+	}
+}

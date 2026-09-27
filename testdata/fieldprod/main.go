@@ -18,7 +18,20 @@ type config struct {
 
 type reader struct {
 	s string
+	n int
 }
+
+// fileSize mirrors the rm6m local type: the compared var and the
+// sanitized var differ, and the default branch converts the
+// range-bounded compared var.
+type fileSize int64
+
+func (f fileSize) Bytes() int64 { return int64(f) }
+
+const (
+	defaultSize fileSize = 0
+	maxSize     fileSize = 1024
+)
 
 func loadCfg() config {
 	// decode via tag machinery: no literal write sites exist.
@@ -40,13 +53,32 @@ func (r *reader) setS(s string) {
 	r.s = s
 }
 
+// setN mirrors setPrefetchSize: the switch bounds the *compared* var
+// (size) on both sides while every clause assigns the sanitized var fs —
+// the default converts the range-gated size. The field write itself is
+// wrapped in an accessor call (fs.Bytes()), not a bare ident.
+func (r *reader) setN(size int) {
+	var fs fileSize
+	switch {
+	case size < 0:
+		fs = defaultSize
+	case fileSize(size) > maxSize:
+		fs = maxSize
+	default:
+		fs = fileSize(size)
+	}
+	r.n = int(fs.Bytes())
+}
+
 func (r *reader) run() {
 	fmt.Println(vuln.Parse(r.s))
+	vuln.Qos(r.n, r.n, false)
 }
 
 func main() {
 	cfg := loadCfg()
 	r := &reader{}
 	r.setS(cfg.s)
+	r.setN(2048)
 	r.run()
 }
