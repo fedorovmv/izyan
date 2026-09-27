@@ -145,3 +145,31 @@ peer-input UNKNOWN (deploy-dependent), constraint TRUE (LLM-агент
 
 Bound-параметр C-CONSTRAINT теперь честный: `prefetchCount < 0 or
 prefetchSize < 0` — signed→unsigned cast именно в этих аргументах.
+
+Финальный раунд (порядок стадий + точность демоции):
+
+- **LLM-fallback перенесён в конец GAP_ANALYSIS** — раньше агент
+  выставлял TRUE до deep-trace и вытеснял доказуемый det-FALSE. Теперь
+  `C-CONSTRAINT` детерминистично достигает `falsifier=guards` +
+  NV **VERIFIED** («all 3 sink site(s) covered»: arg0/arg1 клампы,
+  arg2 const-skip).
+- **Точные dynamic-маркеры**: `reflect` импорт больше не ослабляет
+  guard-FALSE (import ≠ write); добавлен `reflect_write` —
+  `reflect.Value.Set*`, ослабляет только при exported-полях
+  (`prefetchCount`/`prefetchSize` unexported → reflect их не пишет).
+  `unsafe` остаётся ослабляющим — `unsafe.Pointer` пишет и unexported.
+- **Review-демоция остаётся**: ревьюер демотировал VERIFIED-FALSE по
+  unsafe-маркеру — консервативно корректно (unsafe действительно
+  обходит синтаксическое покрытие). Итог INCONCLUSIVE с полным следом:
+  доказанные bound-гарды + записанная причина, почему FALSE не
+  утверждается.
+- **Отчёт**: таблица Claims теперь показывает колонку verification
+  (`guards / VERIFIED (demoted)`) — история доказательства видима,
+  а не только финальный результат.
+
+Итоговая доказательная цепочка rm6m: sink аргументы → field-writes →
+setter-параметры → callers → `cfg.*` mapstructure-теги → CONFIGURATION
++ Covers bound-гарды + NV VERIFIED + ревью-демоция по unsafe →
+INCONCLUSIVE. Это и есть «доказуемый» уровень: каждое утверждение
+опирается на записанное evidence, а отказ от FALSE — на конкретный
+маркер (unsafe), а не на «не нашли путь».

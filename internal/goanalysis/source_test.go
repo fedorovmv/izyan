@@ -246,3 +246,63 @@ func TestSanitizeSwitchOneSidedNoGuard(t *testing.T) {
 		}
 	}
 }
+
+// reflectprod imports reflect for both a read-only TypeOf call and a
+// reflect.Value.SetInt write — the import marker and the write marker are
+// distinct kinds.
+func TestScanDynamicReflectWrite(t *testing.T) {
+	ix := fixture(t, "reflectprod")
+	markers, err := ix.ScanDynamic(context.Background(), vulnSym)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var bare, write bool
+	for _, m := range markers {
+		switch m.Kind {
+		case "reflect":
+			bare = true
+		case "reflect_write":
+			write = true
+			if !strings.Contains(m.Detail, "SetInt") {
+				t.Fatalf("reflect_write detail=%q", m.Detail)
+			}
+		}
+	}
+	if !bare {
+		t.Fatal("expected bare reflect import marker")
+	}
+	if !write {
+		t.Fatalf("expected reflect_write marker for Value.SetInt, got %+v", markers)
+	}
+}
+
+// hasExportedCoveredField gates whether a reflect_write marker weakens a
+// guard-based FALSE: only an exported covered field is reachable to
+// reflect.Value.Set*.
+func TestHasExportedCoveredField(t *testing.T) {
+	mkCase := func(props ...string) *domain.AnalysisCase {
+		c := &domain.AnalysisCase{}
+		for _, p := range props {
+			c.EvidenceGraph.Validations = append(c.EvidenceGraph.Validations,
+				domain.Validation{Property: p})
+		}
+		return c
+	}
+	claim := domain.Claim{ConditionID: "C1"}
+
+	if !hasExportedCoveredField(
+		mkCase("cond=C1 field-write Mode: sanitize-switch"), claim) {
+		t.Fatal("exported covered field must report true")
+	}
+	if hasExportedCoveredField(
+		mkCase("cond=C1 field-write mode: sanitize-switch"), claim) {
+		t.Fatal("unexported covered field must report false")
+	}
+	if hasExportedCoveredField(
+		mkCase("cond=C2 field-write Mode: sanitize-switch"), claim) {
+		t.Fatal("field covered for a different condition must not count")
+	}
+	if hasExportedCoveredField(mkCase("cond=C1 count > max → count = max"), claim) {
+		t.Fatal("no field-backed guard must report false")
+	}
+}

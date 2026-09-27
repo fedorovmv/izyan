@@ -989,6 +989,18 @@ func (ix *Index) ScanDynamic(ctx context.Context, ref domain.SymbolRef) ([]Dynam
 					callFuns[call.Fun] = true
 					if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
 						callFuns[sel.Sel] = true
+						// reflect.Value.Set* mutates the underlying value —
+						// the only reflect shape that can write a guarded
+						// field/variable. The bare `reflect` import or
+						// read-only calls (TypeOf, DeepEqual, Interface)
+						// cannot.
+						if strings.HasPrefix(sel.Sel.Name, "Set") &&
+							isReflectValue(pkg.TypesInfo, sel.X) {
+							out = append(out, DynamicMarker{
+								CallSite: pos(call), Kind: "reflect_write",
+								Detail: "reflect.Value." + sel.Sel.Name + " call can write fields invisibly",
+							})
+						}
 					}
 				}
 				return true
@@ -1226,4 +1238,21 @@ func (ix *Index) pkgByPath(ctx context.Context, pkgPath string) *packages.Packag
 		}
 	}
 	return nil
+}
+
+// isReflectValue reports whether e's static type is reflect.Value — the
+// receiver shape of the mutating Set* calls.
+func isReflectValue(info *types.Info, e ast.Expr) bool {
+	if info == nil {
+		return false
+	}
+	t := info.TypeOf(e)
+	if t == nil {
+		return false
+	}
+	n, ok := t.(*types.Named)
+	if !ok || n.Obj() == nil || n.Obj().Pkg() == nil {
+		return false
+	}
+	return n.Obj().Pkg().Path() == "reflect" && n.Obj().Name() == "Value"
 }

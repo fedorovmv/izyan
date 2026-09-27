@@ -126,9 +126,10 @@ func Markdown(c *domain.AnalysisCase) string {
 		}
 	}
 	if len(c.Claims) > 0 {
-		b.WriteString("## Claims\n\n| condition | result | evidence |\n|---|---|---|\n")
+		b.WriteString("## Claims\n\n| condition | result | verification | evidence |\n|---|---|---|---|\n")
 		for _, cl := range c.Claims {
-			fmt.Fprintf(&b, "| `%s` | %s | %s |\n", cl.ConditionID, cl.Result, strings.Join(evidenceIDs(cl.EvidenceIDs), ", "))
+			fmt.Fprintf(&b, "| `%s` | %s | %s | %s |\n", cl.ConditionID, cl.Result,
+				claimVerification(cl), strings.Join(evidenceIDs(cl.EvidenceIDs), ", "))
 		}
 		b.WriteString("\n")
 	}
@@ -212,6 +213,30 @@ func renderParams(params map[string]string) string {
 		parts = append(parts, k+"="+params[k])
 	}
 	return " {" + strings.Join(parts, ", ") + "}"
+}
+
+// claimVerification renders the falsifier/NV status so a claim that was
+// proven and then demoted by review stays auditable in the table —
+// e.g. "guards / VERIFIED (demoted)" instead of a bare UNKNOWN.
+func claimVerification(cl domain.Claim) string {
+	if cl.NegativeVerification == nil && cl.Falsifier == "" {
+		return ""
+	}
+	var s string
+	if cl.Falsifier != "" {
+		s = string(cl.Falsifier)
+	}
+	if cl.NegativeVerification != nil {
+		if s != "" {
+			s += " / "
+		}
+		s += string(cl.NegativeVerification.Status)
+	}
+	if cl.Result == domain.ClaimUnknown && cl.NegativeVerification != nil &&
+		cl.NegativeVerification.Status == domain.NegativeVerified {
+		s += " (demoted)"
+	}
+	return s
 }
 
 func evidenceIDs(ids []domain.EvidenceID) []string {

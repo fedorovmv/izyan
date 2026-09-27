@@ -27,6 +27,11 @@ type GapAnalysis struct {
 	// actions for it are exhausted. It only decides where to look next;
 	// claim results remain the evaluators' job.
 	Planner HypothesisPlanner
+	// Fallback is the optional LLM claim evaluator. It runs only after the
+	// deterministic hypothesis loop AND the planner are exhausted — an LLM
+	// claim must never preempt a provable deterministic verdict (e.g. a
+	// guard-falsified FALSE a deep trace would have reached).
+	Fallback evaluator.ConditionEvaluator
 }
 
 // HypothesisPlanner proposes and executes one hypothesis test for an
@@ -86,7 +91,44 @@ func (h GapAnalysis) Run(ctx context.Context, c *domain.AnalysisCase) (workflow.
 		}
 		h.reevaluate(c)
 	}
-	return h.dispatch(c, "gap analysis complete")
+	// The deterministic loop and planner are exhausted. If no mandatory
+	// claim is FALSE yet, the LLM fallback may still resolve the remaining
+	// UNKNOWNs — claims it cannot back stay UNKNOWN.
+	fallbackRan := false
+	if h.Fallback != nil && !hasFalseClaim(c) {
+		for _, cond := range c.Exploit.MandatoryConditions {
+			cl := findClaim(c.Claims, cond.ID)
+			if cl == nil || cl.Result != domain.ClaimUnknown ||
+				!h.Fallback.CanEvaluate(cond) {
+				continue
+			}
+			if max := c.Workflow.Limits.MaxLLMCalls; max > 0 &&
+				c.UsageSnapshot().LLMCalls >= max {
+				c.EvidenceGraph.AddLimitation(
+					"gap fallback skipped: MaxLLMCalls budget exhausted")
+				break
+			}
+			fallbackRan = true
+			if alt := h.Fallback.Evaluate(cond, c); alt.Result != domain.ClaimUnknown ||
+				len(alt.EvidenceIDs) > 0 {
+				*cl = alt
+			}
+		}
+	}
+	reason := "gap analysis complete"
+	if fallbackRan {
+		reason += "; LLM claim fallback ran after deterministic actions"
+	}
+	return h.dispatch(c, reason)
+}
+
+func hasFalseClaim(c *domain.AnalysisCase) bool {
+	for _, cl := range c.Claims {
+		if cl.Result == domain.ClaimFalse {
+			return true
+		}
+	}
+	return false
 }
 
 // dispatch picks the next state by the same rules EVALUATE_CONDITIONS

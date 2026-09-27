@@ -122,10 +122,30 @@ func (v Verifier) VerifyFalse(ctx context.Context, c *domain.AnalysisCase, claim
 				// unexported sink is unreachable to them. unsafe alone calls
 				// nothing — it matters through linkname/func_value, which are
 				// checked per-symbol above.
+				// For guard-based FALSE claims a bare reflect import is
+				// irrelevant: it cannot write the guarded value — only
+				// reflect_write (Value.Set*) markers can.
+				if m.Kind == "reflect" && claim.Falsifier == "guards" {
+					continue
+				}
 				if anyExported && !dynSeen[m.Kind] {
 					dynSeen[m.Kind] = true
 					nv.Limitations = append(nv.Limitations,
 						m.Kind+" usage in product widens the call graph; static negative verification is weaker")
+				}
+			case "reflect_write":
+				// A Set* call can mutate a guarded field out of sight of
+				// syntactic write-site scans — but reflect.Set works only on
+				// *exported* fields; when every covered field is unexported
+				// this marker cannot invalidate the coverage.
+				if claim.Falsifier == "guards" && !hasExportedCoveredField(c, claim) {
+					continue
+				}
+				if !dynSeen[m.Kind] {
+					dynSeen[m.Kind] = true
+					nv.Limitations = append(nv.Limitations,
+						"reflect.Value.Set* call at "+m.File+":"+fmt.Sprint(m.Line)+
+							" can write fields invisibly; guard coverage is weaker")
 				}
 			}
 		}
@@ -492,6 +512,39 @@ func (v Verifier) verifyGuardFalse(ctx context.Context, c *domain.AnalysisCase, 
 	}
 	nv.Notes = fmt.Sprintf("all %d sink site(s) are covered by guards", len(sinks))
 	return setNeg(claim, nv)
+}
+
+// hasExportedCoveredField reports whether any guard covering this claim's
+// sinks protects an exported field — the only kind reflect.Value.Set can
+// mutate. Unexported fields and claims with no field-backed guards return
+// false: reflect cannot write locals or unexported fields, so there is
+// nothing for a reflect_write marker to weaken.
+func hasExportedCoveredField(c *domain.AnalysisCase, claim domain.Claim) bool {
+	for _, val := range c.EvidenceGraph.Validations {
+		if claim.ConditionID != "" &&
+			!strings.Contains(val.Property, "cond="+string(claim.ConditionID)) {
+			continue
+		}
+		name := ""
+		firstField := func(rest string) string {
+			if f := strings.Fields(rest); len(f) > 0 {
+				return f[0]
+			}
+			return ""
+		}
+		if i := strings.Index(val.Property, "field-write "); i >= 0 {
+			name = strings.TrimSuffix(firstField(val.Property[i+len("field-write "):]), ":")
+		} else if i := strings.Index(val.Property, "write site of field "); i >= 0 {
+			name = firstField(val.Property[i+len("write site of field "):])
+		}
+		if name == "" {
+			continue
+		}
+		if name[0] >= 'A' && name[0] <= 'Z' {
+			return true
+		}
+	}
+	return false
 }
 
 func setNeg(cl domain.Claim, nv *domain.NegativeVerification) domain.Claim {

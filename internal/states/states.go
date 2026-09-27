@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"sync"
 
 	"example.com/vuln-analyzer/internal/affected"
 	"example.com/vuln-analyzer/internal/domain"
@@ -826,9 +825,10 @@ func (h CollectEvidence) collectConfigKey(_ context.Context, c *domain.AnalysisC
 
 type EvaluateConditions struct {
 	Evaluators []evaluator.ConditionEvaluator
-	// Fallback (e.g. the LLM agent) runs on conditions that deterministic
-	// evaluators left UNKNOWN.
-	Fallback evaluator.ConditionEvaluator
+	// Fallback was moved to GapAnalysis: the LLM claim evaluator must run
+	// only after the deterministic hypothesis loop is exhausted, otherwise
+	// an evidence-cited LLM TRUE can preempt a provable deterministic
+	// FALSE the deep trace would have reached.
 }
 
 func (EvaluateConditions) State() domain.WorkflowState { return domain.StateEvaluateConditions }
@@ -842,7 +842,6 @@ func (h EvaluateConditions) Run(_ context.Context, c *domain.AnalysisCase) (work
 		existing[cl.ConditionID] = true
 	}
 	hasFalse := false
-	var pending []domain.Condition
 	for _, cond := range c.Exploit.MandatoryConditions {
 		if existing[cond.ID] {
 			if claim := findClaim(c.Claims, cond.ID); claim != nil && claim.Result == domain.ClaimFalse {
@@ -864,47 +863,12 @@ func (h EvaluateConditions) Run(_ context.Context, c *domain.AnalysisCase) (work
 		}
 		if claim.Result == domain.ClaimFalse {
 			hasFalse = true
-		} else if claim.Result == domain.ClaimUnknown {
-			pending = append(pending, cond)
 		}
 		c.Claims = append(c.Claims, claim)
 	}
-	// The fallback (LLM agent) runs only on UNKNOWN conditions and only
-	// when no mandatory condition is already FALSE: a proven-false
-	// condition caps the verdict below EXPLOITABLE regardless of the rest,
-	// so spending bounded-expensive agent steps cannot change the outcome.
-	if !hasFalse {
-		// Conditions are independent: run the fallback concurrently.
-		// EvidenceGraph and Usage counters are mutex-guarded.
-		var wg sync.WaitGroup
-		var mu sync.Mutex
-		for _, cond := range pending {
-			if h.Fallback == nil || !h.Fallback.CanEvaluate(cond) {
-				continue
-			}
-			wg.Add(1)
-			go func(cond domain.Condition) {
-				defer wg.Done()
-				alt := h.Fallback.Evaluate(cond, c)
-				mu.Lock()
-				defer mu.Unlock()
-				claim := findClaim(c.Claims, cond.ID)
-				if claim == nil {
-					return
-				}
-				if alt.Result != domain.ClaimUnknown || len(alt.EvidenceIDs) > 0 {
-					*claim = alt
-				}
-				if claim.Result == domain.ClaimFalse {
-					hasFalse = true
-				}
-			}(cond)
-		}
-		wg.Wait()
-	} else {
-		c.EvidenceGraph.AddLimitation(
-			"agent fallback skipped: a mandatory condition is already FALSE, so remaining UNKNOWNs cannot change the verdict")
-	}
+	// The LLM fallback runs in GapAnalysis, after the deterministic
+	// hypothesis loop — a fallback TRUE must not preempt a provable
+	// deterministic FALSE that deep tracing or guard analysis reaches.
 	// Supporting factors never gate the verdict, but they still get
 	// claims — exposure/priority facts belong in the report, not only in
 	// the raw evidence graph.
