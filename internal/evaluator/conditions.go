@@ -53,7 +53,8 @@ func (SymbolReachable) Evaluate(cond domain.Condition, c *domain.AnalysisCase) d
 	if !govulncheckRan(c) {
 		claim.Limitations = append(claim.Limitations,
 			"govulncheck did not run or failed; reachability inferred from module-usage evidence only")
-		return libraryUsageVerdict(claim, c, symbols)
+		return libraryUsageVerdict(claim, c, symbols,
+			"govulncheck did not run or failed")
 	}
 
 	matched := map[string]bool{}
@@ -79,7 +80,8 @@ func (SymbolReachable) Evaluate(cond domain.Condition, c *domain.AnalysisCase) d
 	// database. If the DB lacks this advisory entirely, reachability was never
 	// evaluated — fall back to module-usage evidence.
 	if c.GovulncheckCoverage == "not_in_db" {
-		return libraryUsageVerdict(claim, c, symbols)
+		return libraryUsageVerdict(claim, c, symbols,
+			"advisory absent from govulncheck DB")
 	}
 
 	claim.EvidenceIDs = nil
@@ -91,10 +93,13 @@ func (SymbolReachable) Evaluate(cond domain.Condition, c *domain.AnalysisCase) d
 }
 
 // libraryUsageVerdict decides reachability when govulncheck could not evaluate
-// the advisory. Unexported library internals cannot be referenced by product
-// code — they execute inside the library's peer-driven path, so real evidence
-// is whether the product calls the module's API at all.
-func libraryUsageVerdict(claim domain.Claim, c *domain.AnalysisCase, subjects []domain.SymbolRef) domain.Claim {
+// the advisory; `why` states which situation applies — the DB lacks the
+// advisory or the tool never ran — and is embedded into explanations so a
+// reader does not confuse "ran and silent" with "did not run".
+// Unexported library internals cannot be referenced by product code — they
+// execute inside the library's peer-driven path, so real evidence is whether
+// the product calls the module's API at all.
+func libraryUsageVerdict(claim domain.Claim, c *domain.AnalysisCase, subjects []domain.SymbolRef, why string) domain.Claim {
 	usages := c.EvidenceGraph.ModuleUsages
 	if len(usages) == 0 {
 		if !moduleUsageChecked(c) {
@@ -103,7 +108,7 @@ func libraryUsageVerdict(claim domain.Claim, c *domain.AnalysisCase, subjects []
 			return claim
 		}
 		claim.Result = domain.ClaimFalse
-		claim.Explanation = "advisory absent from govulncheck DB and product makes no calls into the vulnerable module"
+		claim.Explanation = why + " and product makes no calls into the vulnerable module"
 		claim.Limitations = append(claim.Limitations,
 			"FALSE is a candidate: module API usage is measured from product call sites, not vendored internals")
 		return claim
@@ -112,8 +117,8 @@ func libraryUsageVerdict(claim domain.Claim, c *domain.AnalysisCase, subjects []
 		claim.Result = domain.ClaimTrue
 		claim.EvidenceIDs = moduleUsageEvidence(c)
 		claim.Explanation = fmt.Sprintf(
-			"product calls the vulnerable module's API at %d site(s); unexported sinks execute inside its peer-driven path (advisory absent from govulncheck DB)",
-			len(usages))
+			"product calls the vulnerable module's API at %d site(s); unexported sinks execute inside its peer-driven path (%s)",
+			len(usages), why)
 		claim.Limitations = append(claim.Limitations,
 			"transitive reach inferred from module API usage, not traced to the sink")
 		return claim
@@ -127,8 +132,8 @@ func libraryUsageVerdict(claim domain.Claim, c *domain.AnalysisCase, subjects []
 			claim.Result = domain.ClaimTrue
 			claim.EvidenceIDs = moduleUsageEvidence(c)
 			claim.Explanation = fmt.Sprintf(
-				"advisory absent from govulncheck DB; %s reachable through module internals: %s",
-				want, strings.Join(chain, " -> "))
+				"%s; %s reachable through module internals: %s",
+				why, want, strings.Join(chain, " -> "))
 			return claim
 		}
 		for _, u := range usages {
@@ -136,8 +141,8 @@ func libraryUsageVerdict(claim domain.Claim, c *domain.AnalysisCase, subjects []
 				claim.Result = domain.ClaimTrue
 				claim.EvidenceIDs = moduleUsageEvidence(c)
 				claim.Explanation = fmt.Sprintf(
-					"advisory absent from govulncheck DB; product directly calls %s at %s:%d",
-					want, u.File, u.Line)
+					"%s; product directly calls %s at %s:%d",
+					why, want, u.File, u.Line)
 				return claim
 			}
 		}
@@ -146,13 +151,13 @@ func libraryUsageVerdict(claim domain.Claim, c *domain.AnalysisCase, subjects []
 	// without it, absence is unknown, not negative.
 	if !moduleReachChecked(c) {
 		claim.Limitations = append(claim.Limitations,
-			"advisory absent from govulncheck DB; module is used but exported sinks were not reachability-checked")
+			why+"; module is used but exported sinks were not reachability-checked")
 		return claim
 	}
 	claim.Result = domain.ClaimFalse
 	claim.Explanation = fmt.Sprintf(
-		"advisory absent from govulncheck DB; none of %d exported subject(s) is invoked by product code nor reachable through the module API it uses",
-		len(subjects))
+		"%s; none of %d exported subject(s) is invoked by product code nor reachable through the module API it uses",
+		why, len(subjects))
 	claim.Limitations = append(claim.Limitations,
 		"FALSE is a candidate: implicit interface dispatch (e.g. fmt.Stringer) may hide calls",
 		"module-internal reachability was checked in vendored source only")

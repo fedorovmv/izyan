@@ -8,6 +8,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -25,6 +28,43 @@ type ExecRunner struct {
 	// Env carries the target toolchain (PATH/GOTOOLCHAIN) into the
 	// govulncheck subprocess and, for source mode, the `go` it spawns.
 	Env []string
+}
+
+// resolveGovulnBin finds the govulncheck executable: PATH first, then the
+// well-known `go install` destinations (GOBIN, GOPATH[0]/bin, ~/go/bin) —
+// restricted environments routinely lack ~/go/bin on PATH.
+func resolveGovulnBin(ctx context.Context) string {
+	if p, err := exec.LookPath("govulncheck"); err == nil {
+		return p
+	}
+	for _, key := range []string{"GOBIN", "GOPATH"} {
+		out, err := exec.CommandContext(ctx, "go", "env", key).Output()
+		if err != nil {
+			continue
+		}
+		for _, d := range filepath.SplitList(strings.TrimSpace(string(out))) {
+			if d == "" {
+				continue
+			}
+			if key == "GOPATH" {
+				d = filepath.Join(d, "bin")
+			}
+			if cand := filepath.Join(d, "govulncheck"); fileExists(cand) {
+				return cand
+			}
+		}
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		if cand := filepath.Join(home, "go", "bin", "govulncheck"); fileExists(cand) {
+			return cand
+		}
+	}
+	return "govulncheck" // unresolved — the exec error is recorded honestly
+}
+
+func fileExists(p string) bool {
+	st, err := os.Stat(p)
+	return err == nil && !st.IsDir()
 }
 
 // CachingRunner runs govulncheck once per (repo, build) — its output
@@ -49,7 +89,7 @@ func (r *cachingRunner) RunGovulncheck(ctx context.Context, dir string, build do
 func (r ExecRunner) RunGovulncheck(ctx context.Context, dir string, build domain.ProductSnapshot) ([]byte, error) {
 	bin := r.Bin
 	if bin == "" {
-		bin = "govulncheck"
+		bin = resolveGovulnBin(ctx)
 	}
 	// r.Env carries the target toolchain (PATH/GOTOOLCHAIN): govulncheck
 	// source mode loads stdlib through the `go` it finds in PATH.
@@ -93,7 +133,7 @@ type DBInformer interface {
 func (r ExecRunner) DBInfo(ctx context.Context) (string, error) {
 	bin := r.Bin
 	if bin == "" {
-		bin = "govulncheck"
+		bin = resolveGovulnBin(ctx)
 	}
 	out, _, err := toolaudit.Run(ctx, "govulncheck", "", "", bin, nil, "-version")
 	if err != nil {

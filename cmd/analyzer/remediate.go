@@ -31,6 +31,7 @@ func runRemediate(args []string) error {
 	fs.Var(&rootCauseFlags, "root-cause", "manual root cause as pkg/path.Symbol (repeatable)")
 	apply := fs.Bool("apply", false, "apply the fix (go get/go mod tidy) — mutates go.mod/go.sum")
 	runTests := fs.Bool("run-tests", false, "run `go test ./...` after the fix before re-analysis")
+	worktree := fs.String("worktree", "", "apply inside `git worktree add <path>` instead of the repository — the fix is validated without touching the source checkout")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -76,10 +77,27 @@ func runRemediate(args []string) error {
 	if err != nil {
 		return err
 	}
+	target := absRepo
+	if *worktree != "" {
+		wt, err := filepath.Abs(*worktree)
+		if err != nil {
+			return err
+		}
+		if err := runRemediateStep(absRepo,
+			[]string{"git", "worktree", "add", "--detach", wt, "HEAD"}); err != nil {
+			return fmt.Errorf("remediate step %q failed: %w",
+				"git worktree add --detach "+wt+" HEAD", err)
+		}
+		fmt.Println("remediate: applying in worktree", wt)
+		target = wt
+	}
 	for _, s := range steps {
-		if err := runRemediateStep(absRepo, s); err != nil {
+		if err := runRemediateStep(target, s); err != nil {
 			return fmt.Errorf("remediate step %q failed: %w", joinArgs(s), err)
 		}
+	}
+	if target != absRepo {
+		o.repo = target // re-analysis reads the fixed worktree
 	}
 	after, err := analyzeCase(ctx, o)
 	if err != nil {

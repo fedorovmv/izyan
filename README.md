@@ -47,6 +47,7 @@ vuln-analyzer scan \
 vuln-analyzer remediate \
   --repo /src/product --vuln GO-2025-3595 \
   [--apply] [--run-tests]   # без --apply — только план
+  [--worktree /tmp/wt]      # apply в git worktree — исходник не трогается
 
 vuln-analyzer analyze \
   --ticket ticket.json      # generic tracker intake (embedded/synth advisory)

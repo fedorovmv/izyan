@@ -164,9 +164,10 @@ code_not_reachable, `INCONCLUSIVE`→in_triage + detail.
 fixed-версия выше resolved) → план `go get`/`go mod tidy`/`go build`
 (+`go test` по `--run-tests`); `--apply` исполняет шаги (мутирует
 go.mod/go.sum — explicit opt-in) и повторяет анализ, печатая
-`verdict -> verdict`. Проверено на фикстуре: EXPLOITABLE →
-NOT_AFFECTED. Worktree-изоляция — не реализована (apply идёт
-in-place).
+`verdict -> verdict`. `--worktree <path>` исполняет apply в
+`git worktree add --detach` и анализирует worktree — исходный checkout
+не мутируется. Проверено на фикстуре: EXPLOITABLE → NOT_AFFECTED,
+исходник остался на v1.0.0.
 
 ### 3.10 Intake из tracker
 

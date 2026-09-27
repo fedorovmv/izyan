@@ -40,6 +40,35 @@ pinned behavior, не независимый ground truth. false-safe=0 оста
 - Exposure-факты реального репо: inbound listeners (http/grpc/net) и
   outbound amqp091.Dial* в отчёте.
 
+## Ground-truth pass (2026-…)
+
+Ручная проверка 5 EXPLOITABLE-кейсов по персистированным кейсам:
+
+- **RC accuracy 5/5**: `readField` (field-length DoS), `readLongstr`
+  (int-overflow), `writeFrame` (shortstr trunc), `Channel.recvContent`
+  (body OOM), `Connection.openTune` (frame-size negotiation) — каждый
+  символ подтверждён присутствием в persisted fix-diff evidence, что
+  соответствует содержанию advisory.
+- **Coverage ответ**: GHSA-advisory отсутствуют в Go vuln DB →
+  `govulncheck_coverage=not_in_db`, reachability выводится по
+  module-usage (44 call-сайта amqp091 API) с limitation «transitive
+  reach inferred, not traced to the sink». Это специфицированная
+  семантика WIRE_PARSER: unexported sink исполняется в peer-driven
+  read-path на каждом кадре — вызов API подразумевает исполнение
+  парсера. EXPLOITABLE корректен в threat-модели «враждебный/MITM
+  брокер».
+- **Найденный дефект (исправлен)**: при отсутствии `govulncheck` в
+  PATH бинарь `go install` (GOBIN/GOPATH/bin/~/go/bin) не резолвился →
+  tool не запускался, а объяснение говорило «advisory absent from
+  govulncheck DB» — неправильная атрибуция. Теперь `resolveGovulnBin`
+  ищет в GOBIN/GOPATH/bin/~/go/bin, а `libraryUsageVerdict` получает
+  явную причину fallback'а (`did not run or failed` vs `absent from
+  DB`).
+
+Остаётся: качественная оценка «peer can drive» → «истинно exploitable
+в проде» зависит от деплоя (доверен ли брокер) — за пределами
+статического анализа, claim limitations это фиксируют.
+
 ## Следующий слой
 
 - Независимая ручная разметка ground truth (какие из EXPLOITABLE —
