@@ -51,8 +51,13 @@ TRUE на этих origins по умолчанию — небезопасно в
 
 - Детекция по пакетному пути (`strings.Contains(pkgPath,...)`) — эвристика;
   кастомные обёртки/ORM вне списка не распознаются.
-- `EXTERNAL_AUTHENTICATED` не различается (auth на входе — отдельная
-  работа); `GENERATED` частично.
+- `EXTERNAL_AUTHENTICATED` различён для outbound HTTP (позже):
+  `hasAuthMarkers` ищет credential-маркеры в enclosing-функции —
+  `Authorization`-литерал, `SetBasicAuth`, oauth/credentials-хелперы →
+  `client.Do` через аутентифицированный клиент = `EXTERNAL_AUTHENTICATED`.
+  Claim-семантика не меняется (authenticated peer всё ещё
+  attacker-capable); различие — provenance-честность. Inbound auth
+  (middleware за пределами фрейма) не определяется. `GENERATED` частично.
 - `Scan` через указатель на структуру (`rows.Scan(&x.Field)`) — покрыто
   только для `&ident`, KeyValue/Index-адресаты не ищутся.
 - Запись в БД самим продуктом (taint «product wrote it earlier») не

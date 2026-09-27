@@ -1465,3 +1465,53 @@ func TestGapLLMPlannerMultiStepBound(t *testing.T) {
 		t.Fatalf("planner calls=%d want 1 (no retry on non-attempt)", p2.calls)
 	}
 }
+
+// An authenticated outbound client produces EXTERNAL_AUTHENTICATED
+// provenance — distinct from anonymous EXTERNAL_UNTRUSTED in the evidence,
+// while still counting as attacker-capable input (authenticated peers can
+// be malicious).
+func TestE2EAuthenticatedClientOrigin(t *testing.T) {
+	repo := initRepoFrom(t, "authprod")
+	dir := t.TempDir()
+	model := `{"impact":"t","mandatory_conditions":[
+		{"id":"C-REACH","kind":"SYMBOL_REACHABLE","mandatory":true,
+		 "subject":{"package":"example.com/dep/vuln","symbol":"Parse"}},
+		{"id":"C-INPUT","kind":"ATTACKER_CONTROL","mandatory":true,
+		 "subject":{"package":"example.com/dep/vuln","symbol":"Parse"},"arg_index":0}
+	]}`
+	mp := filepath.Join(dir, "model.json")
+	if err := os.WriteFile(mp, []byte(model), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gv := `{"protocol_version":"v1.0.0"}
+{"finding":{"osv":"GO-TEST-1","fixed_version":"v1.2.0","trace":[
+ {"module":"example.com/authprod","package":"example.com/authprod","function":"main","position":{"filename":"main.go","line":26}},
+ {"module":"example.com/dep","package":"example.com/dep/vuln","function":"Parse","position":{"filename":"vuln.go","line":4}}
+]}}`
+	c := runEngine(t, engineDeps{
+		RepoPath: repo,
+		VulnSrc: vulnerability.StaticSource{Vulns: map[string]*domain.Vulnerability{
+			"GO-TEST-1": {ID: "GO-TEST-1", Module: "example.com/dep"},
+		}},
+		VulnID:      "GO-TEST-1",
+		Resolver:    stubResolver{},
+		ManualRC:    []domain.RootCause{{Package: "example.com/dep/vuln", Symbol: "Parse"}},
+		Model:       mp,
+		CaseDir:     filepath.Join(dir, "cases"),
+		Govulncheck: fakeGovulncheck{out: []byte(gv)},
+		UseSource:   true,
+	})
+	var sawAuth bool
+	for _, f := range c.EvidenceGraph.DataFlows {
+		if f.Origin == domain.OriginExternalAuthenticated {
+			sawAuth = true
+		}
+	}
+	if !sawAuth {
+		t.Fatalf("no EXTERNAL_AUTHENTICATED flow recorded; flows=%+v", c.EvidenceGraph.DataFlows)
+	}
+	input := findClaimT(t, c.Claims, "C-INPUT")
+	if input.Result != domain.ClaimTrue {
+		t.Fatalf("C-INPUT=%s want TRUE (authenticated peer is still attacker-capable)", input.Result)
+	}
+}

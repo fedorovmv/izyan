@@ -502,7 +502,62 @@ func (ix *Index) httpClientOrigin(pkg *packages.Package, enc *ast.FuncDecl, fn *
 				fmt.Sprintf("http %s to configured endpoint", fn.Name()), true
 		}
 	}
+	if hasAuthMarkers(enc) {
+		return domain.OriginExternalAuthenticated,
+			fmt.Sprintf("http %s via authenticated client", fn.Name()), true
+	}
 	return domain.OriginExternalUntrusted, fmt.Sprintf("http %s response body", fn.Name()), true
+}
+
+// authCallNames are callee names that attach credentials to a request or
+// client — evidence that a peer is authenticated rather than a random
+// internet source.
+var authCallNames = map[string]bool{
+	"SetBasicAuth": true, "BasicAuth": true, "SetAuth": true,
+	"WithAuth": true, "WithCredentials": true, "WithPerRPCCredentials": true,
+	"NewOauthAccess": true, "NewStaticTokenSource": true,
+	"ReuseTokenSource": true, "SetToken": true,
+}
+
+// hasAuthMarkers reports whether the enclosing function attaches
+// credentials somewhere in its body: an "Authorization" header literal or
+// a call to a credential-attaching helper. Heuristic — it notes that a
+// peer is *probably* authenticated, never that input is safe.
+func hasAuthMarkers(enc *ast.FuncDecl) bool {
+	if enc == nil || enc.Body == nil {
+		return false
+	}
+	found := false
+	ast.Inspect(enc.Body, func(n ast.Node) bool {
+		if found {
+			return false
+		}
+		switch x := n.(type) {
+		case *ast.BasicLit:
+			if x.Kind == token.STRING &&
+				strings.EqualFold(strings.Trim(x.Value, `"`), "authorization") {
+				found = true
+			}
+		case *ast.CallExpr:
+			if authCallNames[callName(x.Fun)] {
+				found = true
+			}
+		}
+		return !found
+	})
+	return found
+}
+
+// callName returns the final identifier of a callee expression —
+// `x.SetBasicAuth` → "SetBasicAuth", `f` → "f".
+func callName(fun ast.Expr) string {
+	switch f := fun.(type) {
+	case *ast.Ident:
+		return f.Name
+	case *ast.SelectorExpr:
+		return f.Sel.Name
+	}
+	return ""
 }
 
 // exprEval evaluates an expression in the frame where it syntactically

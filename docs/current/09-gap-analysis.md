@@ -31,7 +31,7 @@
 |---|---|---|---|
 | Exploit model | §8–9: атомарные условия по классу уязвимости | `Classify` (CWE → keywords → fix-diff) + `exploit.Registry`: peer-driven, INFO_LEAK, URI_CONFUSION, NIL_DEREF паттерны; `Condition.Params` (`input_source`, `direction=read`, `sequence=`, `bound`, `check`); generic C-REACH/C-INPUT домердживаются; LLM дополняет и заполняет пустой `bound` | Классификация keywords — эвристика (фиксируется limitation); `bound` пока текстовая аннотация без доказательства гарды; паттернов пока 4 семейства — PATH_TRAVERSAL/INJECTION/SSRF/etc. сидят на generic-модели |
 | Condition kinds | §8 минимум 10 типов | enum есть | Нет evaluators для `PLATFORM_CONDITION`, `AUTHENTICATION_CONDITION`, `RUNTIME_CONDITION`, `VALIDATION` (есть `Validation`, но kind в enum — отдельный) → всегда UNKNOWN |
-| Data origins | §15: EXTERNAL_UNTRUSTED/AUTHENTICATED, CONFIGURATION, DATABASE, INTERNAL_SERVICE, CONSTANT, GENERATED | enum есть; provenance покрывает http.Request/os.Args/net/config/generated + `populateOrigin` (Scan/Unmarshal out-params), DB-драйверы по pkg path, gRPC-стабы и http-клиенты с config-endpoint → INTERNAL_SERVICE (`16`) | `EXTERNAL_AUTHENTICATED` не различается; детекция драйверов по pkg path — эвристика, кастомные обёртки не покрыты |
+| Data origins | §15: EXTERNAL_UNTRUSTED/AUTHENTICATED, CONFIGURATION, DATABASE, INTERNAL_SERVICE, CONSTANT, GENERATED | enum есть; provenance покрывает http.Request/os.Args/net/config/generated + `populateOrigin` (Scan/Unmarshal out-params), DB-драйверы по pkg path, gRPC-стабы и http-клиенты с config-endpoint → INTERNAL_SERVICE (`16`) | `EXTERNAL_AUTHENTICATED` различается для outbound HTTP (auth-маркеры в enclosing-функции: Authorization-заголовок, SetBasicAuth, oauth/credentials-хелперы); inbound auth не определяется (middleware за пределами фрейма); детекция драйверов по pkg path — эвристика, кастомные обёртки не покрыты |
 | Transformations | §15: `source → transformations → validation → sink`, security-relevant transforms | `TraceArgument` даёт origin конечного аргумента | Цепочка трансформаций не моделируется: `quote()/escape()/cast()` между source и sink не учитываются в reasoning |
 | Negative check | §19: callers, **interface implementations**, runtime registration, **build-tagged code**, configuration overrides, alternate entrypoints | func_value/linkname/reflect/unsafe/plugin по scoped rules | interface-impl и build-tag покрыты (`GatedRefs`/`InterfaceDispatchSites`); `configuration overrides` как NV-концепт нет — `config_flag`/`config_key` читают knob'ы условий, но не конфигурацию, меняющую reachability |
 | Typed tools | §17: 17 инструментов | все 17 реализованы в `llm.Tools` (`19-typed-tools-plan.md`): source-инструменты + get_vulnerability/get_advisory/get_fix_references/get_fix_diff/get_module_version/get_dependency_graph/run_govulncheck/read_source/search_source/run_build/run_tests; exec-инструменты за `--allow-exec` | LLM-agent сам не выбирает инструменты (planner детерминистичен); read_source/search_source ограничены product-деревом — dep-файлы в module cache не видны |
@@ -178,7 +178,8 @@ Issues/Jira) — deferred by design.
    `GatedRefs` + `InterfaceDispatchSites` деградируют VERIFIED в
    INSUFFICIENT_SCOPE при находках вне typed-скоупа.
 5. ~~DATABASE/INTERNAL_SERVICE origins~~ — `done` (первый слой, §таблица
-   origins; `16-data-origins-plan.md`); authenticated-vs-trusted — отдельно.
+   origins; `16-data-origins-plan.md`); authenticated outbound
+   различён (auth-маркеры → EXTERNAL_AUTHENTICATED).
 6. ~~Недостающие 10 typed tools~~ — `done` (`19-typed-tools-plan.md`);
    run_build/run_tests требуют `--allow-exec` (исполняют код репо).
 7. ~~Hypothesis/gap-analysis loop~~ — `done` (детерминистичный первый
