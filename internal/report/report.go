@@ -94,6 +94,21 @@ func Markdown(c *domain.AnalysisCase) string {
 		}
 		b.WriteString("\n")
 	}
+	if len(c.EvidenceGraph.DataFlows) > 0 {
+		b.WriteString("## Data flows\n\n")
+		for _, f := range c.EvidenceGraph.DataFlows {
+			var tx []string
+			for _, t := range f.Transformations {
+				tx = append(tx, t.Callee)
+			}
+			fmt.Fprintf(&b, "- `%s` %s", f.Origin, f.Summary)
+			if len(tx) > 0 {
+				fmt.Fprintf(&b, " — via `%s`", strings.Join(tx, "`, `"))
+			}
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+	}
 	if len(c.EvidenceGraph.Runtime) > 0 {
 		b.WriteString("## Runtime facts\n\n")
 		for _, id := range c.EvidenceGraph.Runtime {

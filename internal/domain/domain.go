@@ -5,6 +5,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"strings"
 	"sync"
 	"time"
 )
@@ -886,4 +888,22 @@ func (c *AnalysisCase) UsageSnapshot() AnalysisUsage {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.Workflow.Usage
+}
+
+// securityTransformRe matches callee names that can alter whether exploit
+// input still violates the sink's constraint — quoting, sanitization,
+// bounds, crypto. A recorded transform is provenance, never proof: the
+// analyzer does not model transform semantics, so a security-relevant
+// transform is flagged for review, not trusted as a guard.
+var securityTransformRe = regexp.MustCompile(`(?i)escape|quote|sanitiz|clean|valid|check|encrypt|decrypt|sign|verify|hash|md5|sha|limit|truncat|bound|cap|mask|redact|filter`)
+
+// IsSecurityTransform reports whether a transformation callee name is
+// security-relevant — it may change the properties an exploit condition
+// depends on, so its presence is flagged in claim limitations.
+func IsSecurityTransform(callee string) bool {
+	base := callee
+	if i := strings.LastIndex(base, "."); i >= 0 {
+		base = base[i+1:]
+	}
+	return securityTransformRe.MatchString(base)
 }

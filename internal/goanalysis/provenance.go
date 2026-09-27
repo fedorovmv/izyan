@@ -61,9 +61,16 @@ func (ix *Index) TraceArgument(ctx context.Context, site domain.CallSite, argInd
 	if argIndex >= len(call.Args) {
 		return flow, nil, fmt.Errorf("call site has %d args, arg %d requested", len(call.Args), argIndex)
 	}
+	// Collect the transformation chain: every call the traced value passes
+	// through, recorded by classifyCall while txBuf is set. Held under the
+	// same mutex as the rest of the trace — nil outside TraceArgument.
+	var tx []domain.CallSite
+	ix.txBuf = &tx
 	origin, why := ix.classify(pkg, enc, call.Args[argIndex], 0)
+	ix.txBuf = nil
 	flow.Origin = origin
 	flow.Summary = why
+	flow.Transformations = dedupSites(tx)
 	flow.Source = site
 	src, _ := ix.nodeSource(call)
 	ev = append(ev, domain.Evidence{
@@ -424,6 +431,20 @@ func isHTTPRequest(t types.Type) bool {
 // opaque functions.
 func (ix *Index) classifyCall(pkg *packages.Package, enc *ast.FuncDecl, call *ast.CallExpr, depth int) (domain.DataOrigin, string) {
 	obj := calleeObject(pkg.TypesInfo, call.Fun)
+	if ix.txBuf != nil {
+		// Record the call as a transformation the traced value passes
+		// through — observed along the trace regardless of its effect.
+		name := callName(call.Fun)
+		if fn, ok := obj.(*types.Func); ok && fn.Pkg() != nil {
+			name = fn.Pkg().Path() + "." + fn.Name()
+		}
+		p := ix.fset.Position(call.Lparen)
+		site := domain.CallSite{File: p.Filename, Line: p.Line, Callee: name}
+		if enc != nil && enc.Name != nil {
+			site.Function = enc.Name.Name
+		}
+		*ix.txBuf = append(*ix.txBuf, site)
+	}
 	if fn, ok := obj.(*types.Func); ok && fn.Pkg() != nil {
 		key := fn.Pkg().Path() + "." + fn.Name()
 		// DB/RPC source calls: result value is store- or service-provided.
@@ -794,12 +815,16 @@ func (ix *Index) TraceAllArguments(ctx context.Context, site domain.CallSite) ([
 		Content: src,
 	})
 	for i := range call.Args {
+		var tx []domain.CallSite
+		ix.txBuf = &tx
 		origin, why := ix.classify(pkg, enc, call.Args[i], 0)
+		ix.txBuf = nil
 		flows = append(flows, domain.DataFlow{
-			Sink:    site,
-			Source:  site,
-			Origin:  origin,
-			Summary: fmt.Sprintf("arg%d: %s", i, why),
+			Sink:            site,
+			Source:          site,
+			Origin:          origin,
+			Transformations: dedupSites(tx),
+			Summary:         fmt.Sprintf("arg%d: %s", i, why),
 		})
 	}
 	return flows, ev, nil
@@ -1225,4 +1250,23 @@ func terminates(b *ast.BlockStmt) bool {
 		}
 	}
 	return false
+}
+
+// dedupSites collapses repeated (file,line,callee) entries — the same call
+// may be traversed more than once through nested classification paths.
+func dedupSites(sites []domain.CallSite) []domain.CallSite {
+	if len(sites) == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	out := sites[:0]
+	for _, s := range sites {
+		k := fmt.Sprintf("%s:%d:%s", s.File, s.Line, s.Callee)
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		out = append(out, s)
+	}
+	return out
 }

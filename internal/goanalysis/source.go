@@ -31,11 +31,14 @@ type Index struct {
 	// hopLimit overrides the default caller-climb bound during a single
 	// TraceArgumentBound call; 0 = maxTraceHops.
 	hopLimit int
-	mu       sync.Mutex // serializes queries; shared across cases in scan mode
-	pkgs     []*packages.Package
-	fset     *token.FileSet
-	loaded   bool
-	loadErr  error
+	// txBuf, when non-nil during TraceArgument, accumulates the calls a
+	// traced value passes through (DataFlow.Transformations). Guarded by mu.
+	txBuf   *[]domain.CallSite
+	mu      sync.Mutex // serializes queries; shared across cases in scan mode
+	pkgs    []*packages.Package
+	fset    *token.FileSet
+	loaded  bool
+	loadErr error
 }
 
 // buildEnv derives GOOS/GOARCH/CGO env for tool invocations.

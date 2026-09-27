@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -1513,5 +1514,68 @@ func TestE2EAuthenticatedClientOrigin(t *testing.T) {
 	input := findClaimT(t, c.Claims, "C-INPUT")
 	if input.Result != domain.ClaimTrue {
 		t.Fatalf("C-INPUT=%s want TRUE (authenticated peer is still attacker-capable)", input.Result)
+	}
+}
+
+// A security-relevant transform between source and sink is recorded in the
+// DataFlow chain and surfaced as a claim limitation — never silently
+// treated as a guard.
+func TestE2ETransformationChainRecorded(t *testing.T) {
+	repo := initRepoFrom(t, "escprod")
+	dir := t.TempDir()
+	model := `{"impact":"t","mandatory_conditions":[
+		{"id":"C-REACH","kind":"SYMBOL_REACHABLE","mandatory":true,
+		 "subject":{"package":"example.com/dep/vuln","symbol":"Parse"}},
+		{"id":"C-INPUT","kind":"ATTACKER_CONTROL","mandatory":true,
+		 "subject":{"package":"example.com/dep/vuln","symbol":"Parse"},"arg_index":0}
+	]}`
+	mp := filepath.Join(dir, "model.json")
+	if err := os.WriteFile(mp, []byte(model), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gv := `{"protocol_version":"v1.0.0"}
+{"finding":{"osv":"GO-TEST-1","fixed_version":"v1.2.0","trace":[
+ {"module":"example.com/escprod","package":"example.com/escprod","function":"main","position":{"filename":"main.go","line":14}},
+ {"module":"example.com/dep","package":"example.com/dep/vuln","function":"Parse","position":{"filename":"vuln.go","line":4}}
+]}}`
+	c := runEngine(t, engineDeps{
+		RepoPath: repo,
+		VulnSrc: vulnerability.StaticSource{Vulns: map[string]*domain.Vulnerability{
+			"GO-TEST-1": {ID: "GO-TEST-1", Module: "example.com/dep"},
+		}},
+		VulnID:      "GO-TEST-1",
+		Resolver:    stubResolver{},
+		ManualRC:    []domain.RootCause{{Package: "example.com/dep/vuln", Symbol: "Parse"}},
+		Model:       mp,
+		CaseDir:     filepath.Join(dir, "cases"),
+		Govulncheck: fakeGovulncheck{out: []byte(gv)},
+		UseSource:   true,
+	})
+	var sawEscape bool
+	for _, f := range c.EvidenceGraph.DataFlows {
+		for _, tx := range f.Transformations {
+			if tx.Callee == "html.EscapeString" {
+				sawEscape = true
+			}
+		}
+	}
+	if !sawEscape {
+		t.Fatalf("html.EscapeString not recorded in transformations; flows=%+v", c.EvidenceGraph.DataFlows)
+	}
+	input := findClaimT(t, c.Claims, "C-INPUT")
+	var flagged bool
+	for _, l := range input.Limitations {
+		if strings.Contains(l, "EscapeString") {
+			flagged = true
+		}
+	}
+	if !flagged {
+		t.Fatalf("security-relevant transform not flagged; limitations=%v", input.Limitations)
+	}
+	// An opaque transform honestly breaks the trace: EscapeString's body is
+	// not a proven passthrough, so the origin is UNKNOWN — the recorded
+	// chain makes that UNKNOWN auditable instead of silent.
+	if input.Result != domain.ClaimUnknown {
+		t.Fatalf("C-INPUT=%s want UNKNOWN (opaque transform)", input.Result)
 	}
 }

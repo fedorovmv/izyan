@@ -2,6 +2,7 @@ package evaluator
 
 import (
 	"fmt"
+	"strings"
 
 	"example.com/vuln-analyzer/internal/domain"
 )
@@ -52,6 +53,21 @@ func (ArgumentOrigin) Evaluate(cond domain.Condition, c *domain.AnalysisCase) do
 		if e.Kind == domain.EvidenceSourceSnippet || e.Kind == domain.EvidenceDataFlow {
 			claim.EvidenceIDs = appendUniqueID(claim.EvidenceIDs, e.ID)
 		}
+	}
+	// Security-relevant transformations on the traced path are provenance,
+	// not guards: an escape/quote/validate call between source and sink may
+	// change whether the constraint still fails — surface it for review.
+	var sec []string
+	for _, f := range flows {
+		for _, tx := range f.Transformations {
+			if domain.IsSecurityTransform(tx.Callee) {
+				sec = appendUnique(sec, tx.Callee)
+			}
+		}
+	}
+	if len(sec) > 0 {
+		claim.Limitations = append(claim.Limitations,
+			"security-relevant transform(s) on traced path (not modeled as guards): "+strings.Join(sec, ", "))
 	}
 	switch {
 	case external > 0:
