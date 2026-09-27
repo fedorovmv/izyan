@@ -77,3 +77,26 @@ pinned behavior, не независимый ground truth. false-safe=0 оста
 - Второй продуктовый репозиторий для диверсификации.
 - Live-корпус не входит в CI-регрессию (сеть + тяжёлый репо) — отдельный
   прогон.
+
+## rm6m ground-truth pass
+
+GHSA-rm6m-hrcw-jw33 (amqp091 `Channel.Qos`, signed→unsigned cast →
+flooding). Два отдельных вывода:
+
+- **Class-label исправлен**: keyword-классификация была first-match —
+  одиночный `frame` перекрывал плотный exhaustion-сигнал (5:1).
+  Теперь `scoreKeywords` выбирает класс по частоте попаданий словаря
+  (tie → более ранняя/специфичная строка). rm6m/4v58/r9c8 →
+  `RESOURCE_EXHAUSTION` — тот же peer-driven паттерн, вердикты не
+  сдвигаются, label в отчёте/limitation точнее.
+- **Резидуальный gap (не закрыт)**: `Qos(r.prefetchCount, …)` — аргумент
+  идёт из struct-поля (`r.prefetchCount ← setPrefetchCount(cfg)`),
+  interprocedural field-flow за пределами трейсера (6 hops →
+  UNRESOLVED, честно зафиксировано в hypothesis). Плюс продуктовая
+  гарда — *sanitize-апдейт* без return (`count>1024 → 1024`), что
+  outside текущего guard-продюсера. Реальный ответ скорее «не
+  эксплуатируемо через конфиг», но система не может это доказать →
+  корректный INCONCLUSIVE, не баг.
+
+Остаток: field-flow provenance (struct field → arg), non-terminating
+sanitize-гарды как bound-evidence.
