@@ -40,8 +40,8 @@ type Tools struct {
 // toolSchemas are advertised to the model.
 const toolSchemas = `
 read_function {"file":"<path>","function":"<name>"} -> source snippet
-read_source {"file":"<path>","start":<line>,"end":<line>} -> raw source lines (0/0 = whole file, repo-confined)
-search_source {"pattern":"<regexp>"} -> matching "file:line: text" in product sources
+read_source {"file":"<path>","start":<line>,"end":<line>} -> raw source lines (0/0 = whole file; repository or Go module cache)
+search_source {"pattern":"<regexp>"} -> matching "file:line: text" in product and dependency sources
 find_symbol {"package":"<path>","symbol":"<Func|Type.Method>"} -> declaration site
 find_references {"package":"<path>","symbol":"..."} -> references to the symbol
 find_callers {"package":"<path>","symbol":"..."} -> call sites of the symbol

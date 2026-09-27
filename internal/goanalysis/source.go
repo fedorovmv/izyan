@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"go/ast"
+	"go/build"
 	"go/token"
 	"go/types"
 	"os"
@@ -33,12 +34,14 @@ type Index struct {
 	hopLimit int
 	// txBuf, when non-nil during TraceArgument, accumulates the calls a
 	// traced value passes through (DataFlow.Transformations). Guarded by mu.
-	txBuf   *[]domain.CallSite
-	mu      sync.Mutex // serializes queries; shared across cases in scan mode
-	pkgs    []*packages.Package
-	fset    *token.FileSet
-	loaded  bool
-	loadErr error
+	txBuf        *[]domain.CallSite
+	mu           sync.Mutex // serializes queries; shared across cases in scan mode
+	pkgs         []*packages.Package
+	fset         *token.FileSet
+	loaded       bool
+	loadErr      error
+	modCacheOnce sync.Once
+	modCache     string
 }
 
 // buildEnv derives GOOS/GOARCH/CGO env for tool invocations.
@@ -462,26 +465,80 @@ func (ix *Index) nodeSource(n ast.Node) (string, error) {
 	return string(b[start.Offset:end.Offset]), nil
 }
 
+// modCacheDir resolves the Go module cache root: GOMODCACHE (index env
+// overrides first, then the process env) else GOPATH[0]/pkg/mod. Empty
+// when unresolvable.
+func (ix *Index) modCacheDir() string {
+	ix.modCacheOnce.Do(func() {
+		for _, e := range ix.Env {
+			if v, ok := strings.CutPrefix(e, "GOMODCACHE="); ok && v != "" {
+				ix.modCache = v
+				return
+			}
+		}
+		if v := os.Getenv("GOMODCACHE"); v != "" {
+			ix.modCache = v
+			return
+		}
+		var gopath string
+		for _, e := range ix.Env {
+			if v, ok := strings.CutPrefix(e, "GOPATH="); ok && v != "" {
+				gopath = v
+			}
+		}
+		if gopath == "" {
+			gopath = os.Getenv("GOPATH")
+		}
+		if gopath == "" {
+			gopath = build.Default.GOPATH
+		}
+		if gopath != "" {
+			ix.modCache = filepath.Join(filepath.SplitList(gopath)[0], "pkg", "mod")
+		}
+	})
+	return ix.modCache
+}
+
+// pathAllowed reports whether an absolute path is inside the analyzed
+// repository or inside the Go module cache — the two scopes the agent may
+// legitimately read (vulnerable dependency source is evidence too).
+func (ix *Index) pathAllowed(full string) bool {
+	if base, err := filepath.Abs(ix.Dir); err == nil {
+		if rel, err := filepath.Rel(base, full); err == nil &&
+			!strings.HasPrefix(rel, "..") && rel != ".." {
+			return true
+		}
+	}
+	if mc := ix.modCacheDir(); mc != "" {
+		if mabs, err := filepath.Abs(mc); err == nil {
+			if rel, err := filepath.Rel(mabs, full); err == nil &&
+				!strings.HasPrefix(rel, "..") {
+				return true
+			}
+		}
+	}
+	// Fallback marker for unconventional module caches (mirrors the
+	// reviewer's source-scope rule).
+	return strings.Contains(full, string(filepath.Separator)+
+		"pkg"+string(filepath.Separator)+"mod"+string(filepath.Separator))
+}
+
 // ReadSource returns lines [start,end] (1-based, inclusive; 0 = whole
-// file) of a file inside the analyzed repository. Paths are confined to
-// ix.Dir — the agent must not read outside the product tree.
+// file) of a file inside the analyzed repository or the Go module cache.
+// Paths are confined to those scopes — the agent must not read arbitrary
+// filesystem locations.
 func (ix *Index) ReadSource(_ context.Context, file string, start, end int) (string, error) {
 	clean := filepath.Clean(file)
 	abs := clean
 	if !filepath.IsAbs(clean) {
 		abs = filepath.Join(ix.Dir, clean)
 	}
-	base, err := filepath.Abs(ix.Dir)
-	if err != nil {
-		return "", err
-	}
 	full, err := filepath.Abs(abs)
 	if err != nil {
 		return "", err
 	}
-	rel, err := filepath.Rel(base, full)
-	if err != nil || strings.HasPrefix(rel, "..") {
-		return "", fmt.Errorf("path %s escapes the analyzed repository", file)
+	if !ix.pathAllowed(full) {
+		return "", fmt.Errorf("path %s escapes the analyzed repository/module cache", file)
 	}
 	b, err := os.ReadFile(full)
 	if err != nil {
@@ -502,9 +559,10 @@ func (ix *Index) ReadSource(_ context.Context, file string, start, end int) (str
 
 const maxSearchMatches = 64
 
-// SearchSource regex-searches the product's own Go files (files outside
-// ix.Dir — vendored deps, module cache — are excluded). Returns up to
-// maxSearchMatches "file:line: text" matches; a bad regex is an error.
+// SearchSource regex-searches the loaded Go files — the product's own
+// sources plus dependency sources resolved from the module cache (same
+// confinement as ReadSource). Returns up to maxSearchMatches
+// "file:line: text" matches; a bad regex is an error.
 func (ix *Index) SearchSource(ctx context.Context, pattern string) ([]string, error) {
 	re, err := regexp.Compile(pattern)
 	if err != nil {
@@ -515,7 +573,6 @@ func (ix *Index) SearchSource(ctx context.Context, pattern string) ([]string, er
 	if err := ix.load(ctx); err != nil {
 		return nil, err
 	}
-	base, _ := filepath.Abs(ix.Dir)
 	seen := map[string]bool{}
 	var out []string
 	for _, pkg := range ix.pkgs {
@@ -526,9 +583,8 @@ func (ix *Index) SearchSource(ctx context.Context, pattern string) ([]string, er
 				continue
 			}
 			seen[name] = true
-			rel, err := filepath.Rel(base, name)
-			if err != nil || strings.HasPrefix(rel, "..") {
-				continue // dependency source outside the product tree
+			if !ix.pathAllowed(name) {
+				continue // source outside repository/module cache
 			}
 			data, err := os.ReadFile(name)
 			if err != nil {
