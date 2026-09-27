@@ -3,6 +3,7 @@ package goanalysis
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"example.com/vuln-analyzer/internal/domain"
@@ -142,5 +143,50 @@ func TestFindListeners(t *testing.T) {
 	}
 	if eps[0].Kind != "listener" || eps[0].Function != "serve" {
 		t.Fatalf("got %+v", eps[0])
+	}
+}
+
+func TestTraceFieldOrigin(t *testing.T) {
+	ix := fixture(t, "fieldprod")
+	sites, err := ix.FindCallers(context.Background(), vulnSym)
+	if err != nil || len(sites) != 1 {
+		t.Fatalf("sites=%v err=%v", sites, err)
+	}
+	// the field-hop chain needs the deep-trace budget (default is 2).
+	flow, _, err := ix.TraceArgumentBound(context.Background(), sites[0], 0, 6)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// r.s <- setS param <- cfg.s <- config literal <- os.Getenv.
+	if flow.Origin != domain.OriginConfiguration {
+		t.Fatalf("origin=%s want CONFIGURATION via field write sites (%s)",
+			flow.Origin, flow.Summary)
+	}
+}
+
+func TestFieldWriteGuards(t *testing.T) {
+	ix := fixture(t, "fieldprod")
+	sites, err := ix.FindCallers(context.Background(), vulnSym)
+	if err != nil || len(sites) != 1 {
+		t.Fatalf("sites=%v err=%v", sites, err)
+	}
+	vals, _, err := ix.FindValidations(context.Background(), sites[0], 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sanitize, covers bool
+	for _, v := range vals {
+		if v.Guard && strings.Contains(v.Property, "sanitize-switch") {
+			sanitize = true
+		}
+		if v.Covers != nil && v.Covers.Line == sites[0].Line {
+			covers = true
+		}
+	}
+	if !sanitize {
+		t.Fatalf("no sanitize-switch guard recorded: %+v", vals)
+	}
+	if !covers {
+		t.Fatalf("field write sites fully bounded but no Covers record: %+v", vals)
 	}
 }

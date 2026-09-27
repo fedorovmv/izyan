@@ -38,7 +38,7 @@ type HypothesisPlanner interface {
 const (
 	maxGapIterations = 3
 	maxLLMPlanSteps  = 3 // LLM planner steps per condition per run
-	deepTraceHops    = 6 // extended caller-climb bound for gap traces
+	deepTraceHops    = 8 // extended caller-climb bound for gap traces
 )
 
 func (GapAnalysis) State() domain.WorkflowState { return domain.StateGapAnalysis }

@@ -158,6 +158,10 @@ func childExpr(e ast.Expr) ast.Expr {
 }
 
 func (ix *Index) classifyIdent(pkg *packages.Package, enc *ast.FuncDecl, id *ast.Ident, depth int) (domain.DataOrigin, string) {
+	// true/false/nil are builtin identifiers, not BasicLit — constants.
+	if id.Name == "true" || id.Name == "false" || id.Name == "nil" {
+		return domain.OriginConstant, "builtin literal " + id.Name
+	}
 	obj := pkg.TypesInfo.ObjectOf(id)
 	if obj == nil {
 		return domain.OriginUnknown, fmt.Sprintf("unresolved identifier %s", id.Name)
@@ -417,9 +421,112 @@ func (ix *Index) classifySelector(pkg *packages.Package, enc *ast.FuncDecl, e *a
 			return domain.OriginExternalUntrusted, "os.Args"
 		}
 	}
+	// struct field read (r.prefetchCount): resolve through the field's
+	// write sites — x.f = rhs assignments and T{f: rhs} literals found in
+	// product source. Any unresolvable write contaminates the merged
+	// origin (UNKNOWN); zero write sites fall through to the base.
+	if sel, ok := pkg.TypesInfo.Selections[e]; ok && sel.Kind() == types.FieldVal {
+		if fv, ok2 := sel.Obj().(*types.Var); ok2 {
+			if o, why, ok3 := ix.fieldOrigin(fv, depth+1); ok3 {
+				return o, fmt.Sprintf("field %s: %s", e.Sel.Name, why)
+			}
+		}
+	}
 	// transparent selector: classify base — keep the enclosing func so the
 	// base can resolve to a local variable (resp.Body -> resp assignment).
 	return ix.classify(pkg, enc, e.X, depth)
+}
+
+// fieldOrigin resolves the provenance of a struct field by scanning
+// product packages for writes to it: `x.field = rhs` (any receiver of
+// the same struct type — the field object is matched by identity) and
+// `T{field: rhs}` composite literals. Each RHS is classified in its own
+// enclosing function, so `r.f = count` inside a setter hops into the
+// setter's callers through traceParam. Writes via reflection or pointer
+// aliases are invisible — recorded as a limitation-shaped why.
+// fieldWrite is one product-source assignment into a struct field.
+type fieldWrite struct {
+	pkg *packages.Package
+	enc *ast.FuncDecl // nil for package-level writes
+	rhs ast.Expr
+	pos token.Pos
+}
+
+// fieldWriteSites scans product packages for writes to field:
+// `x.field = rhs` assignments (any receiver of the same struct type —
+// matched by field object identity) and `T{field: rhs}` literals.
+func (ix *Index) fieldWriteSites(field *types.Var) []fieldWrite {
+	var sites []fieldWrite
+	for _, pkg := range ix.pkgs {
+		info := pkg.TypesInfo
+		if info == nil {
+			continue
+		}
+		for _, f := range pkg.Syntax {
+			var enc *ast.FuncDecl
+			ast.Inspect(f, func(n ast.Node) bool {
+				if fn, ok := n.(*ast.FuncDecl); ok {
+					enc = fn
+				}
+				switch n := n.(type) {
+				case *ast.AssignStmt:
+					for i, lhs := range n.Lhs {
+						if !writesField(info, lhs, field) {
+							continue
+						}
+						rhs := ast.Expr(nil)
+						if i < len(n.Rhs) {
+							rhs = n.Rhs[i]
+						} else if len(n.Rhs) == 1 {
+							// x.f, y = multiReturn(): the call produces it.
+							rhs = n.Rhs[0]
+						}
+						if rhs != nil {
+							sites = append(sites, fieldWrite{pkg, enc, rhs, n.Pos()})
+						}
+					}
+				case *ast.KeyValueExpr:
+					if id, ok := n.Key.(*ast.Ident); ok && info.ObjectOf(id) == types.Object(field) {
+						sites = append(sites, fieldWrite{pkg, enc, n.Value, n.Pos()})
+					}
+				}
+				return true
+			})
+		}
+	}
+	return sites
+}
+
+func (ix *Index) fieldOrigin(field *types.Var, depth int) (domain.DataOrigin, string, bool) {
+	if depth >= ix.hops() {
+		return "", "", false
+	}
+	sites := ix.fieldWriteSites(field)
+	if len(sites) == 0 {
+		return "", "", false
+	}
+	var merged domain.DataOrigin
+	var whys []string
+	for _, s := range sites {
+		o, w := ix.classify(s.pkg, s.enc, s.rhs, depth+1)
+		whys = append(whys, w)
+		merged = mergeOrigin(merged, o)
+	}
+	return merged, fmt.Sprintf("%d write site(s): %s", len(sites), strings.Join(whys, "; ")), true
+}
+
+// writesField reports whether the lhs expression assigns to the field —
+// a direct x.f = v or an indexed/dereferenced variant like x.f[i] = v.
+func writesField(info *types.Info, lhs ast.Expr, field *types.Var) bool {
+	found := false
+	ast.Inspect(lhs, func(n ast.Node) bool {
+		if se, ok := n.(*ast.SelectorExpr); ok && info.ObjectOf(se.Sel) == types.Object(field) {
+			found = true
+			return false
+		}
+		return !found
+	})
+	return found
 }
 
 func isHTTPRequest(t types.Type) bool {
@@ -1070,7 +1177,74 @@ func (ix *Index) FindValidations(ctx context.Context, site domain.CallSite, argI
 	}
 	argIdent := argIdentifier(call.Args[argIndex])
 	vals = append(vals, ix.frameGuards(pkg, enc, call, argIdent)...)
+	vals = append(vals, ix.fieldWriteGuards(pkg, site, call.Args[argIndex])...)
 	return vals, ev, nil
+}
+
+// selectorFieldVar resolves a field selection (r.prefetchCount) to its
+// field object, nil for plain idents/method selects.
+func selectorFieldVar(info *types.Info, e ast.Expr) *types.Var {
+	se, ok := e.(*ast.SelectorExpr)
+	if !ok {
+		return nil
+	}
+	if sel, ok := info.Selections[se]; ok && sel.Kind() == types.FieldVal {
+		if v, ok := sel.Obj().(*types.Var); ok {
+			return v
+		}
+	}
+	return nil
+}
+
+// fieldWriteGuards collects guards that constrain a field's value at its
+// write sites: a sink reading `r.f` is bounded by a clamp inside the
+// setter (`switch { case v>m: v=m }`) rather than by anything before the
+// read. When every write site stores a constant or is preceded by a guard
+// on the assigned identifier, a summary Validation with Covers=<sink> is
+// emitted — the value reaching the read is bounded wherever it was set.
+func (ix *Index) fieldWriteGuards(pkg *packages.Package, sink domain.CallSite, argExpr ast.Expr) []domain.Validation {
+	fv := selectorFieldVar(pkg.TypesInfo, argExpr)
+	if fv == nil {
+		return nil
+	}
+	sites := ix.fieldWriteSites(fv)
+	if len(sites) == 0 {
+		return nil
+	}
+	var out []domain.Validation
+	allBounded := true
+	for _, w := range sites {
+		if _, ok := w.rhs.(*ast.BasicLit); ok {
+			continue // stores a constant — trivially bounded
+		}
+		name := argIdentifier(w.rhs)
+		if name == "" || w.enc == nil || w.enc.Body == nil {
+			allBounded = false
+			continue
+		}
+		var g []domain.Validation
+		ix.scanGuardStmts(w.pkg, w.enc.Body.List, w.pos, name, false, &g)
+		guarded := false
+		for _, v := range g {
+			if v.Guard && !v.Conditional {
+				guarded = true
+			}
+			v.Property = fmt.Sprintf("field-write %s: %s", fv.Name(), v.Property)
+			out = append(out, v)
+		}
+		if !guarded {
+			allBounded = false
+		}
+	}
+	if allBounded && len(sites) > 0 {
+		out = append(out, domain.Validation{
+			CallSite: sink,
+			Property: fmt.Sprintf("every write site of field %s stores a bounded value (setter-side clamp or constant)", fv.Name()),
+			Guard:    true,
+			Covers:   &sink,
+		})
+	}
+	return out
 }
 
 // frameGuards scans enc's body for guard statements on ident that precede
@@ -1161,6 +1335,7 @@ func (ix *Index) FindValidationsBound(ctx context.Context, site domain.CallSite,
 	}
 	argIdent := argIdentifier(call.Args[argIndex])
 	vals := ix.frameGuards(pkg, enc, call, argIdent)
+	vals = append(vals, ix.fieldWriteGuards(pkg, site, call.Args[argIndex])...)
 	if len(vals) > 0 {
 		return vals, ev, nil // sink frame already guards — nothing to climb
 	}
@@ -1236,7 +1411,9 @@ func argIdentifier(e ast.Expr) string {
 }
 
 // stmtValidation inspects a statement before the sink for constraints on
-// ident: `if <pred on ident> { return/panic }` or `ident = sanitize(ident)`.
+// ident: `if <pred on ident> { return/panic }`, a sanitize guard
+// `if <cmp on ident> { ident = <clean> }` / exhaustive sanitize-switch,
+// or `ident = sanitize(ident)` origin records.
 func stmtValidation(ix *Index, pkg *packages.Package, stmt ast.Stmt, ident string) *domain.Validation {
 	switch s := stmt.(type) {
 	case *ast.IfStmt:
@@ -1246,6 +1423,20 @@ func stmtValidation(ix *Index, pkg *packages.Package, stmt ast.Stmt, ident strin
 		if terminates(s.Body) {
 			condSrc, _ := ix.nodeSource(s.Cond)
 			return &domain.Validation{Property: condSrc, Guard: true}
+		}
+		// `if count > max { count = max }` — a clamp: the branch reassigns
+		// ident to a value not derived from ident whenever the violation
+		// check fires; the false path keeps the already-in-range value.
+		if p, ok := sanitizeIf(ix, s, ident); ok {
+			return &domain.Validation{Property: p, Guard: true}
+		}
+	case *ast.SwitchStmt:
+		// `switch { case count<0: count=0; case count>max: count=max }` —
+		// every listed case sanitizes or terminates ident, and inputs
+		// matching no case pass through already-in-range. Only marked a
+		// guard when every clause conforms.
+		if p, ok := sanitizeSwitch(ix, s, ident); ok {
+			return &domain.Validation{Property: p, Guard: true}
 		}
 	case *ast.AssignStmt:
 		for i, lhs := range s.Lhs {
@@ -1258,6 +1449,113 @@ func stmtValidation(ix *Index, pkg *packages.Package, stmt ast.Stmt, ident strin
 		}
 	}
 	return nil
+}
+
+// sanitizeIf reports whether an if-statement bounds ident: the condition
+// compares ident, the body reassigns it with a clean RHS or terminates,
+// and any else-branch does the same or is empty.
+func sanitizeIf(ix *Index, s *ast.IfStmt, ident string) (string, bool) {
+	if ident == "" || !exprMentions(s.Cond, ident) || !isComparison(s.Cond) {
+		return "", false
+	}
+	if !branchBounds(s.Body, ident) {
+		return "", false
+	}
+	switch e := s.Else.(type) {
+	case nil:
+	case *ast.BlockStmt:
+		if len(e.List) > 0 && !branchBounds(e, ident) {
+			return "", false
+		}
+	case *ast.IfStmt:
+		if _, ok := sanitizeIf(ix, e, ident); !ok {
+			return "", false
+		}
+	default:
+		return "", false
+	}
+	condSrc, _ := ix.nodeSource(s.Cond)
+	return "sanitize-if " + condSrc, true
+}
+
+// sanitizeSwitch reports whether a tagless switch bounds ident: every
+// case condition references ident and every clause body reassigns it
+// (clean RHS) or terminates. A default that does neither means some
+// input passes through untouched — not a guard.
+func sanitizeSwitch(ix *Index, s *ast.SwitchStmt, ident string) (string, bool) {
+	if ident == "" || s.Tag != nil || s.Body == nil || len(s.Body.List) == 0 {
+		return "", false
+	}
+	cases := 0
+	for _, stmt := range s.Body.List {
+		cc, ok := stmt.(*ast.CaseClause)
+		if !ok {
+			return "", false
+		}
+		if cc.List != nil {
+			cases++
+			mentions := false
+			for _, e := range cc.List {
+				if exprMentions(e, ident) && isComparison(e) {
+					mentions = true
+				}
+			}
+			if !mentions {
+				return "", false
+			}
+		}
+		// default and case clauses alike must sanitize or terminate.
+		if !branchBounds(&ast.BlockStmt{List: cc.Body}, ident) {
+			return "", false
+		}
+	}
+	if cases == 0 {
+		return "", false
+	}
+	return fmt.Sprintf("sanitize-switch on %s (%d case(s))", ident, cases), true
+}
+
+// isComparison reports whether e is a binary comparison — the bound-check
+// shape a sanitize guard must have (`count > max`, not `ready()`).
+func isComparison(e ast.Expr) bool {
+	b, ok := e.(*ast.BinaryExpr)
+	if !ok {
+		return false
+	}
+	switch b.Op {
+	case token.LSS, token.GTR, token.LEQ, token.GEQ, token.EQL, token.NEQ:
+		return true
+	}
+	return false
+}
+
+// branchBounds reports whether a block bounds ident: it terminates, or it
+// reassigns ident with an RHS that does not read ident back (a clamp).
+func branchBounds(b *ast.BlockStmt, ident string) bool {
+	if b == nil {
+		return false
+	}
+	if terminates(b) {
+		return true
+	}
+	assigns := false
+	for _, st := range b.List {
+		as, ok := st.(*ast.AssignStmt)
+		if !ok {
+			continue
+		}
+		for i, lhs := range as.Lhs {
+			id, ok := lhs.(*ast.Ident)
+			if !ok || id.Name != ident || i >= len(as.Rhs) {
+				continue
+			}
+			if exprMentions(as.Rhs[i], ident) {
+				return false // reassigned from itself — not a bound
+			}
+			assigns = true
+		}
+	}
+	return assigns
 }
 
 func exprMentions(e ast.Expr, ident string) bool {

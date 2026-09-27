@@ -98,5 +98,14 @@ flooding). Два отдельных вывода:
   эксплуатируемо через конфиг», но система не может это доказать →
   корректный INCONCLUSIVE, не баг.
 
-Остаток: field-flow provenance (struct field → arg), non-terminating
-sanitize-гарды как bound-evidence.
+Остаток: caller-chain глубина — `count` (param setPrefetchCount) ←
+`cfg.PrefetchCount` ← cfg-параметр конструктора ← reflect/mapstructure-
+декод фреймворка: цепь >8 hops и терминально упирается в reflect-популяцию,
+которую статически не резолвить — честный terminal UNKNOWN.
+
+После фиксов: arg0 `Qos` теперь трейсится до write-site поля
+(`r.prefetchCount = count` в setPrefetchCount), sanitize-switch кламп
+(`count<0→0`, `count>1024→1024`) записан Guard=true + Covers — значение,
+достигающее sink'а, ограничено на всех write-site'ах. Нерезолвленным
+остался только *origin* (config plumbing через reflect) — поэтому
+INCONCLUSIVE сохраняется по peer-input, но bound-evidence зафиксирован.
