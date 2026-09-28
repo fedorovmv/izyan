@@ -104,6 +104,7 @@ func DefaultKnowledge() *Knowledge {
 // like.
 func (k *Knowledge) AsFile() KnowledgeFile {
 	return KnowledgeFile{
+		Version:             KnowledgeFileVersion,
 		SourceFuncs:         originStrings(k.SourceFuncs),
 		PassthroughFuncs:    k.PassthroughFuncs,
 		PassthroughMethods:  k.PassthroughMethods,
@@ -131,10 +132,18 @@ func (ix *Index) kb() *Knowledge {
 	return ix.KB
 }
 
+// KnowledgeFileVersion is the schema level this build writes and the
+// newest it accepts: files without a version read as v1, files above it
+// fail to load rather than misparse a schema they predate. Bump it when
+// the format changes (e.g. per-language sections for non-Go analyzers).
+const KnowledgeFileVersion = 1
+
 // KnowledgeFile is the JSON schema of a --knowledge extension file. Every
 // field mirrors the same-named Knowledge field; files only add entries,
 // never replace them.
 type KnowledgeFile struct {
+	// Version is the file's schema level — absent means v1.
+	Version             int                `json:"version,omitempty"`
 	SourceFuncs         map[string]string  `json:"source_funcs"`
 	PassthroughFuncs    map[string]int     `json:"passthrough_funcs"`
 	PassthroughMethods  map[string]bool    `json:"passthrough_methods"`
@@ -169,8 +178,25 @@ func LoadKnowledgeFile(path string) (KnowledgeFile, error) {
 }
 
 func parseKnowledgeFile(r io.Reader) (KnowledgeFile, error) {
+	b, err := io.ReadAll(r)
+	if err != nil {
+		return KnowledgeFile{}, err
+	}
+	// Version is checked before the strict decode: a file written for a
+	// newer schema must report that, not a misleading "unknown field".
+	var head struct {
+		Version int `json:"version"`
+	}
+	if err := json.Unmarshal(b, &head); err != nil {
+		return KnowledgeFile{}, err
+	}
+	if head.Version < 0 || head.Version > KnowledgeFileVersion {
+		return KnowledgeFile{}, fmt.Errorf(
+			"unsupported knowledge file version %d (this build accepts up to %d)",
+			head.Version, KnowledgeFileVersion)
+	}
 	var f KnowledgeFile
-	dec := json.NewDecoder(r)
+	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&f); err != nil {
 		return f, err

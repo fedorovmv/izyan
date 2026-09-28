@@ -40,6 +40,9 @@ func TestDefaultKnowledgeEmbedded(t *testing.T) {
 	if len(f.SourceFuncs) != len(kb.SourceFuncs) || len(f.ListenerPrimitives) != len(kb.ListenerPrimitives) {
 		t.Fatal("AsFile round-trip lost entries")
 	}
+	if f.Version != KnowledgeFileVersion {
+		t.Fatalf("dump version=%d want %d", f.Version, KnowledgeFileVersion)
+	}
 	// A file built on the dump merges back cleanly — same-value repeats
 	// are no-ops, only rewrites conflict.
 	if err := DefaultKnowledge().Merge(f); err != nil {
@@ -96,6 +99,11 @@ func TestKnowledgeExtendSourceFuncs(t *testing.T) {
 func TestKnowledgeFileValidation(t *testing.T) {
 	for _, tc := range []struct{ name, body, want string }{
 		{"unknown key", `{"source_funcz": {}}`, "unknown field"},
+		{"future version", `{"version": 99}`, "unsupported knowledge file version"},
+		// A newer schema's fields must surface as a version error, not
+		// a misleading unknown-field one.
+		{"future schema fields", `{"version": 2, "java": {}}`, "unsupported knowledge file version"},
+		{"negative version", `{"version": -1}`, "unsupported knowledge file version"},
 		{"bad origin", `{"source_funcs": {"x.Y": "TRUSTED"}}`, "unknown data origin"},
 		{"negative passthrough", `{"passthrough_funcs": {"x.Y": -1}}`, "negative"},
 		{"negative populate dst", `{"slice_populate_funcs": {"x.Y": [-1, 0]}}`, "negative"},
