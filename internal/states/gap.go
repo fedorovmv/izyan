@@ -3,11 +3,14 @@ package states
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"example.com/vuln-analyzer/internal/domain"
 	"example.com/vuln-analyzer/internal/evaluator"
 	"example.com/vuln-analyzer/internal/goanalysis"
+	"example.com/vuln-analyzer/internal/toolaudit"
 	"example.com/vuln-analyzer/internal/workflow"
 )
 
@@ -22,6 +25,10 @@ import (
 type GapAnalysis struct {
 	Source     *goanalysis.Index
 	Evaluators []evaluator.ConditionEvaluator
+	// AllowExec permits the case-level build/test evidence actions. They
+	// execute repository code, so they fire only on explicit opt-in
+	// (--allow-exec); without it a limitation records what was skipped.
+	AllowExec bool
 	// Planner is the optional LLM-driven hypothesis planner (spec §18):
 	// it runs once per still-unknown condition when the deterministic
 	// actions for it are exhausted. It only decides where to look next;
@@ -49,7 +56,13 @@ const (
 func (GapAnalysis) State() domain.WorkflowState { return domain.StateGapAnalysis }
 
 func (h GapAnalysis) Run(ctx context.Context, c *domain.AnalysisCase) (workflow.Transition, error) {
-	if h.Source == nil || c.Exploit == nil {
+	if c.Exploit == nil {
+		return h.dispatch(c, "no exploit model — gap analysis skipped")
+	}
+	// Case-level evidence: does the snapshot compile, does its test suite
+	// pass? Runs before the source-index actions — exec needs no index.
+	h.actBuildTest(ctx, c)
+	if h.Source == nil {
 		return h.dispatch(c, "no source index — gap analysis skipped")
 	}
 	planned := map[string]bool{}
@@ -134,6 +147,9 @@ func hasFalseClaim(c *domain.AnalysisCase) bool {
 // dispatch picks the next state by the same rules EVALUATE_CONDITIONS
 // applies when no UNKNOWNs remain.
 func (h GapAnalysis) dispatch(c *domain.AnalysisCase, reason string) (workflow.Transition, error) {
+	if c.Exploit == nil {
+		return workflow.Transition{Next: domain.StateEvaluateVerdict, Reason: reason}, nil
+	}
 	hasFalse := false
 	for _, cond := range c.Exploit.MandatoryConditions {
 		if cl := findClaim(c.Claims, cond.ID); cl != nil && cl.Result == domain.ClaimFalse {
@@ -401,6 +417,131 @@ func (h GapAnalysis) actHiddenReach(ctx context.Context, c *domain.AnalysisCase,
 	}
 	c.AddHypothesis(hyp)
 	return false
+}
+
+// actBuildTest runs the case-level exec evidence actions (spec §17):
+// does the product compile at all, and does its test suite pass? A
+// non-compiling snapshot weakens every static scan — the outcome is
+// recorded as BUILD/TEST evidence plus a limitation, never silently.
+// Gated by AllowExec (these commands execute repository code); a skipped
+// run leaves an honest limitation, not a hidden execution.
+func (h GapAnalysis) actBuildTest(ctx context.Context, c *domain.AnalysisCase) {
+	unknown := false
+	for _, cond := range c.Exploit.MandatoryConditions {
+		if cl := findClaim(c.Claims, cond.ID); cl != nil && cl.Result == domain.ClaimUnknown {
+			unknown = true
+		}
+	}
+	if !unknown {
+		return
+	}
+	if !h.AllowExec {
+		c.EvidenceGraph.AddLimitation(
+			"build/test evidence actions skipped: executing repository code requires --allow-exec")
+		return
+	}
+	// Restart-safe: a re-entered state does not duplicate evidence kinds
+	// the previous run already recorded.
+	seen := map[domain.EvidenceKind]bool{}
+	for _, e := range c.EvidenceGraph.EvidenceList() {
+		seen[e.Kind] = true
+	}
+	var env []string
+	if h.Source != nil {
+		env = h.Source.Env
+	}
+	dir := c.Product.Repository
+	if dir == "" && h.Source != nil {
+		dir = h.Source.Dir
+	}
+	// go build drops executables of main packages into the work dir —
+	// the analyzed repo must not be mutated, so build output goes to a
+	// throwaway dir. A stable path keeps tool_executions reproducible.
+	buildOut := filepath.Join(os.TempDir(), "vuln-analyzer-build-out")
+	mkErr := os.MkdirAll(buildOut, 0o755)
+	var evIDs []domain.EvidenceID
+	var notes []string
+	for _, step := range []struct {
+		sub  string
+		kind domain.EvidenceKind
+	}{
+		{"build", domain.EvidenceBuild},
+		{"test", domain.EvidenceTest},
+	} {
+		if seen[step.kind] {
+			continue
+		}
+		if max := c.Workflow.Limits.MaxToolCalls; max > 0 &&
+			c.UsageSnapshot().ToolCalls >= max {
+			c.EvidenceGraph.AddLimitation(
+				"build/test evidence actions stopped: MaxToolCalls budget exhausted")
+			break
+		}
+		args := []string{step.sub, "./..."}
+		if step.kind == domain.EvidenceBuild {
+			if mkErr != nil {
+				c.EvidenceGraph.AddToolLimitation(
+					"build evidence skipped: cannot create output dir: " + mkErr.Error())
+				continue
+			}
+			defer os.RemoveAll(buildOut)
+			args = []string{"build", "-o", buildOut, "./..."}
+		}
+		c.IncToolCalls()
+		stdout, stderr, err := toolaudit.Run(ctx, "go", "", dir, "go", env, args...)
+		status := "ok"
+		if err != nil {
+			status = "FAILED: " + err.Error()
+		}
+		out := trunc(string(stdout), 8000)
+		if se := trunc(string(stderr), 4000); se != "" {
+			if out != "" {
+				out += "\n"
+			}
+			out += se
+		}
+		if out == "" {
+			out = "(no output)"
+		}
+		evIDs = append(evIDs, c.EvidenceGraph.AddEvidence(domain.Evidence{
+			Kind:    step.kind,
+			Quality: domain.QualityDeterministic,
+			Source:  "gap analysis: build/test evidence action",
+			Tool:    "go",
+			Command: "go " + strings.Join(args, " "),
+			Content: status + "\n" + out,
+		}))
+		notes = append(notes, fmt.Sprintf("go %s ./... — %s", step.sub, status))
+		if err == nil {
+			continue
+		}
+		if step.kind == domain.EvidenceBuild {
+			c.EvidenceGraph.AddLimitation(
+				"product does not compile under the analysis toolchain (go build ./... failed) — static reachability/type evidence may be unreliable")
+		} else {
+			c.EvidenceGraph.AddLimitation(
+				"product test suite fails under the analysis toolchain (go test ./...) — may indicate the vulnerable behavior or unrelated breakage; see TEST evidence")
+		}
+	}
+	if len(evIDs) == 0 {
+		return
+	}
+	c.AddHypothesis(domain.Hypothesis{
+		Statement: "the product's build/test state qualifies unresolved evidence: " +
+			"a snapshot that does not compile weakens static analysis, and the " +
+			"test suite may exercise the vulnerable path",
+		ExpectedEvidence: []domain.EvidenceKind{domain.EvidenceBuild, domain.EvidenceTest},
+		EvidenceIDs:      evIDs,
+		Status:           domain.HypothesisConfirmed,
+		Notes:            strings.Join(notes, "; "),
+	})
+}
+
+func trunc(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "...[truncated]"
 }
 
 // reevaluate re-runs deterministic evaluators on still-UNKNOWN claims —

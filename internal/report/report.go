@@ -125,6 +125,27 @@ func Markdown(c *domain.AnalysisCase) string {
 			}
 		}
 	}
+	var bt []domain.Evidence
+	for _, e := range c.EvidenceGraph.EvidenceList() {
+		if e.Kind == domain.EvidenceBuild || e.Kind == domain.EvidenceTest {
+			bt = append(bt, e)
+		}
+	}
+	if len(bt) > 0 {
+		b.WriteString("## Build & test\n\n")
+		for _, e := range bt {
+			name := e.Command
+			if name == "" {
+				name = e.Source
+			}
+			status := e.Content
+			if i := strings.IndexByte(status, '\n'); i >= 0 {
+				status = status[:i]
+			}
+			fmt.Fprintf(&b, "- `%s` — %s\n", name, status)
+		}
+		b.WriteString("\n")
+	}
 	if len(c.Claims) > 0 {
 		b.WriteString("## Claims\n\n| condition | result | verification | evidence |\n|---|---|---|---|\n")
 		for _, cl := range c.Claims {
@@ -249,16 +270,36 @@ func evidenceIDs(ids []domain.EvidenceID) []string {
 
 func allLimitations(c *domain.AnalysisCase) []string {
 	var out []string
+	add := func(l string) {
+		for _, x := range out {
+			if x == l {
+				return
+			}
+		}
+		out = append(out, l)
+	}
 	if c.Affected != nil {
-		out = append(out, c.Affected.Limitations...)
+		for _, l := range c.Affected.Limitations {
+			add(l)
+		}
 	}
 	if c.RootCause != nil {
-		out = append(out, c.RootCause.Limitations...)
+		for _, l := range c.RootCause.Limitations {
+			add(l)
+		}
 	}
-	out = append(out, c.EvidenceGraph.Limitations...)
-	out = append(out, c.EvidenceGraph.ToolLimitations...)
+	// The verdict copies graph limitations into its own record — dedupe,
+	// or every limitation prints twice.
+	for _, l := range c.EvidenceGraph.Limitations {
+		add(l)
+	}
+	for _, l := range c.EvidenceGraph.ToolLimitations {
+		add(l)
+	}
 	if c.Verdict != nil {
-		out = append(out, c.Verdict.Limitations...)
+		for _, l := range c.Verdict.Limitations {
+			add(l)
+		}
 	}
 	return out
 }

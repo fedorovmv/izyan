@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 
 	"example.com/vuln-analyzer/internal/affected"
 	"example.com/vuln-analyzer/internal/domain"
@@ -391,8 +393,19 @@ func (t Tools) Call(ctx context.Context, c *domain.AnalysisCase, name string, ar
 		if name == "run_tests" {
 			sub = "test"
 		}
+		args := []string{sub, "./..."}
+		if sub == "build" {
+			// go build drops executables of main packages into the work
+			// dir — keep the analyzed repo clean. A stable path keeps
+			// tool_executions reproducible across runs.
+			buildOut := filepath.Join(os.TempDir(), "vuln-analyzer-build-out")
+			if mkErr := os.MkdirAll(buildOut, 0o755); mkErr == nil {
+				defer os.RemoveAll(buildOut)
+				args = []string{"build", "-o", buildOut, "./..."}
+			}
+		}
 		bin, env := t.goExec()
-		stdout, stderr, err := toolaudit.Run(ctx, "go", "", c.Product.Repository, bin, env, sub, "./...")
+		stdout, stderr, err := toolaudit.Run(ctx, "go", "", c.Product.Repository, bin, env, args...)
 		kind := domain.EvidenceBuild
 		if name == "run_tests" {
 			kind = domain.EvidenceTest

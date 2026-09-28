@@ -120,7 +120,7 @@ func commonFlags(fs *flag.FlagSet, o *analyzeOpts) {
 	fs.StringVar(&o.binary, "binary", "", "release-built Go binary: govulncheck -mode binary + embedded toolchain")
 	fs.StringVar(&o.releaseGo, "release-go-version", "", "toolchain version that built the release (e.g. from the ticket)")
 	fs.BoolVar(&o.detOnly, "deterministic-only", false, "disable LLM-backed states")
-	fs.BoolVar(&o.allowExec, "allow-exec", false, "permit agent tools that execute repository code (run_build/run_tests)")
+	fs.BoolVar(&o.allowExec, "allow-exec", false, "permit executing repository code for build/test evidence (run_build/run_tests)")
 	fs.StringVar(&o.llmEnv, "llm-env", "", "path to LLM .env file (default: .env in cwd or repo)")
 }
 
@@ -336,7 +336,7 @@ func analyzeCase(ctx context.Context, o analyzeOpts) (*domain.AnalysisCase, erro
 			OSVBase:     o.osvURL,
 		},
 		states.EvaluateConditions{Evaluators: conditionEvaluators},
-		states.GapAnalysis{Source: srcIndex, Evaluators: conditionEvaluators, Planner: gapPlanner, Fallback: fallbackEval},
+		states.GapAnalysis{Source: srcIndex, Evaluators: conditionEvaluators, Planner: gapPlanner, Fallback: fallbackEval, AllowExec: o.allowExec},
 		states.NegativeCheck{Verifier: &goanalysis.Verifier{Source: srcIndex}},
 		states.Review{Reviewer: reviewers, Evaluator: evaluator.VerdictEvaluator{}},
 		states.RepairAnalysis{},
