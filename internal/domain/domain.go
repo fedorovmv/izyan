@@ -234,6 +234,9 @@ const (
 	CheckExposure      = "exposure"
 	CheckConfigFlag    = "config_flag"
 	CheckConfigKey     = "config_key"
+	// CheckReachable routes a CUSTOM condition to the symbol-reachability
+	// machinery (subjects, direction=read, sequence=a->b all apply).
+	CheckReachable = "reachable"
 )
 
 // Exposure scope values — deterministic classification of a resolved

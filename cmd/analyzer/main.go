@@ -277,6 +277,9 @@ func analyzeCase(ctx context.Context, o analyzeOpts) (*domain.AnalysisCase, erro
 		evaluator.Presence{},
 		evaluator.VersionFact{},
 		evaluator.Platform{},
+		// Last resort: unrouted CUSTOM conditions (check= shapes are
+		// claimed by their own evaluators above).
+		evaluator.Custom{},
 	}
 	var fallbackEval evaluator.ConditionEvaluator
 	var gapPlanner states.HypothesisPlanner
