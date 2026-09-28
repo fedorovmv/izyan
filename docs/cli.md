@@ -82,6 +82,26 @@ false-safe/expect-fail/claims-fail/error — пригоден для CI.
 
 ## knowledge — база знаний экосистемы
 
+Анализатор решает, откуда пришли данные и открыт ли endpoint, по
+таблицам семантики экосистемных API: какие вызовы читают env/сеть/
+файлы, какие пробрасывают данные между аргументом и результатом, какие
+открывают listener. Эти таблицы — база знаний, она поставляется
+embedded в бинарь. Если у продукта есть свои библиотеки (корпоративный
+config-loader, обёртки над http-клиентом, framework-хелперы), встроенная
+база про них не знает — их вызовы будут давать `UNKNOWN`-provenance.
+`--knowledge <file>` дописывает такие записи без пересборки:
+
+```json
+{
+  "schema_version": 1,
+  "name": "corp",
+  "labels": ["corp"],
+  "data_version": "2026-10-05",
+  "source_funcs": {"example.com/cfg.LoadSecrets": "SECRET"},
+  "passthrough_funcs": {"example.com/buf.Clone": [{"from": 0}]}
+}
+```
+
 ```bash
 vuln-analyzer knowledge [--knowledge <path>]
 ```
