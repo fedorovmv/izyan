@@ -303,7 +303,7 @@ symbols + fixed_versions → минимальный OSV JSON). CLI-флаги
 | # | Пункт | Зачем | Done-критерий |
 |---|-------|-------|----------------|
 | B4 | Устойчивость repair к bogus-демоциям | LLM-ревьюер дважды демотировал VERIFIED-FALSE семантическим misread («противоречит root cause»); промпт дополнен, но защита нужна детерминистическая | Демоция VERIFIED-FALSE требует ссылки на конкретный артефакт (маркер/uncovered site/traced origin); тест на bogus-demotion |
-| B12 | Knowledge-base как данные, не код | Таблицы семантики экосистемы (`knownSourceFuncs`, `passthroughFuncs`, `configTagKeys`, `listenAddrArg`, `authCallNames`, `slicePopulateFuncs` и др. в `internal/goanalysis`) захардкожены — новый config-декодер/RPC/IO-API требует правки кода | Таблицы в `knowledge.go` за `Knowledge` struct + `--knowledge <json>` расширяет без правок кода; JSON валидируется (unknown key → error, конфликт ключа → error); юнит-тест расширения; правило «никакого case-specific хардкода» в `docs/dev/agent-rules/`; план: `docs/dev/plans/knowledge-base-plan.md` |
+| B12 | Knowledge-base как данные, не код | Таблицы семантики экосистемы (`knownSourceFuncs`, `passthroughFuncs`, `configTagKeys`, `listenAddrArg`, `authCallNames`, `slicePopulateFuncs` и др. в `internal/goanalysis`) захардкожены — новый config-декодер/RPC/IO-API требует правки кода | Таблицы в `knowledge.go` за `Knowledge` struct + `--knowledge <json>` расширяет без правок кода; JSON валидируется (unknown key → error, конфликт ключа → error); юнит-тест расширения; правило «никакого case-specific хардкода» в `docs/agent-rules/`; план: `docs/dev/plans/knowledge-base-plan.md` |
 
 ### P2 — глубина покрытия
 

@@ -93,7 +93,7 @@ func DefaultKnowledge() *Knowledge
 
 ## Этап 3 — правило и доки
 
-8. `docs/dev/agent-rules/generality.md` (новый файл): никаких
+8. `docs/agent-rules/generality.md` (новый файл): никаких
    case/product-идентификаторов в коде; KB — только универсальная
    семантика экосистемных API; направление ошибки консервативно;
    расширение — сначала через JSON, новые дефолты только для широко

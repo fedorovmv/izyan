@@ -11,7 +11,9 @@
 - `dev/current/` — живое состояние для разработки: `implementation-status`,
   `gap-analysis` (бэклог), `analysis-internals` (механика)
 - `eval/README.md` — live corpus (вне `docs/` — рядом с данными)
-- `dev/agent-rules/` — эти правила; `dev/history/` — старые версии
+- `agent-rules/` — эти правила (на уровне `docs/`, не в `dev/` —
+  читаются при любой задаче, не только девелоперской);
+  `dev/history/` — старые версии
 
 ## Правила
 
