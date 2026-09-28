@@ -234,66 +234,15 @@ symbols + fixed_versions → минимальный OSV JSON). CLI-флаги
 переопределяют поля тикета. Сетевые адаптеры конкретных трекеров
 (GitHub/Jira/SberTrack) — deferred by design.
 
-## 4. Приоритет (по принципу «какой UNKNOWN закрывает»)
+## 4. Приоритет
 
-1. ~~Pattern library~~ — `done` (базовый слой, §3.2).
-2. ~~Deployment facts (bind/endpoint)~~ — `done` (первый слой, §3.1);
-   auth на entrypoint'ах — в резерве.
-3. ~~Configuration reading~~ — `done` (первый слой): `check=config_flag`
-   резолвит code-knob'ы (`FieldAssignments` + zero-value для bool),
-   `check=config_key` — ключи в конфигах репо; `C-TLS-VERIFY` supporting
-   в peer-driven. Live: InsecureSkipVerify=TRUE найден на
-   продукт-референс.
-4. ~~Interface-impl + build-tag paths в negative check~~ — `done`:
-   `GatedRefs` + `InterfaceDispatchSites` деградируют VERIFIED в
-   INSUFFICIENT_SCOPE при находках вне typed-скоупа.
-5. ~~DATABASE/INTERNAL_SERVICE origins~~ — `done` (первый слой, §таблица
-   origins; [`dev/plans/data-origins-plan.md`](../plans/data-origins-plan.md)); authenticated outbound
-   различён (auth-маркеры → EXTERNAL_AUTHENTICATED).
-6. ~~Недостающие 10 typed tools~~ — `done` ([`dev/plans/typed-tools-plan.md`](../plans/typed-tools-plan.md));
-   run_build/run_tests требуют `--allow-exec` (исполняют код репо).
-7. ~~Hypothesis/gap-analysis loop~~ — `done` (детерминистичный первый
-   слой, [`dev/plans/gap-loop-plan.md`](../plans/gap-loop-plan.md)); LLM-planner (multi-step, ≤3/condition,
-   retry на tool-miss; `llm.Planner`) подключён; REVIEW→REPAIR петля
-   работает (demotion-only, bounded MaxReviewIterations).
-8. ~~Eval harness + false-safe metric~~ — `done` (первый слой, §3.7);
-   живой корпус реализован ([`eval/README.md`](../../../eval/README.md): 11 amqp091-go
-   advisory × продукт-референс, 11/11, false-safe=0); далее — независимая
-   ground-truth разметка и метрики root-cause/FALSE precision.
-9. ~~tool_executions/ToolVersion~~ — `done` (первый слой, §таблица
-   Persistence; [`dev/plans/tool-audit-plan.md`](../plans/tool-audit-plan.md)). `Runtime` evidence
-   и reproducibility-diff реализованы.
-10. ~~VEX-экспорт~~ — `done` (OpenVEX + CycloneDX, §3.8).
-11. ~~Remediation~~ — `done` (минимум, §3.9): plan/dry-run/apply +
-    re-analyze; worktree-изоляция в резерве.
-12. ~~Tracker intake~~ — `done` (generic JSON, §3.10); сетевые
-    адаптеры конкретных трекеров — deferred.
-13. ~~Condition-kind evaluator'ы~~ — `done`: `AUTHENTICATION_CONDITION`
-    (`evaluator.Authentication`, никогда не FALSE по отсутствию wiring)
-    и `CUSTOM` (`evaluator.Custom`, последний в цепочке, маршрутизация
-    `check=`) закрывают все 10 kind'ов детерминистикой.
-14. ~~Numeric-bound верификация~~ — `done`: `params.bound` парсится в
-    дизъюнкты `var op lit`, сверяется с `Validation.BoundLow/BoundHigh`
-    и `DataFlow.Value`; «bound verified» — только при численном
-    контрадикторе каждого дизъюнкта.
-15. ~~run_build/run_tests в пайплайн~~ — `done` (первый слой, §3.6):
-    gap-планировщик выполняет `go build`/`go test` как case-level
-    evidence-действие; BUILD/TEST в графе, tool_executions, hypotheses
-    и секции «Build & test» отчёта; build/test failure — limitations;
-    за `--allow-exec`, пропуск — честный limitation.
-16. ~~Vendor-internal provenance~~ — `done` (первый слой, §3.5):
-    dep-скан call sites unexported-субъектов, кросс-пакетный trace внутрь
-    dep, resolved origin побеждает эвристику unexported+peer-driven,
-    dep-FALSE верифицируется retrace'ом тех же dep-сайтов; фикстура +
-    2 corpus-кейса.
-17. ~~Knowledge-base как данные~~ — `done` ([`dev/plans/knowledge-base-plan.md`](../plans/knowledge-base-plan.md)):
-    семантические таблицы экосистемы вынесены из кода в данные —
-    `internal/goanalysis/knowledge.json` (embedded при сборке) →
-    `goanalysis.Knowledge` через `Index.KB`; `--knowledge <json>` —
-    аддитивное расширение без пересборки (unknown key / переопределение
-    значения / невалидный origin → ошибка); `vuln-analyzer knowledge`
-    дампит базу как шаблон; юнит-тест расширения (`testdata/kbprod`);
-    правило — `docs/agent-rules/generality.md`.
+Бэклог §5 упорядочен по принципу «какой UNKNOWN закрывает» —
+приоритет получает работа, уменьшающая число неопределённых claims.
+
+Закрытые пункты здесь не хранятся: история изменений — в `git log`
+и планах [`dev/plans/`](../plans/), текущая механика — в
+[`analysis-internals.md`](analysis-internals.md). Закрытие пункта §5 =
+удаление строки из бэклога в том же коммите, что закрывает работу.
 
 ## 5. Открытый бэклог (приоритетный, с done-критериями)
 
@@ -331,8 +280,9 @@ symbols + fixed_versions → минимальный OSV JSON). CLI-флаги
 | B11 | goroutine/channel dispatch, interface-impl внутри dep-кода | Терминальные ограничения синтаксического скана |
 
 Процесс: пункт берётся сверху вниз; закрытие — только с done-критерием
-(тест/живой кейс), после чего переносится в §4; новые находки добавляются
-с приоритетом, не висят в разговоре.
+(тест/живой кейс), после чего строка удаляется из §5 в коммите
+закрытия; история — в `git log`, не в этом файле. Новые находки
+добавляются с приоритетом, не висят в разговоре.
 
 ### Handoff notes (что читать/трогать новой сессией)
 
