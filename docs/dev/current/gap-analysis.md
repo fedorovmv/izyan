@@ -53,6 +53,7 @@
 | B9 | Паттерны вне 4 семейств | По живым кейсам; каждый паттерн = registry entry + фикстура |
 | B18 | Snapshot/toolchain-факты как platform conditions | `go_version` продукта и тулчейн-семантика (TLS 1.2 floor с go1.22+ и т.п.) не моделируются → 33mj истина NEPF, анализатор INCONCLUSIVE. Done: platform-condition claim решается по snapshot `go_version` + тест; 33mj-кейс даёт NEPF |
 | B19 | Точность reflect/unsafe демоций NV | Демоция по маркеру не проверяет, что write-site реально достигает типа субъекта (465g: `amqp091.URI` никогда не создаётся продуктом → истина NEPF, анализатор INCONCLUSIVE). Done: маркер учитывает достижимость типа/поля; 465g-кейс даёт NEPF |
+| B20 | Root-cause верификация теряет fix-added символы | `Verifier.Verify` ищет кандидата только в dep-версии продукта (`FindSymbol` → product-scope); символ, добавленный патчем, там отсутствует по определению → в Alternatives. 27gv: LLM верно предложил `PlainAuth.String`/`setSASL`/`Reconnect` — существуют в v1.13.0 (это и есть фикс), но отброшены | Двойная верификация: vuln-версия (exploit-субъект) + fix-diff/fixed source (root-cause идентичность, метка «added by fix»); кейс с аддитивным фиксом сохраняет fix-side кандидата в RootCauses; регресс-тест на 27gv-сценарий |
 
 ### P3 — deferred by design
 
