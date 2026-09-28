@@ -76,12 +76,33 @@ func (SymbolReachable) Evaluate(cond domain.Condition, c *domain.AnalysisCase) d
 		return claim
 	}
 
+	// A recorded intra-module chain from a product-used API is positive
+	// reachability evidence and outranks govulncheck silence: for advisories
+	// without declared symbols govulncheck only emits package-level traces,
+	// which never reach the sink internals.
+	for _, subj := range symbols {
+		want := subj.Package + "." + subj.Symbol
+		if chain, ok := c.EvidenceGraph.ModuleReachable[want]; ok {
+			claim.Result = domain.ClaimTrue
+			claim.EvidenceIDs = append(moduleReachEvidence(c), moduleUsageEvidence(c)...)
+			claim.Explanation = fmt.Sprintf(
+				"%s reachable through module internals: %s",
+				want, strings.Join(chain, " -> "))
+			return claim
+		}
+	}
+
 	// govulncheck silence only means something when the advisory was in its
-	// database. If the DB lacks this advisory entirely, reachability was never
-	// evaluated — fall back to module-usage evidence.
-	if c.GovulncheckCoverage == "not_in_db" {
-		return libraryUsageVerdict(claim, c, symbols,
-			"advisory absent from govulncheck DB")
+	// database AND declared the symbols under evaluation — its call paths
+	// terminate at declared vulnerable symbols, so for subjects outside that
+	// set (e.g. fix-diff-derived root causes of a symbol-less entry) the
+	// absence of a trace proves nothing.
+	if c.GovulncheckCoverage != "covered" || !allDeclared(symbols, c.Vulnerability.AffectedSymbols) {
+		why := "advisory absent from govulncheck DB"
+		if c.GovulncheckCoverage == "covered" {
+			why = "govulncheck entry declares no affected symbols covering the subject(s); silence is not evidence of no path"
+		}
+		return libraryUsageVerdict(claim, c, symbols, why)
 	}
 
 	claim.EvidenceIDs = nil
@@ -130,7 +151,7 @@ func libraryUsageVerdict(claim domain.Claim, c *domain.AnalysisCase, subjects []
 		want := subj.Package + "." + subj.Symbol
 		if chain, ok := c.EvidenceGraph.ModuleReachable[want]; ok {
 			claim.Result = domain.ClaimTrue
-			claim.EvidenceIDs = moduleUsageEvidence(c)
+			claim.EvidenceIDs = append(moduleReachEvidence(c), moduleUsageEvidence(c)...)
 			claim.Explanation = fmt.Sprintf(
 				"%s; %s reachable through module internals: %s",
 				why, want, strings.Join(chain, " -> "))
@@ -344,6 +365,19 @@ func moduleUsageEvidence(c *domain.AnalysisCase) []domain.EvidenceID {
 	return ids
 }
 
+// moduleReachEvidence returns the IDs of the ModuleInternalReach evidence —
+// the records documenting the intra-module reachability check and the chains
+// stored in ModuleReachable.
+func moduleReachEvidence(c *domain.AnalysisCase) []domain.EvidenceID {
+	var ids []domain.EvidenceID
+	for _, e := range c.EvidenceGraph.Evidence {
+		if e.Tool == "goanalysis.Index.ModuleInternalReach" {
+			ids = append(ids, e.ID)
+		}
+	}
+	return ids
+}
+
 // SymbolExported reports whether the subject can be named by product code —
 // the inverse of the unexported check used for peer-driven internals.
 func SymbolExported(s domain.SymbolRef) bool {
@@ -404,6 +438,22 @@ func containsSymbol(list []domain.SymbolRef, s domain.SymbolRef) bool {
 		}
 	}
 	return false
+}
+
+// allDeclared reports whether every evaluated subject is among the
+// advisory's declared affected symbols — the set govulncheck actually
+// traces call paths to. Subjects outside it (fix-diff root causes of a
+// symbol-less entry) were never evaluated, so silence cannot falsify them.
+func allDeclared(subjects, declared []domain.SymbolRef) bool {
+	if len(declared) == 0 {
+		return false
+	}
+	for _, s := range subjects {
+		if !containsSymbol(declared, s) {
+			return false
+		}
+	}
+	return true
 }
 
 func govulncheckRan(c *domain.AnalysisCase) bool {

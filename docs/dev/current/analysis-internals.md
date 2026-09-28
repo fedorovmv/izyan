@@ -60,8 +60,14 @@ harness, tool audit, экспорты, известные границы.
 
 - `"covered"` — advisory (по ID или GO-* алиасу) подтверждённо в БД:
   либо стрим выдал `osv`/`finding` сообщения, либо `dbKnowsAdvisory`
-  нашёл GO-* запись через OSV query по модулю. Тогда ноль findings —
-  легитимный FALSE-кандидат (см. ниже).
+  нашёл GO-* запись через OSV query по модулю. Ноль findings —
+  легитимный FALSE-кандидат **только если все субъекты объявлены в
+  `AffectedSymbols`**: govulncheck-трейсы завершаются на объявленных
+  уязвимых символах, поэтому для entry без symbol-списка (или для
+  root-cause субъектов вне него) молчание ничего не доказывает — такие
+  кейсы уходят в module-usage fallback. Дополнительно записанная
+  `ModuleReachable`-цепочка `product-API → sink` является позитивным
+  TRUE-доказательством и выигрывает у молчания govulncheck.
 - `"not_in_db"` — ни стрим, ни vulndb-листинг не знают advisory.
   Молчание ≠ данные; limitation в отчёте + timestamp снапшота БД vs
   `advisory modified` (видно, когда advisory просто новее БД).
@@ -150,7 +156,7 @@ composite-literal ключи матчатся по declaring struct); `sequence=
 
 | Evaluator | Обрабатывает | Логика |
 |---|---|---|
-| `SymbolReachable` | `SYMBOL_REACHABLE` | govulncheck-трейсы → TRUE; `not_in_db` или govulncheck не запустился → module-usage fallback; covered+нет пути → FALSE-кандидат. Param-ветки: `direction=read` → product-refs из `SymbolRefs` (INFO_LEAK); `sequence=a->b` → все члены пары вызваны (URI_CONFUSION) |
+| `SymbolReachable` | `SYMBOL_REACHABLE` | govulncheck-трейсы → TRUE; `ModuleReachable`-цепочка → TRUE; covered+нет пути+все субъекты в `AffectedSymbols` → FALSE-кандидат; иначе (not_in_db/не запустился/undeclared subjects) → module-usage fallback. Param-ветки: `direction=read` → product-refs из `SymbolRefs` (INFO_LEAK); `sequence=a->b` → все члены пары вызваны (URI_CONFUSION) |
 | `ServerTransportInput` | `ATTACKER_CONTROL`, `INPUT_CONSTRAINT` | server-фреймы уязвимого модуля в трейсе + listener-entrypoints → TRUE; client-side: module usage + unexported subjects + peer-input → TRUE (`input_source=peer` в params или remote-input в тексте); `input_source=arg/config` — сразу `ArgumentOrigin` |
 | `ArgumentOrigin` | `ATTACKER_CONTROL` | `DataFlows`: external origin → TRUE; все non-external → FALSE-кандидат |
 | `Validation` | `INPUT_CONSTRAINT` | `FindValidations` — guard-выражения до sink |

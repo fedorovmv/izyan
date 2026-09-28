@@ -22,13 +22,16 @@ module-usage fallback — вердикты могут честно смещат�
 
 | Группа | Кейсы |
 |---|---|
-| EXPLOITABLE | GHSA-4v58, c5pq, j497, r9c8, xwwf — wire-parser класс, peer-driven input, govulncheck-путь до sink |
-| NO_EXPLOIT_PATH_FOUND | GHSA-6c5v, GO-2026-6372 — уязвимые символы не вызываются, NV VERIFIED |
-| INCONCLUSIVE | GHSA-27gv, 33mj, 465g, rm6m — info-leak/config классы: deploy-dependent условия |
+| EXPLOITABLE | GHSA-4v58, 6c5v, c5pq, r9c8, xwwf, GO-2026-6372 — wire-parser/exhaustion классы, peer-driven input, продукт дёргает Dial+Consume |
+| NO_EXPLOIT_PATH_FOUND | GHSA-rm6m — аргументы Qos клампятся bound-гардами ([0,1024]/[0,1GiB]), NV VERIFIED |
+| INCONCLUSIVE | GHSA-27gv, 33mj, 465g, j497 — deploy/config-dependent условия (нет доказанного читателя creds; TLS-floor по toolchain; отсутствующая URI-пара; config-contingent peer→shortstr) |
 
-`expect` в корпусе зафиксирован по наблюдаемым вердиктам — это regression
-pinned behavior, не независимый ground truth. false-safe=0 остаётся
-стоп-критерием.
+`expect` в корпусе пиннит **ground truth** — истинный вердикт каждого
+кейса размечен вручную по advisory+коду продукта; метод и обоснования —
+[`ground-truth.md`](ground-truth.md). `INCONCLUSIVE` в expect допускается
+там, где истина определённа, но механизм её доказательства пока не
+реализован (33mj — PLATFORM_CONDITION по go_version; 465g — reflect-
+демоция без значения типа). false-safe=0 остаётся стоп-критерием.
 
 После B2: кейсы, доходящие до GAP_ANALYSIS, без `--allow-exec` несут
 limitation «build/test evidence actions skipped»; с флагом — BUILD/TEST
@@ -88,10 +91,22 @@ VERIFIED-FALSE по dep-retrace).
 в проде» зависит от деплоя (доверен ли брокер) — за пределами
 статического анализа, claim limitations это фиксируют.
 
+## Ground truth (B1)
+
+Истина по всем 11 кейсам размечена вручную по fix-diff advisory + коду
+продукта — [`ground-truth.md`](ground-truth.md). Метод: кто дёргает
+уязвимый API (44 call site на `components/amqp09`: Dial/DialTLS/
+DialTLS_ExternalAuth, Consume, Qos, Declare*,
+PublishWithDeferredConfirmWithContext); исполняется ли `recvContent`/
+`openTune` на продукционном пути; есть ли безусловный путь от
+peer-данных до условия уязвимости (для j497 — нет, все peer→shortstr
+пути config-contingent → INCONCLUSIVE). Разметка поймала два
+false-safe бага: covered-entry без `AffectedSymbols` больше не
+принимает govulncheck-сilenсe за negative evidence (6c5v,
+GO-2026-6372 → EXPLOITABLE через записанные `ModuleReachable`-цепочки).
+
 ## Следующий слой
 
-- Независимая ручная разметка ground truth (какие из EXPLOITABLE —
-  истинно exploitable в проде vs «peer can drive»).
 - Метрики root-cause accuracy (верные ли символы) и FALSE precision.
 - Второй продуктовый репозиторий для диверсификации.
 - Live-корпус не входит в CI-регрессию (сеть + тяжёлый репо) — отдельный

@@ -14,6 +14,7 @@
       "vuln": "GHSA-33mj-cw25-m34h",
       "vuln_file": "advisories/live/GHSA-33mj-cw25-m34h.json",
       "expect": [
+        "NO_EXPLOIT_PATH_FOUND",
         "INCONCLUSIVE"
       ]
     },
@@ -22,6 +23,7 @@
       "vuln": "GHSA-465g-fh3v-9jw4",
       "vuln_file": "advisories/live/GHSA-465g-fh3v-9jw4.json",
       "expect": [
+        "NO_EXPLOIT_PATH_FOUND",
         "INCONCLUSIVE"
       ]
     },
@@ -38,7 +40,7 @@
       "vuln": "GHSA-6c5v-hqjr-5xxp",
       "vuln_file": "advisories/live/GHSA-6c5v-hqjr-5xxp.json",
       "expect": [
-        "NO_EXPLOIT_PATH_FOUND"
+        "EXPLOITABLE"
       ]
     },
     {
@@ -54,7 +56,7 @@
       "vuln": "GHSA-j497-x9hr-x34x",
       "vuln_file": "advisories/live/GHSA-j497-x9hr-x34x.json",
       "expect": [
-        "EXPLOITABLE"
+        "INCONCLUSIVE"
       ]
     },
     {
@@ -87,7 +89,7 @@
       "vuln": "GO-2026-6372",
       "vuln_file": "advisories/live/GO-2026-6372.json",
       "expect": [
-        "NO_EXPLOIT_PATH_FOUND"
+        "EXPLOITABLE"
       ]
     }
   ]

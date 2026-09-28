@@ -42,12 +42,70 @@ func TestSymbolReachableTrueViaAdvisorySymbol(t *testing.T) {
 
 func TestSymbolReachableFalseCandidateNoTrace(t *testing.T) {
 	c := reachabilityCase()
+	c.GovulncheckCoverage = "covered"
+	// FALSE-candidate requires every evaluated subject to be declared in the
+	// advisory's affected symbols — only those were actually traced.
+	c.Vulnerability.AffectedSymbols = append(c.Vulnerability.AffectedSymbols,
+		domain.SymbolRef{Package: "lib/internal/transport", Symbol: "recvBuffer.put"})
 	claim := SymbolReachable{}.Evaluate(domain.Condition{
 		ID:   "C-REACH",
 		Kind: domain.ConditionSymbolReachable,
 	}, c)
 	if claim.Result != domain.ClaimFalse {
 		t.Fatalf("got %s, want FALSE candidate", claim.Result)
+	}
+}
+
+// A covered advisory whose entry declares no affected symbols cannot have
+// produced a symbol-level trace — its silence is not negative evidence,
+// so the claim must fall back to module-usage instead of FALSE.
+func TestSymbolReachableSymbollessCoveredNotFalse(t *testing.T) {
+	c := reachabilityCase()
+	c.GovulncheckCoverage = "covered"
+	c.Vulnerability.AffectedSymbols = nil
+	claim := SymbolReachable{}.Evaluate(domain.Condition{
+		ID:   "C-REACH",
+		Kind: domain.ConditionSymbolReachable,
+	}, c)
+	if claim.Result == domain.ClaimFalse {
+		t.Fatalf("got FALSE for a symbol-less advisory entry — govulncheck never evaluated the sink")
+	}
+}
+
+// A subject outside the declared affected-symbol set was never traced by
+// govulncheck — silence must not falsify it even when other subjects were
+// declared and absent from the trace set.
+func TestSymbolReachableUndeclaredSubjectNotFalse(t *testing.T) {
+	c := reachabilityCase()
+	c.GovulncheckCoverage = "covered"
+	// reachabilityCase: declared {ServerStream.Read}, root cause
+	// {recvBuffer.put} — the root cause was never in the DB symbol list.
+	claim := SymbolReachable{}.Evaluate(domain.Condition{
+		ID:   "C-REACH",
+		Kind: domain.ConditionSymbolReachable,
+	}, c)
+	if claim.Result == domain.ClaimFalse {
+		t.Fatalf("got FALSE with undeclared subject recvBuffer.put")
+	}
+}
+
+// A recorded intra-module chain from a product-used API proves
+// reachability regardless of govulncheck trace coverage.
+func TestSymbolReachableTrueViaModuleChain(t *testing.T) {
+	c := reachabilityCase()
+	c.GovulncheckCoverage = "covered"
+	c.Vulnerability.AffectedSymbols = nil
+	c.EvidenceGraph.AddEvidence(domain.Evidence{Tool: "goanalysis.Index.ModuleUsage"})
+	c.EvidenceGraph.AddModuleUsages(domain.CallSite{Package: "prod/x", Function: "DialTLS"})
+	c.EvidenceGraph.AddModuleReachable("lib/internal/transport.recvBuffer.put", []string{
+		"lib/transport.DialTLS", "lib/internal/transport.recvBuffer.put",
+	})
+	claim := SymbolReachable{}.Evaluate(domain.Condition{
+		ID:   "C-REACH",
+		Kind: domain.ConditionSymbolReachable,
+	}, c)
+	if claim.Result != domain.ClaimTrue {
+		t.Fatalf("got %s, want TRUE: module-internal chain proves reach", claim.Result)
 	}
 }
 
@@ -65,6 +123,9 @@ func TestSymbolReachableUnknownNoGovulncheck(t *testing.T) {
 
 func TestSymbolReachableWrongReceiverNoMatch(t *testing.T) {
 	c := reachabilityCase()
+	c.GovulncheckCoverage = "covered"
+	c.Vulnerability.AffectedSymbols = append(c.Vulnerability.AffectedSymbols,
+		domain.SymbolRef{Package: "lib/internal/transport", Symbol: "recvBuffer.put"})
 	cp := domain.CallPath{Frames: []domain.CallSite{
 		{Package: "lib/internal/transport", Function: "Read", Receiver: "*ClientStream"},
 	}}
