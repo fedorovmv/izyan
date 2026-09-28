@@ -83,6 +83,29 @@
 DB): wire/parser (есть), path traversal в архивах, SSRF/URL-parse,
 DoS/panic в парсерах, TLS/auth-bypass, injection в шаблоны/SQL-обёртки.
 
+### Кандидаты advisory (проверено через OSV API 2026-09-28)
+
+| # | Advisory | Dep | Класс | Форма продукта | Что доказывает сверх govulncheck |
+|---|----------|-----|-------|----------------|----------------------------------|
+| C1 | GO-2021-0061 / GHSA-r88r-gmrh-7j83 | `gopkg.in/yaml.v2` | DoS: crafted YAML (nested anchors) | config-loader принимает YAML по сети | provenance: network-input doc vs локальный файл — один dep, два вердикта в разных продуктах |
+| C2 | GO-2020-0017 / GHSA-w73w-5m7g-f7qc (CVE-2020-26160) | `github.com/dgrijalva/jwt-go` | auth bypass: `aud` не проверяется | API-сервер с JWT-middleware | условие «валидация вне dep»: `ParseWithClaims`+ручная проверка aud → guard-falsifier vs голый Parse |
+| C3 | GO-2024-2698 / GHSA-rhh4-rh7c-7r5v | `github.com/mholt/archiver` (v3) | path traversal в ZIP-extraction | upload-сервис, распаковка архива | sink достижим, но источник — trusted-internal артефакты → verified FALSE / INCONCLUSIVE |
+| C4 | GO-2022-0588 | `github.com/microcosm-cc/bluemonday` | XSS: sanitizer bypass | рендер пользовательского HTML | условие «политика фильтрует проблемный узел» — config-gated guard |
+| C5 | GO-2023-2102 / GHSA-4374-p667-p6c8 | `golang.org/x/net/http2` | DoS: HTTP/2 rapid reset | h2-сервер с listener | deployment-факты: terminating proxy перед сервером → INCONCLUSIVE вместо чистого govulncheck-hit |
+| C6 | GO-2022-0968 / GHSA-gwc9-m7rh-j2ww | `golang.org/x/crypto/ssh` | pre-auth panic: malformed packets | SSH-сервер | exposure-цепочка до pre-auth sink: прямой путь эксплуатации без аутентификации |
+| C7 | GO-2024-2800 / GHSA-q64h-39hv-4cf7 | `github.com/hashicorp/go-getter` | argument injection в git-fetch | сервис скачивает по URL пользователя | provenance до sink + URL-whitelist guard → два продукта, EXPLOITABLE vs verified FALSE |
+| C8 | GO-2023-2074 / GHSA-m9xq-6h2j-65r2 | `github.com/gomarkdown/markdown` | OOB read в парсере | md-рендерер пользовательского ввода | parser-класс на новом dep; проверка pattern-library обобщаемости |
+| C9 | GO-2020-0028 / GHSA-p55x-7x9v-q8m4 | `github.com/miekg/dns` | DoS: malformed zone data | DNS-резолвер сервер | запасной parser-кейс; альтернатива при проблемах с C8 |
+| C10 | GO-2023-2409 / GHSA-6294-6rgp-fr7r | `github.com/dvsekhvalnov/jose2go` | DoS: большой p2c в JWE | сервис принимает JWE-токены | numeric bound: гарда `p2c < N` до sink → числовое опровержение условия |
+| C11 | любая из C1–C10 на **fixed**-версии dep | — | version-boundary | тот же продукт, dep обновлён | NOT_AFFECTED детерминистично; govulncheck тоже молчит — но мы даём причину и аудит |
+| C12 | dep в уязвимой версии, sink не вызывается | `jwt-go`/`archiver` | negative-usage | продукт импортирует dep ради другого API | NV верифицирует falsifier → NO_EXPLOIT_PATH_FOUND vs молчание govulncheck (неотличимо от «нет данных») |
+
+Пара «один advisory → два продукта» (C1, C2, C7) сознательно показывает,
+что вердикт зависит от продукта, а не только от advisory — ключевое
+отличие от любого сканера манифестов. Итого: 10 новых advisory-кейсов +
+2 мета-кейса (version-boundary, negative-usage) → live-слой 11+12=23,
+суммарно с fixtures ~41 кейс, 6+ классов, 8+ dep.
+
 Формы продуктов: listener-сервер, CLI arg-driven, config-gated,
 deploy-manifest gated, library-consumer, negative-usage (модуль есть,
 sink не вызывается — NV-кейс), version-boundary (affected/not-affected
