@@ -51,6 +51,7 @@
 | [`dev/plans/typed-tools-plan.md`](dev/plans/typed-tools-plan.md) | done | Все 17 typed tools §17; exec-gate `--allow-exec` |
 | [`dev/plans/knowledge-base-plan.md`](dev/plans/knowledge-base-plan.md) | done | Knowledge-base таблицы → данные (`--knowledge` JSON); бэклог B12 |
 | [`dev/plans/corpus-expansion-plan.md`](dev/plans/corpus-expansion-plan.md) | plan | Расширение доказательной базы: generated-manifest продукты, baseline vs govulncheck; бэклог B13 |
+| [`dev/plans/llm-advisory-plan.md`](dev/plans/llm-advisory-plan.md) | spec-draft | LLM advisory-контур (D16): параллельная оценка, llm_assessment.json; бэклог B17 |
 | [`dev/history/go-skeleton-state-machine.md`](dev/history/go-skeleton-state-machine.md) | исторический | Bootstrap-каркас: Go-интерфейсы/структуры до реализации (истина теперь — `internal/`) |
 | [`dev/history/01-initial-architecture.md`](dev/history/01-initial-architecture.md) | исторический | Исходная архитектура до разбора OSS |
 | [`dev/history/README.md`](dev/history/README.md) | исторический | Что изменилось и почему |
