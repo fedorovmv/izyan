@@ -62,6 +62,7 @@ func runEval(args []string) error {
 	}
 	base := filepath.Dir(absCorpus)
 	resolve := func(p string) string {
+		p = os.ExpandEnv(p)
 		if p == "" || filepath.IsAbs(p) {
 			return p
 		}
