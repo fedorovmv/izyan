@@ -10,7 +10,7 @@
 vuln-analyzer analyze --repo /src/product --vuln GO-2025-3595 [флаги]
 ```
 
-Прогоняет весь конвейер (`docs/architecture.md`) по одной уязвимости и
+Прогоняет весь конвейер ([`architecture.md`](architecture.md)) по одной уязвимости и
 создаёт кейс в `--case-dir`.
 
 Вход advisory — ровно один из:
@@ -78,7 +78,7 @@ vuln-analyzer eval --corpus eval/corpus.json [--out report.md] [--json report.js
 false-safe/expect-fail/claims-fail/error — пригоден для CI.
 По умолчанию детерминистичен; `--with-llm` — opt-in замер LLM-варианта.
 Пути в корпусе — относительно файла корпуса, `${VAR}` раскрывается
-(`eval/README.md`).
+([`eval/README.md`](../eval/README.md)).
 
 ## Общие флаги (все сабкоманды)
 
@@ -126,7 +126,7 @@ LLM_BUILD_MODEL=gpt-4o
 
 | Переменная | Где используется |
 |---|---|
-| `${VAR}` внутри corpus JSON | `eval` раскрывает env в `repo`-путях (`VA_PRODUCT_REPO` для живого корпуса, см. `eval/README.md`) |
+| `${VAR}` внутри corpus JSON | `eval` раскрывает env в `repo`-путях (`VA_PRODUCT_REPO` для живого корпуса, см. [`eval/README.md`](../eval/README.md)) |
 | `GOMODCACHE`, `GOPATH` | source-инструменты `read_source`/`search_source` допускают module cache как evidence-область |
 
 ## Что создаётся на выходе

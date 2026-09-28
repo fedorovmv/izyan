@@ -1,6 +1,6 @@
 # Knowledge-base: семантика экосистемы как данные, не код
 
-Бэклог: `docs/dev/current/gap-analysis.md` §5 B12.
+Бэклог: [`dev/current/gap-analysis.md`](../current/gap-analysis.md) §5 B12.
 
 ## Проблема
 
@@ -93,12 +93,12 @@ func DefaultKnowledge() *Knowledge
 
 ## Этап 3 — правило и доки
 
-8. `docs/agent-rules/generality.md` (новый файл): никаких
+8. [`agent-rules/generality.md`](../../agent-rules/generality.md) (новый файл): никаких
    case/product-идентификаторов в коде; KB — только универсальная
    семантика экосистемных API; направление ошибки консервативно;
    расширение — сначала через JSON, новые дефолты только для широко
    стабильных API; строка в индексе AGENTS.md.
-9. `docs/dev/current/gap-analysis.md` — B12 → §4 с коммитом; `eval/README.md` — при затронутом
+9. [`dev/current/gap-analysis.md`](../current/gap-analysis.md) — B12 → §4 с коммитом; [`eval/README.md`](../../../eval/README.md) — при затронутом
    поведении.
 
 ## Открытый вопрос

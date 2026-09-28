@@ -1,6 +1,6 @@
 # Deployment/Exposure facts — план фичи (gap-analysis кандидат #2)
 
-Статус: done. Приоритет #2 из `docs/dev/current/gap-analysis.md`.
+Статус: done. Приоритет #2 из [`dev/current/gap-analysis.md`](../current/gap-analysis.md).
 
 ## Проблема
 

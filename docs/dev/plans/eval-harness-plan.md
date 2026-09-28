@@ -1,7 +1,7 @@
 # Eval harness / regression corpus — план фичи (gap-analysis кандидат #8)
 
 Статус: done. Закрывает первый слой пункта #8 приоритета и строку
-«Метрики / eval harness» (`docs/dev/current/gap-analysis.md` §3.7).
+«Метрики / eval harness» ([`dev/current/gap-analysis.md`](../current/gap-analysis.md) §3.7).
 
 ## Проблема
 

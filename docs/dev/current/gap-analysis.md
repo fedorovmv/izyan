@@ -1,7 +1,7 @@
 # Gap analysis: спеки vs реализация
 
-Сопоставление `docs/dev/specs/governing-spec.md`, `docs/dev/specs/analyzer-agent-spec.md`,
-`docs/goals-scope.md`, `docs/dev/plans/mvp-implementation-plan.md`, `docs/dev/decisions/architecture-decisions.md`
+Сопоставление [`dev/specs/governing-spec.md`](../specs/governing-spec.md), [`dev/specs/analyzer-agent-spec.md`](../specs/analyzer-agent-spec.md),
+[`goals-scope.md`](../../goals-scope.md), [`dev/plans/mvp-implementation-plan.md`](../plans/mvp-implementation-plan.md), [`dev/decisions/architecture-decisions.md`](../decisions/architecture-decisions.md)
 с кодом по состоянию на HEAD. Пометки: `done` / `partial` / `missing`.
 
 ## 1. Покрыто (проверено живыми прогонами)
@@ -31,11 +31,11 @@
 |---|---|---|---|
 | Exploit model | §8–9: атомарные условия по классу уязвимости | `Classify` (CWE → keywords → fix-diff) + `exploit.Registry`: peer-driven, INFO_LEAK, URI_CONFUSION, NIL_DEREF паттерны; `Condition.Params` (`input_source`, `direction=read`, `sequence=`, `bound`, `check`); generic C-REACH/C-INPUT домердживаются; LLM дополняет и заполняет пустой `bound` | Классификация keywords — score-weighted эвристика (плотность словаря, фиксируется limitation); `bound` верифицируется численно против `BoundLow/BoundHigh` гардов и `DataFlow.Value` констант (см. ниже); паттернов пока 4 семейства — PATH_TRAVERSAL/INJECTION/SSRF/etc. сидят на generic-модели |
 | Condition kinds | §8 минимум 10 типов | enum есть | `PLATFORM_CONDITION`/`RUNTIME_CONDITION` — `evaluator.Platform` (params `goos`/`goarch`/`go_version` bound против snapshot-фактов; FALSE = snapshot fact → NV `verifySnapshotFalse` VERIFIED); `AUTHENTICATION_CONDITION` — `evaluator.Authentication` (auth-middleware facts + resolved listener → TRUE; никогда не FALSE — отсутствие wiring ≠ отсутствие auth: per-handler/gateway/deployment-проверки вне скана); `CUSTOM` — `evaluator.Custom` (последний в цепочке): `check=reachable`/`direction=read`/`sequence` делегируют в reachability-машинерию, `check=symbol_present|exposure|config_flag|config_key` забирают свои evaluators (kind-agnostic); без распознанных params → UNKNOWN с limitation-списком маршрутов |
-| Data origins | §15: EXTERNAL_UNTRUSTED/AUTHENTICATED, CONFIGURATION, DATABASE, INTERNAL_SERVICE, CONSTANT, GENERATED | enum есть; provenance покрывает http.Request/os.Args/net/config/generated + `populateOrigin` (Scan/Unmarshal out-params), DB-драйверы по pkg path, gRPC-стабы и http-клиенты с config-endpoint → INTERNAL_SERVICE (`docs/dev/plans/data-origins-plan.md`) | `EXTERNAL_AUTHENTICATED` различается для outbound HTTP (auth-маркеры в enclosing-функции: Authorization-заголовок, SetBasicAuth, oauth/credentials-хелперы); inbound — `Index.InboundAuthFacts` записывает auth-middleware-факты (Use/With-аргументы, grpc-interceptors, обёрнутые handler'ы в функциях с listener-сайтами; deployment-hint, не per-route доказательство); `exposure.ScanDeploy` читает k8s/helm/openshift/istio/compose-манифесты → deployment-факты (Service LoadBalancer/NodePort, Ingress/Route/Gateway, hostPort/hostNetwork, published ports; scope=all-interfaces, фиксирует окружение деплоя включая sibling-services); детекция драйверов по pkg path — эвристика, кастомные обёртки не покрыты; struct-field provenance: `x.f = rhs`/`T{f: rhs}` write-sites резолвятся (`fieldOrigin`), reflect/pointer-записи невидимы; fallback — config-decode tags (mapstructure/env/envconfig/toml/ini) → CONFIGURATION; builtin true/false/nil — CONSTANT |
+| Data origins | §15: EXTERNAL_UNTRUSTED/AUTHENTICATED, CONFIGURATION, DATABASE, INTERNAL_SERVICE, CONSTANT, GENERATED | enum есть; provenance покрывает http.Request/os.Args/net/config/generated + `populateOrigin` (Scan/Unmarshal out-params), DB-драйверы по pkg path, gRPC-стабы и http-клиенты с config-endpoint → INTERNAL_SERVICE ([`dev/plans/data-origins-plan.md`](../plans/data-origins-plan.md)) | `EXTERNAL_AUTHENTICATED` различается для outbound HTTP (auth-маркеры в enclosing-функции: Authorization-заголовок, SetBasicAuth, oauth/credentials-хелперы); inbound — `Index.InboundAuthFacts` записывает auth-middleware-факты (Use/With-аргументы, grpc-interceptors, обёрнутые handler'ы в функциях с listener-сайтами; deployment-hint, не per-route доказательство); `exposure.ScanDeploy` читает k8s/helm/openshift/istio/compose-манифесты → deployment-факты (Service LoadBalancer/NodePort, Ingress/Route/Gateway, hostPort/hostNetwork, published ports; scope=all-interfaces, фиксирует окружение деплоя включая sibling-services); детекция драйверов по pkg path — эвристика, кастомные обёртки не покрыты; struct-field provenance: `x.f = rhs`/`T{f: rhs}` write-sites резолвятся (`fieldOrigin`), reflect/pointer-записи невидимы; fallback — config-decode tags (mapstructure/env/envconfig/toml/ini) → CONFIGURATION; builtin true/false/nil — CONSTANT |
 | Transformations | §15: `source → transformations → validation → sink`, security-relevant transforms | `TraceArgument` даёт origin конечного аргумента | Цепочка записывается: `DataFlow.Transformations` — все вызовы, через которые проходит трейсимое значение (под mu в Trace*); security-relevant (`escape|quote|valid|check|…` по `IsSecurityTransform`) флагируются в claim limitations + секция «Data flows» в отчёте | Семантика трансформов не моделируется: opaque call → UNKNOWN (честно); sanitize-гарды (`if cmp {x=clean}`, exhaustive sanitize-switch) записываются Guard=true; field-write guards покрывают sink при всех bounded write-sites; sanitize-switch поддерживает и range-gated форму — cases сравнивают другой var `cv`, default присваивает `ident=T(cv)`, засчитывается bounded при двусторонней границе `cv` + обязательном default; accessor-обёртки `x.Bytes()`/`int(x)` в RHS разворачиваются к локалу; multi-assign merge по всем присваиваниям локала (worst-origin) + cycle-guard `traceSeen` |
 | Negative check | §19: callers, **interface implementations**, runtime registration, **build-tagged code**, configuration overrides, alternate entrypoints | func_value/linkname/reflect/unsafe/plugin по scoped rules | interface-impl и build-tag покрыты (`GatedRefs`/`InterfaceDispatchSites`); `configuration overrides` — первый слой: `Index.ConfigGated` + `verifyGuardFalse` деградируют VERIFIED→INSUFFICIENT_SCOPE, когда единственное покрытие sink'а — conditional-гарда (особенно config-читающая); конфигурация, меняющая саму reachability (не гарды), — в резерве; `verifyGuardFalse` per-arg: покрытие проверяется по (sink, arg), const/generated-аргументы не требуют Covers; `verifyInputFalse` перетрейсит на `verifyHops=16` и различает UNKNOWN→INSUFFICIENT_SCOPE (нет доказательства) vs external/config-origin→CONTRADICTED; `ScanDynamic` различает write-маркеры от bare-импортов: `reflect_write` (`reflect.Value.Set*`) ослабляет guard-FALSE только при exported покрытом поле; `unsafe_write` (store через unsafe-derived deref/index: `*(*T)(unsafe.Pointer(&f))=v`) и `unsafe_ptr` (материализация `unsafe.Pointer`/`unsafe.Add` — aliased-записи неотслеживаемы) ослабляют безусловно; bare `reflect`/`unsafe` импорты для guards-claims игнорируются (import ≠ write); field-guards дополнительно отклоняют Covers при `&x.f` address-taken (pointer-записи невидимы write-site скану) |
-| Typed tools | §17: 17 инструментов | все 17 реализованы в `llm.Tools` (`docs/dev/plans/typed-tools-plan.md`): source-инструменты + get_vulnerability/get_advisory/get_fix_references/get_fix_diff/get_module_version/get_dependency_graph/run_govulncheck/read_source/search_source/run_build/run_tests; exec-инструменты за `--allow-exec` | LLM-agent сам не выбирает инструменты (planner детерминистичен); read_source/search_source допускают product-дерево + GOMODCACHE/GOPATH module cache (dep-файлы видны как evidence) |
-| Hypothesis loop | §18 + agent §6,§16: OPEN→CONFIRMED/REJECTED, gap-driven planner | `GAP_ANALYSIS` state: UNKNOWN mandatory → Hypothesis → tool action (deep-trace/ScanDynamic/dispatch-scan) → re-evaluate → fixpoint≤3/MaxToolCalls; гипотезы персистятся (`docs/dev/plans/gap-loop-plan.md`); deep-trace и caller-guard climb работают per-arg (`f.Arg`, не только `cond.ArgIndex`); `ReplaceDataFlow` матчит (cond, sink, arg) — deep-результат arg1 не затирает arg0; `deepTraceHops=16`; **LLM claim-fallback перенесён в конец GAP_ANALYSIS** — deterministic+planner исчерпываются раньше агента, иначе LLM-TRUE вытесняет доказуемый FALSE (rm6m: `C-CONSTRAINT` достиг `falsifier=guards`+NV VERIFIED до агента) | LLM-planner в `GAP_ANALYSIS` реализован (`llm.Planner`, multi-step bounded: ≤3 шага на condition внутри outer-loop ≤3 итераций, глобальный MaxLLMCalls; tool-miss → REJECTED и retry с другим инструментом, UNRESOLVED/unparseable → стоп); claim-fallback `llm.ClaimEvaluator` — после det-цикла, пропускается при уже-FALSE |
+| Typed tools | §17: 17 инструментов | все 17 реализованы в `llm.Tools` ([`dev/plans/typed-tools-plan.md`](../plans/typed-tools-plan.md)): source-инструменты + get_vulnerability/get_advisory/get_fix_references/get_fix_diff/get_module_version/get_dependency_graph/run_govulncheck/read_source/search_source/run_build/run_tests; exec-инструменты за `--allow-exec` | LLM-agent сам не выбирает инструменты (planner детерминистичен); read_source/search_source допускают product-дерево + GOMODCACHE/GOPATH module cache (dep-файлы видны как evidence) |
+| Hypothesis loop | §18 + agent §6,§16: OPEN→CONFIRMED/REJECTED, gap-driven planner | `GAP_ANALYSIS` state: UNKNOWN mandatory → Hypothesis → tool action (deep-trace/ScanDynamic/dispatch-scan) → re-evaluate → fixpoint≤3/MaxToolCalls; гипотезы персистятся ([`dev/plans/gap-loop-plan.md`](../plans/gap-loop-plan.md)); deep-trace и caller-guard climb работают per-arg (`f.Arg`, не только `cond.ArgIndex`); `ReplaceDataFlow` матчит (cond, sink, arg) — deep-результат arg1 не затирает arg0; `deepTraceHops=16`; **LLM claim-fallback перенесён в конец GAP_ANALYSIS** — deterministic+planner исчерпываются раньше агента, иначе LLM-TRUE вытесняет доказуемый FALSE (rm6m: `C-CONSTRAINT` достиг `falsifier=guards`+NV VERIFIED до агента) | LLM-planner в `GAP_ANALYSIS` реализован (`llm.Planner`, multi-step bounded: ≤3 шага на condition внутри outer-loop ≤3 итераций, глобальный MaxLLMCalls; tool-miss → REJECTED и retry с другим инструментом, UNRESOLVED/unparseable → стоп); claim-fallback `llm.ClaimEvaluator` — после det-цикла, пропускается при уже-FALSE |
 | Persistence | §22: hypotheses, tool_executions с version/input/cmd/exit/stdout/stderr/hash | кейс + raw govulncheck в evidence.Content + `EvidenceGraph.ToolExecutions` (tool, version, args, exit, sha256 обоих потоков, ms) через ctx-рекордер; `Evidence.ToolVersion` заполнен для govulncheck | `EvidenceGraph.Runtime` заполняется (snapshot-facts + `go version -m` build info при `--binary`); env прогонов не пишется (секреты); reproducibility-diff есть: повторный прогон того же vuln/repo в тот же case-dir сверяет stdout/stderr-хэши `tool_executions` с предыдущим кейсом (`prior_case`, RUNTIME-evidence + limitation при drift) |
 | Reviewer | §21: root cause, missed conditions, patch misinterpretation, scope mismatch, contradictions | Structural проверяет: TRUE без evidence, FALSE без NV, dangling refs, model без root cause | Pattern coverage проверяется: class-matched модель без mandatory-шаблона паттерна → finding (high при отсутствии skip-limitation, medium при записанном bind-skip); не проверяются «patch misinterpretation», «scope mismatch» |
 
@@ -43,7 +43,7 @@
 
 ### 3.1 Deployment/exposure как факт, не caveat — `done` (первый слой)
 
-Реализовано по `docs/dev/plans/exposure-facts-plan.md`: `runExposure` в
+Реализовано по [`dev/plans/exposure-facts-plan.md`](../plans/exposure-facts-plan.md): `runExposure` в
 CollectEvidence собирает `ExposureFact` — inbound listener-сайты
 (`net.Listen*`/`http.Server`/`grpc`) с резолвом bind-аргумента
 (literal/const/var/field/env) и outbound dial-сайты в уязвимый модуль;
@@ -59,7 +59,7 @@ CollectEvidence собирает `ExposureFact` — inbound listener-сайты
 
 ### 3.2 Pattern library / vuln-class exploit models — `done` (базовый слой)
 
-Реализовано по `docs/dev/plans/pattern-library-plan.md`: классификатор (CWE →
+Реализовано по [`dev/plans/pattern-library-plan.md`](../plans/pattern-library-plan.md): классификатор (CWE →
 keywords → fix-diff), декларативный `exploit.Registry`, `Condition.Params`
 для evaluator-семантики, ветки сбора/оценки/фальсификации
 (`check=symbol_present`, `direction=read`, `sequence=a->b`,
@@ -107,7 +107,7 @@ INFO_LEAK биндит datum-субъекты (advisory-символы `Type.Fie
 
 ### 3.3 Build/tag вариативность — `done` (первый слой)
 
-`Index.GatedRefs` (по `docs/dev/plans/negative-coverage-plan.md`) сканирует
+`Index.GatedRefs` (по [`dev/plans/negative-coverage-plan.md`](../plans/negative-coverage-plan.md)) сканирует
 `pkg.IgnoredFiles` — файлы, исключённые текущими build tags, — синтаксически
 по импорту пакета субъекта; `_test.go` отфильтровываются. Находка
 деградирует VERIFIED FALSE в INSUFFICIENT_SCOPE: путь под `-tags foo`
@@ -187,7 +187,7 @@ limitation о пропуске, запуск не скрыт. Без нереш�
 Спека §9 плана: root-cause accuracy, FALSE precision, **false-safe
 count** (стоп-критерий), INCONCLUSIVE rate, evidence reproducibility.
 
-Реализовано (`docs/dev/plans/eval-harness-plan.md`): `internal/eval` + сабкоманда
+Реализовано ([`dev/plans/eval-harness-plan.md`](../plans/eval-harness-plan.md)): `internal/eval` + сабкоманда
 `eval --corpus`: корпус кейсов (`eval/corpus.json` на фикстурах
 `testdata/` + синтетические OSV), метрики total/errors/expect/
 inconclusive/claims_fail/**false_safe**, markdown+JSON отчёты, exit 1
@@ -248,20 +248,20 @@ symbols + fixed_versions → минимальный OSV JSON). CLI-флаги
    `GatedRefs` + `InterfaceDispatchSites` деградируют VERIFIED в
    INSUFFICIENT_SCOPE при находках вне typed-скоупа.
 5. ~~DATABASE/INTERNAL_SERVICE origins~~ — `done` (первый слой, §таблица
-   origins; `docs/dev/plans/data-origins-plan.md`); authenticated outbound
+   origins; [`dev/plans/data-origins-plan.md`](../plans/data-origins-plan.md)); authenticated outbound
    различён (auth-маркеры → EXTERNAL_AUTHENTICATED).
-6. ~~Недостающие 10 typed tools~~ — `done` (`docs/dev/plans/typed-tools-plan.md`);
+6. ~~Недостающие 10 typed tools~~ — `done` ([`dev/plans/typed-tools-plan.md`](../plans/typed-tools-plan.md));
    run_build/run_tests требуют `--allow-exec` (исполняют код репо).
 7. ~~Hypothesis/gap-analysis loop~~ — `done` (детерминистичный первый
-   слой, `docs/dev/plans/gap-loop-plan.md`); LLM-planner (multi-step, ≤3/condition,
+   слой, [`dev/plans/gap-loop-plan.md`](../plans/gap-loop-plan.md)); LLM-planner (multi-step, ≤3/condition,
    retry на tool-miss; `llm.Planner`) подключён; REVIEW→REPAIR петля
    работает (demotion-only, bounded MaxReviewIterations).
 8. ~~Eval harness + false-safe metric~~ — `done` (первый слой, §3.7);
-   живой корпус реализован (`eval/README.md`: 11 amqp091-go
+   живой корпус реализован ([`eval/README.md`](../../../eval/README.md): 11 amqp091-go
    advisory × продукт-референс, 11/11, false-safe=0); далее — независимая
    ground-truth разметка и метрики root-cause/FALSE precision.
 9. ~~tool_executions/ToolVersion~~ — `done` (первый слой, §таблица
-   Persistence; `docs/dev/plans/tool-audit-plan.md`). `Runtime` evidence
+   Persistence; [`dev/plans/tool-audit-plan.md`](../plans/tool-audit-plan.md)). `Runtime` evidence
    и reproducibility-diff реализованы.
 10. ~~VEX-экспорт~~ — `done` (OpenVEX + CycloneDX, §3.8).
 11. ~~Remediation~~ — `done` (минимум, §3.9): plan/dry-run/apply +
@@ -296,14 +296,14 @@ symbols + fixed_versions → минимальный OSV JSON). CLI-флаги
 
 | # | Пункт | Зачем | Done-критерий |
 |---|-------|-------|----------------|
-| B1 | **Ground-truth разметка live-корпуса** | `expect` пиннит наблюдаемое поведение — `false-safe=0` это отсутствие регрессий, не доказательство правильности | Истинный вердикт каждого из 11 кейсов зафиксирован вручную по advisory+коду; `expect` сравнивает с истиной; метод разметки описан в `eval/README.md` |
+| B1 | **Ground-truth разметка live-корпуса** | `expect` пиннит наблюдаемое поведение — `false-safe=0` это отсутствие регрессий, не доказательство правильности | Истинный вердикт каждого из 11 кейсов зафиксирован вручную по advisory+коду; `expect` сравнивает с истиной; метод разметки описан в [`eval/README.md`](../../../eval/README.md) |
 
 ### P1 — e2e-качество
 
 | # | Пункт | Зачем | Done-критерий |
 |---|-------|-------|----------------|
 | B4 | Устойчивость repair к bogus-демоциям | LLM-ревьюер дважды демотировал VERIFIED-FALSE семантическим misread («противоречит root cause»); промпт дополнен, но защита нужна детерминистическая | Демоция VERIFIED-FALSE требует ссылки на конкретный артефакт (маркер/uncovered site/traced origin); тест на bogus-demotion |
-| B12 | Knowledge-base как данные, не код | Таблицы семантики экосистемы (`knownSourceFuncs`, `passthroughFuncs`, `configTagKeys`, `listenAddrArg`, `authCallNames`, `slicePopulateFuncs` и др. в `internal/goanalysis`) захардкожены — новый config-декодер/RPC/IO-API требует правки кода | Таблицы в `knowledge.go` за `Knowledge` struct + `--knowledge <json>` расширяет без правок кода; JSON валидируется (unknown key → error, конфликт ключа → error); юнит-тест расширения; правило «никакого case-specific хардкода» в `docs/agent-rules/`; план: `docs/dev/plans/knowledge-base-plan.md` |
+| B12 | Knowledge-base как данные, не код | Таблицы семантики экосистемы (`knownSourceFuncs`, `passthroughFuncs`, `configTagKeys`, `listenAddrArg`, `authCallNames`, `slicePopulateFuncs` и др. в `internal/goanalysis`) захардкожены — новый config-декодер/RPC/IO-API требует правки кода | Таблицы в `knowledge.go` за `Knowledge` struct + `--knowledge <json>` расширяет без правок кода; JSON валидируется (unknown key → error, конфликт ключа → error); юнит-тест расширения; правило «никакого case-specific хардкода» в `docs/agent-rules/`; план: [`dev/plans/knowledge-base-plan.md`](../plans/knowledge-base-plan.md) |
 
 ### P2 — глубина покрытия
 

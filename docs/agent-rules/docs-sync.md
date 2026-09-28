@@ -10,22 +10,22 @@
 - корень `docs/` — документация для пользователей
 - `dev/current/` — живое состояние для разработки: `implementation-status`,
   `gap-analysis` (бэклог), `analysis-internals` (механика)
-- `eval/README.md` — live corpus (вне `docs/` — рядом с данными)
+- [`eval/README.md`](../../eval/README.md) — live corpus (вне `docs/` — рядом с данными)
 - `agent-rules/` — эти правила (на уровне `docs/`, не в `dev/` —
   читаются при любой задаче, не только девелоперской);
   `dev/history/` — старые версии
 
 ## Правила
 
-- `docs/dev/current/gap-analysis.md` — канонический бэклог: §2/§3
+- [`dev/current/gap-analysis.md`](../dev/current/gap-analysis.md) — канонический бэклог: §2/§3
   пробелы, §4 закрытые пункты (стрикнутые), §5 открытые с done-
   критериями + handoff notes. Закрытие пункта = перенос в §4 с
   коммитом; новая находка — в §5 с приоритетом.
-- Новая фича с нетривиальным дизайном → план в `docs/dev/plans/<feature>-plan.md`
-  (имя по сути фичи) + строка в `docs/INDEX.md` + ссылка из
+- Новая фича с нетривиальным дизайном → план в [`dev/plans/<feature>-plan.md`](../dev/plans/<feature>-plan.md)
+  (имя по сути фичи) + строка в [`INDEX.md`](../INDEX.md) + ссылка из
   бэклог-пункта в §5. Не плоди документы для мелких правок — мелкое
-  идёт прямо в `gap-analysis`/`eval/README.md`.
-- `eval/README.md` — обновляй при изменении поведения
+  идёт прямо в `gap-analysis`/[`eval/README.md`](../../eval/README.md).
+- [`eval/README.md`](../../eval/README.md) — обновляй при изменении поведения
   на живых кейсах (что доказано, что UNKNOWN и почему).
 - Фиксируй: какие claims детерминистические, что доказывает negative
   verification, где скан неполон, как dynamic маркеры влияют на

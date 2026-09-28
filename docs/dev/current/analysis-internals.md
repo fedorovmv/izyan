@@ -1,8 +1,8 @@
 # Analysis internals — механика реализации
 
 Детали реализованного алгоритма по состоянию кода — продолжение
-пользовательского `docs/how-it-works.md`. Истина — код
-(`internal/`); спека `docs/dev/specs/governing-spec.md` — цель.
+пользовательского [`how-it-works.md`](../../how-it-works.md). Истина — код
+(`internal/`); спека [`dev/specs/governing-spec.md`](../specs/governing-spec.md) — цель.
 
 Содержание: govulncheck-компенсации, pattern library, evaluators,
 negative verification, review/repair, toolchain, LLM-слой, eval
@@ -298,7 +298,7 @@ LLM-варианта (LLM-предложения недетерминирова�
 воспроизводимость corpus-метрик).
 Пути в корпусе — относительно файла корпуса. Синтетические advisory
 `eval/advisories/` покрывают механизмы фикстур `testdata/`; живой корпус
-на реальных GHSA — следующий слой (`docs/dev/current/gap-analysis.md` §3.7).
+на реальных GHSA — следующий слой ([`dev/current/gap-analysis.md`](gap-analysis.md) §3.7).
 
 ## 12. Target Go toolchain
 

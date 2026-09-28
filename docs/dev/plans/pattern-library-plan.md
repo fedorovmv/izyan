@@ -161,7 +161,7 @@ type Condition struct {
 9. Тесты: classify (CWE→class, keywords, unknown), instantiate (amqp-advisory
    → правильный набор), round-trip FALSE при отсутствии пары,
    read-direction для PlainAuth-поля.
-10. Доки: `docs/how-it-works.md` (pattern layer), `docs/dev/current/gap-analysis.md` (закрыт пункт 1).
+10. Доки: [`how-it-works.md`](../../how-it-works.md) (pattern layer), [`dev/current/gap-analysis.md`](../current/gap-analysis.md) (закрыт пункт 1).
 
 ## Definition of done
 
