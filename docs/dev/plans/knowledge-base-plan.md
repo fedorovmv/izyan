@@ -106,3 +106,17 @@ func DefaultKnowledge() *Knowledge
 Автообнаружение `.vuln-analyzer/knowledge.json` в репо продукта vs
 только `--knowledge`. Решение по умолчанию: только флаг — явное лучше
 магии; чужой репозиторий не должен молча менять семантику анализа.
+
+## Реализовано
+
+`internal/goanalysis/knowledge.go` + `Index.KB` (nil → ленивый
+`DefaultKnowledge()`), `--knowledge <path>` в `commonFlags` — флаг
+доступен analyze/scan/eval/remediate, `loadKnowledgeBase` грузит
+`KnowledgeFile`, валидирует и мержит аддитивно. Помимо полей плана
+таблицы покрыли также `PopulateNames`, `DBPkgs`/`DBPkgHints` и
+`ListenerPrimitives` (список `domain.SymbolRef`) — все семантические
+наборы goanalysis теперь за KB. Юнит-тест расширения на фикстуре
+`testdata/kbprod` (origin UNKNOWN → CONFIGURATION после `source_funcs`
+записи) + валидация/конфликты — `knowledge_test.go`. Правило —
+`docs/agent-rules/generality.md`; поведение по умолчанию не менялось,
+`eval/README.md` не тронут.

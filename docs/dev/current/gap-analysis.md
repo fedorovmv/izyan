@@ -286,6 +286,12 @@ symbols + fixed_versions → минимальный OSV JSON). CLI-флаги
     dep, resolved origin побеждает эвристику unexported+peer-driven,
     dep-FALSE верифицируется retrace'ом тех же dep-сайтов; фикстура +
     2 corpus-кейса.
+17. ~~Knowledge-base как данные~~ — `done` ([`dev/plans/knowledge-base-plan.md`](../plans/knowledge-base-plan.md)):
+    семантические таблицы экосистемы вынесены в `goanalysis.Knowledge`
+    (`internal/goanalysis/knowledge.go`, `Index.KB` с дефолтами);
+    `--knowledge <json>` — аддитивное расширение (unknown key /
+    конфликт ключа / невалидный origin → ошибка); юнит-тест расширения
+    (`testdata/kbprod`); правило — `docs/agent-rules/generality.md`.
 
 ## 5. Открытый бэклог (приоритетный, с done-критериями)
 
@@ -303,7 +309,7 @@ symbols + fixed_versions → минимальный OSV JSON). CLI-флаги
 | # | Пункт | Зачем | Done-критерий |
 |---|-------|-------|----------------|
 | B4 | Устойчивость repair к bogus-демоциям | LLM-ревьюер дважды демотировал VERIFIED-FALSE семантическим misread («противоречит root cause»); промпт дополнен, но защита нужна детерминистическая | Демоция VERIFIED-FALSE требует ссылки на конкретный артефакт (маркер/uncovered site/traced origin); тест на bogus-demotion |
-| B12 | Knowledge-base как данные, не код | Таблицы семантики экосистемы (`knownSourceFuncs`, `passthroughFuncs`, `configTagKeys`, `listenAddrArg`, `authCallNames`, `slicePopulateFuncs` и др. в `internal/goanalysis`) захардкожены — новый config-декодер/RPC/IO-API требует правки кода | Таблицы в `knowledge.go` за `Knowledge` struct + `--knowledge <json>` расширяет без правок кода; JSON валидируется (unknown key → error, конфликт ключа → error); юнит-тест расширения; правило «никакого case-specific хардкода» в `docs/agent-rules/`; план: [`dev/plans/knowledge-base-plan.md`](../plans/knowledge-base-plan.md) |
+| B13 | **Расширение корпуса доказательной базы** | Live-слой узок: 11 кейсов, 1 dep, 1 класс; нет сравнительной базы vs standalone govulncheck | ≥30 кейсов суммарно (≥4 класса, ≥3 реальных dep) через generated-manifest продукты `eval/products/` без committed уязвимых манифестов; baseline-таблица govulncheck-vs-analyzer в [`eval/README.md`](../../../eval/README.md); ground-truth файл на каждый позитивный вердикт; `false_safe=0`; план: [`dev/plans/corpus-expansion-plan.md`](../plans/corpus-expansion-plan.md) |
 
 ### P2 — глубина покрытия
 

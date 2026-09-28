@@ -88,6 +88,7 @@ false-safe/expect-fail/claims-fail/error — пригоден для CI.
 | `--osv-url <url>` | альтернативный OSV API endpoint |
 | `--deterministic-only` | выключить весь LLM-слой |
 | `--allow-exec` | разрешить запуск кода репозитория (run_build/run_tests в доказательствах). Без флага exec-инструменты недоступны |
+| `--knowledge <path>` | JSON-расширение базы знаний экосистемы (`internal/goanalysis` Knowledge): новые source_funcs / passthrough_funcs / config_tag_keys / listen_addr_arg / auth_call_names и др. Мерж аддитивный — конфликт существующего ключа, неизвестное поле или невалидный origin → ошибка загрузки |
 | `--llm-env <path>` | файл с LLM-кредами; иначе `.env` в cwd или корне репо |
 
 ## LLM-конфигурация
