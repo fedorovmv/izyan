@@ -1,14 +1,51 @@
 package goanalysis
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"example.com/vuln-analyzer/internal/domain"
 )
+
+// The embedded defaults must parse, carry the shipped entries, and
+// render back into a loadable extension file — `analyzer knowledge`
+// output is a valid --knowledge template.
+func TestDefaultKnowledgeEmbedded(t *testing.T) {
+	kb := DefaultKnowledge()
+	if kb.SourceFuncs["os.Getenv"] != domain.OriginConfiguration {
+		t.Fatalf("os.Getenv=%q", kb.SourceFuncs["os.Getenv"])
+	}
+	if kb.SourceFuncs["net/http.Get"] != domain.OriginExternalUntrusted {
+		t.Fatalf("net/http.Get=%q", kb.SourceFuncs["net/http.Get"])
+	}
+	if kb.ListenAddrArg["net.Listen"] != 1 || !slices.Contains(kb.ConfigTagKeys, "env") ||
+		!slices.Contains(kb.DBPkgHints, "gorm") || !kb.AuthCallNames["SetBasicAuth"] {
+		t.Fatal("embedded defaults missing expected entries")
+	}
+
+	b, err := json.Marshal(kb.AsFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := parseKnowledgeFile(bytes.NewReader(b))
+	if err != nil {
+		t.Fatalf("AsFile output must parse: %v", err)
+	}
+	if len(f.SourceFuncs) != len(kb.SourceFuncs) || len(f.ListenerPrimitives) != len(kb.ListenerPrimitives) {
+		t.Fatal("AsFile round-trip lost entries")
+	}
+	// A file built on the dump merges back cleanly — same-value repeats
+	// are no-ops, only rewrites conflict.
+	if err := DefaultKnowledge().Merge(f); err != nil {
+		t.Fatalf("dump re-merge must be a no-op: %v", err)
+	}
+}
 
 func writeKnowledge(t *testing.T, body string) string {
 	t.Helper()
@@ -75,19 +112,16 @@ func TestKnowledgeFileValidation(t *testing.T) {
 	}
 }
 
-// Merges are additive only: a key the base already defines is a conflict
-// error, never a silent override.
+// Merges are additive only: re-declaring an entry with a different
+// value is a conflict error, never a silent override.
 func TestKnowledgeMergeConflicts(t *testing.T) {
 	kb := DefaultKnowledge()
 	for _, f := range []KnowledgeFile{
-		{SourceFuncs: map[string]string{"os.Getenv": "CONFIGURATION"}},
-		{ConfigTagKeys: []string{"env"}},
-		{AuthCallNames: map[string]bool{"SetBasicAuth": true}},
+		{SourceFuncs: map[string]string{"os.Getenv": "DATABASE"}},
+		{PassthroughFuncs: map[string]int{"io.ReadAll": 1}},
 		{ListenAddrArg: map[string]int{"net.Listen": 0}},
-		{ListenerPrimitives: []domain.SymbolRef{{Package: "net", Symbol: "Listen"}}},
-		{DBPkgHints: []string{"gorm"}},
 	} {
-		if err := kb.Merge(f); err == nil || !strings.Contains(err.Error(), "already defined") {
+		if err := kb.Merge(f); err == nil || !strings.Contains(err.Error(), "refusing to override") {
 			t.Fatalf("expected conflict for %+v, got %v", f, err)
 		}
 	}

@@ -46,6 +46,8 @@ func main() {
 		err = runEval(os.Args[2:])
 	case "remediate":
 		err = runRemediate(os.Args[2:])
+	case "knowledge":
+		err = runKnowledge(os.Args[2:])
 	default:
 		usage()
 	}
@@ -61,6 +63,7 @@ func usage() {
   vuln-analyzer scan    --repo <path> [options]   # all advisories for all modules
   vuln-analyzer eval    --corpus <path> --repo <path> [options]  # corpus regression run
   vuln-analyzer remediate --repo <path> --vuln <id> [--apply] [--run-tests]  # plan/apply fix + re-analyze
+  vuln-analyzer knowledge [--knowledge <path>]  # dump the effective ecosystem knowledge base
 
 options:
   --vuln-file <path>     load advisory from local OSV JSON instead of api.osv.dev
@@ -146,6 +149,30 @@ func loadKnowledgeBase(path string) (*goanalysis.Knowledge, error) {
 		return nil, fmt.Errorf("knowledge: %w", err)
 	}
 	return kb, nil
+}
+
+// runKnowledge prints the effective ecosystem knowledge base in the
+// extension-file schema: the embedded defaults by themselves, or
+// defaults merged with a --knowledge extension. Users copy the output
+// as the starting point for their own extension files; the command also
+// doubles as a validator — a bad extension file fails here.
+func runKnowledge(args []string) error {
+	fs := flag.NewFlagSet("knowledge", flag.ExitOnError)
+	var o analyzeOpts
+	fs.StringVar(&o.knowledge, "knowledge", "", "extension JSON merged over the embedded defaults")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	kb, err := loadKnowledgeBase(o.knowledge)
+	if err != nil {
+		return err
+	}
+	if kb == nil {
+		kb = goanalysis.DefaultKnowledge()
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(kb.AsFile())
 }
 
 func runAnalyze(args []string) error {

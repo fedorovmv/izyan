@@ -287,11 +287,13 @@ symbols + fixed_versions → минимальный OSV JSON). CLI-флаги
     dep-FALSE верифицируется retrace'ом тех же dep-сайтов; фикстура +
     2 corpus-кейса.
 17. ~~Knowledge-base как данные~~ — `done` ([`dev/plans/knowledge-base-plan.md`](../plans/knowledge-base-plan.md)):
-    семантические таблицы экосистемы вынесены в `goanalysis.Knowledge`
-    (`internal/goanalysis/knowledge.go`, `Index.KB` с дефолтами);
-    `--knowledge <json>` — аддитивное расширение (unknown key /
-    конфликт ключа / невалидный origin → ошибка); юнит-тест расширения
-    (`testdata/kbprod`); правило — `docs/agent-rules/generality.md`.
+    семантические таблицы экосистемы вынесены из кода в данные —
+    `internal/goanalysis/knowledge.json` (embedded при сборке) →
+    `goanalysis.Knowledge` через `Index.KB`; `--knowledge <json>` —
+    аддитивное расширение без пересборки (unknown key / переопределение
+    значения / невалидный origin → ошибка); `vuln-analyzer knowledge`
+    дампит базу как шаблон; юнит-тест расширения (`testdata/kbprod`);
+    правило — `docs/agent-rules/generality.md`.
 
 ## 5. Открытый бэклог (приоритетный, с done-критериями)
 

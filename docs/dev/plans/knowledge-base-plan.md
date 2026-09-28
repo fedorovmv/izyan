@@ -110,13 +110,20 @@ func DefaultKnowledge() *Knowledge
 ## Реализовано
 
 `internal/goanalysis/knowledge.go` + `Index.KB` (nil → ленивый
-`DefaultKnowledge()`), `--knowledge <path>` в `commonFlags` — флаг
-доступен analyze/scan/eval/remediate, `loadKnowledgeBase` грузит
-`KnowledgeFile`, валидирует и мержит аддитивно. Помимо полей плана
-таблицы покрыли также `PopulateNames`, `DBPkgs`/`DBPkgHints` и
-`ListenerPrimitives` (список `domain.SymbolRef`) — все семантические
-наборы goanalysis теперь за KB. Юнит-тест расширения на фикстуре
-`testdata/kbprod` (origin UNKNOWN → CONFIGURATION после `source_funcs`
-записи) + валидация/конфликты — `knowledge_test.go`. Правило —
+`DefaultKnowledge()`). Дефолты — не Go-литералы, а данные:
+`internal/goanalysis/knowledge.json` в схеме `KnowledgeFile`,
+вшивается в бинарь через `//go:embed`, `DefaultKnowledge()` парсит его
+и мержит в пустую базу — один код-путь для built-in и внешних файлов.
+`--knowledge <path>` в `commonFlags` → analyze/scan/eval/remediate;
+`vuln-analyzer knowledge` дампит эффективную базу (дефолты или
+дефолты+расширение) как шаблон для своего файла и валидирует его.
+Мерж аддитивный с same-value-допуском: повтор записи с тем же
+значением — no-op (дамп базы можно править и подавать обратно),
+переопределение значения — ошибка. Помимо полей плана таблицы покрыли
+также `PopulateNames`, `DBPkgs`/`DBPkgHints` и `ListenerPrimitives`
+(список `domain.SymbolRef`) — все семантические наборы goanalysis за
+KB. Юнит-тест расширения на фикстуре `testdata/kbprod` (origin
+UNKNOWN → CONFIGURATION после `source_funcs` записи) +
+валидация/конфликты/round-trip дампа — `knowledge_test.go`. Правило —
 `docs/agent-rules/generality.md`; поведение по умолчанию не менялось,
 `eval/README.md` не тронут.

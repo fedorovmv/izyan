@@ -80,6 +80,19 @@ false-safe/expect-fail/claims-fail/error — пригоден для CI.
 Пути в корпусе — относительно файла корпуса, `${VAR}` раскрывается
 ([`eval/README.md`](../eval/README.md)).
 
+## knowledge — база знаний экосистемы
+
+```bash
+vuln-analyzer knowledge [--knowledge <path>]
+```
+
+Печатает эффективную базу знаний в JSON (схема `--knowledge`-файла):
+встроенные дефолты (`internal/goanalysis/knowledge.json`, embedded при
+сборке) либо дефолты + расширение. Дамп — стартовая точка для своего
+расширения и валидатор файла: повтор записи с тем же значением — no-op,
+с другим значением — ошибка (переопределять встроенные записи нельзя),
+неизвестное поле/невалидный origin — ошибка загрузки.
+
 ## Общие флаги (все сабкоманды)
 
 | Флаг | Что делает |
@@ -88,7 +101,7 @@ false-safe/expect-fail/claims-fail/error — пригоден для CI.
 | `--osv-url <url>` | альтернативный OSV API endpoint |
 | `--deterministic-only` | выключить весь LLM-слой |
 | `--allow-exec` | разрешить запуск кода репозитория (run_build/run_tests в доказательствах). Без флага exec-инструменты недоступны |
-| `--knowledge <path>` | JSON-расширение базы знаний экосистемы (`internal/goanalysis` Knowledge): новые source_funcs / passthrough_funcs / config_tag_keys / listen_addr_arg / auth_call_names и др. Мерж аддитивный — конфликт существующего ключа, неизвестное поле или невалидный origin → ошибка загрузки |
+| `--knowledge <path>` | JSON-расширение базы знаний экосистемы (дефолты — embedded `internal/goanalysis/knowledge.json`): новые source_funcs / passthrough_funcs / config_tag_keys / listen_addr_arg / auth_call_names и др. Аддитивно: повтор с тем же значением — no-op, переопределение значения, неизвестное поле или невалидный origin → ошибка. База/шаблон: `vuln-analyzer knowledge` |
 | `--llm-env <path>` | файл с LLM-кредами; иначе `.env` в cwd или корне репо |
 
 ## LLM-конфигурация

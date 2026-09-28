@@ -1,0 +1,111 @@
+{
+  "source_funcs": {
+    "os.Getenv": "CONFIGURATION",
+    "os.ReadFile": "CONFIGURATION",
+    "io/ioutil.ReadFile": "CONFIGURATION",
+    "flag.String": "CONFIGURATION",
+    "flag.Int": "CONFIGURATION",
+    "flag.Bool": "CONFIGURATION",
+    "flag.Parse": "CONFIGURATION",
+    "fmt.Sscanf": "UNKNOWN",
+    "os.Open": "CONFIGURATION",
+    "net/http.Get": "EXTERNAL_UNTRUSTED",
+    "net/http.Post": "EXTERNAL_UNTRUSTED",
+    "net/http.ReadRequest": "EXTERNAL_UNTRUSTED",
+    "encoding/json.Unmarshal": "UNKNOWN"
+  },
+  "passthrough_funcs": {
+    "io.ReadAll": 0,
+    "io/ioutil.ReadAll": 0,
+    "bufio.NewScanner": 0,
+    "bufio.NewReader": 0,
+    "bufio.NewReaderSize": 0,
+    "bytes.NewReader": 0,
+    "bytes.NewBuffer": 0,
+    "bytes.NewBufferString": 0,
+    "strings.NewReader": 0,
+    "encoding/json.NewDecoder": 0,
+    "encoding/xml.NewDecoder": 0,
+    "net/http.NewRequest": 1,
+    "net/http.NewRequestWithContext": 2,
+    "net/url.Parse": 0,
+    "net/url.ParseQuery": 0
+  },
+  "passthrough_methods": {
+    "Text": true,
+    "Bytes": true,
+    "String": true
+  },
+  "slice_populate_funcs": {
+    "io.ReadFull": [1, 0],
+    "io.ReadAtLeast": [1, 0],
+    "binary.Read": [2, 0],
+    "io.Copy": [0, 1]
+  },
+  "read_into_methods": {
+    "Read": true,
+    "ReadAt": true
+  },
+  "recv_mutate_methods": {
+    "Write": true,
+    "WriteString": true,
+    "WriteByte": true,
+    "WriteRune": true,
+    "ReadFrom": true
+  },
+  "populate_names": {
+    "Unmarshal": true,
+    "Decode": true,
+    "DecodeElement": true,
+    "UnmarshalExact": true,
+    "DecodeValues": true,
+    "Read": true
+  },
+  "config_tag_keys": ["mapstructure", "env", "envconfig", "toml", "ini"],
+  "auth_call_names": {
+    "SetBasicAuth": true,
+    "BasicAuth": true,
+    "SetAuth": true,
+    "WithAuth": true,
+    "WithCredentials": true,
+    "WithPerRPCCredentials": true,
+    "NewOauthAccess": true,
+    "NewStaticTokenSource": true,
+    "ReuseTokenSource": true,
+    "SetToken": true
+  },
+  "db_pkgs": ["database/sql"],
+  "db_pkg_hints": [
+    "sqlx", "gorm", "pgx", "mongo", "redis", "etcd", "gocql", "elasticsearch"
+  ],
+  "service_call_pkg_hints": ["google.golang.org/grpc"],
+  "http_client_pkgs": {
+    "net/http": true
+  },
+  "listener_primitives": [
+    {"package": "net", "symbol": "Listen"},
+    {"package": "net", "symbol": "ListenTCP"},
+    {"package": "net", "symbol": "ListenUDP"},
+    {"package": "net", "symbol": "Listener.Accept"},
+    {"package": "net/http", "symbol": "ListenAndServe"},
+    {"package": "net/http", "symbol": "ListenAndServeTLS"},
+    {"package": "net/http", "symbol": "Server.Serve"},
+    {"package": "net/http", "symbol": "Server.ListenAndServe"},
+    {"package": "google.golang.org/grpc", "symbol": "NewServer"},
+    {"package": "google.golang.org/grpc", "symbol": "Server.Serve"},
+    {"package": "google.golang.org/grpc", "symbol": "Server.ServeHTTP"}
+  ],
+  "listen_addr_arg": {
+    "net.Listen": 1,
+    "net.ListenTCP": 1,
+    "net.ListenUDP": 1,
+    "net/http.ListenAndServe": 0,
+    "net/http.ListenAndServeTLS": 0,
+    "net/http.Server.ListenAndServe": -1,
+    "net/http.Server.Serve": -1,
+    "google.golang.org/grpc.NewServer": -1,
+    "google.golang.org/grpc.Server.Serve": -1,
+    "google.golang.org/grpc.Server.ServeHTTP": -1,
+    "net.Listener.Accept": -1
+  }
+}

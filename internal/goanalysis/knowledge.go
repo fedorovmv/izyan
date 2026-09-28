@@ -2,8 +2,10 @@ package goanalysis
 
 import (
 	"bytes"
+	_ "embed"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"slices"
 
@@ -73,102 +75,50 @@ type Knowledge struct {
 	ListenAddrArg map[string]int
 }
 
+// knowledge.json is the built-in ecosystem knowledge base — the same
+// KnowledgeFile schema --knowledge accepts. It is data, not code: edit
+// the file to change defaults, embed keeps the binary self-contained,
+// and `analyzer knowledge` dumps it as the starting point for a custom
+// extension file.
+//
+//go:embed knowledge.json
+var defaultKnowledgeJSON []byte
+
 // DefaultKnowledge returns a fresh copy of the built-in ecosystem
-// tables. Safe to mutate (e.g. Merge) — each call builds new maps.
+// tables parsed from the embedded knowledge.json. Safe to mutate
+// (e.g. Merge) — each call builds new maps and slices.
 func DefaultKnowledge() *Knowledge {
-	return &Knowledge{
-		SourceFuncs: map[string]domain.DataOrigin{
-			"os.Getenv":               domain.OriginConfiguration,
-			"os.ReadFile":             domain.OriginConfiguration,
-			"io/ioutil.ReadFile":      domain.OriginConfiguration,
-			"flag.String":             domain.OriginConfiguration,
-			"flag.Int":                domain.OriginConfiguration,
-			"flag.Bool":               domain.OriginConfiguration,
-			"flag.Parse":              domain.OriginConfiguration,
-			"fmt.Sscanf":              domain.OriginUnknown,
-			"os.Open":                 domain.OriginConfiguration,
-			"net/http.Get":            domain.OriginExternalUntrusted,
-			"net/http.Post":           domain.OriginExternalUntrusted,
-			"net/http.ReadRequest":    domain.OriginExternalUntrusted,
-			"encoding/json.Unmarshal": domain.OriginUnknown,
-		},
-		PassthroughFuncs: map[string]int{
-			"io.ReadAll":                     0,
-			"io/ioutil.ReadAll":              0,
-			"bufio.NewScanner":               0,
-			"bufio.NewReader":                0,
-			"bufio.NewReaderSize":            0,
-			"bytes.NewReader":                0,
-			"bytes.NewBuffer":                0,
-			"bytes.NewBufferString":          0,
-			"strings.NewReader":              0,
-			"encoding/json.NewDecoder":       0,
-			"encoding/xml.NewDecoder":        0,
-			"net/http.NewRequest":            1, // (method, url, body)
-			"net/http.NewRequestWithContext": 2, // (ctx, method, url, body)
-			"net/url.Parse":                  0,
-			"net/url.ParseQuery":             0,
-		},
-		PassthroughMethods: map[string]bool{
-			"Text": true, "Bytes": true, "String": true,
-		},
-		SlicePopulateFuncs: map[string][2]int{
-			"io.ReadFull":    {1, 0},
-			"io.ReadAtLeast": {1, 0},
-			"binary.Read":    {2, 0},
-			"io.Copy":        {0, 1},
-		},
-		ReadIntoMethods: map[string]bool{
-			"Read": true, "ReadAt": true,
-		},
-		RecvMutateMethods: map[string]bool{
-			"Write": true, "WriteString": true, "WriteByte": true, "WriteRune": true,
-			"ReadFrom": true,
-		},
-		PopulateNames: map[string]bool{
-			"Unmarshal": true, "Decode": true, "DecodeElement": true,
-			"UnmarshalExact": true, "DecodeValues": true, "Read": true,
-		},
-		ConfigTagKeys: []string{"mapstructure", "env", "envconfig", "toml", "ini"},
-		AuthCallNames: map[string]bool{
-			"SetBasicAuth": true, "BasicAuth": true, "SetAuth": true,
-			"WithAuth": true, "WithCredentials": true, "WithPerRPCCredentials": true,
-			"NewOauthAccess": true, "NewStaticTokenSource": true,
-			"ReuseTokenSource": true, "SetToken": true,
-		},
-		DBPkgs: []string{"database/sql"},
-		DBPkgHints: []string{
-			"sqlx", "gorm", "pgx", "mongo", "redis", "etcd", "gocql",
-			"elasticsearch",
-		},
-		ServiceCallPkgHints: []string{"google.golang.org/grpc"},
-		HTTPClientPkgs:      map[string]bool{"net/http": true},
-		ListenerPrimitives: []domain.SymbolRef{
-			{Package: "net", Symbol: "Listen"},
-			{Package: "net", Symbol: "ListenTCP"},
-			{Package: "net", Symbol: "ListenUDP"},
-			{Package: "net", Symbol: "Listener.Accept"},
-			{Package: "net/http", Symbol: "ListenAndServe"},
-			{Package: "net/http", Symbol: "ListenAndServeTLS"},
-			{Package: "net/http", Symbol: "Server.Serve"},
-			{Package: "net/http", Symbol: "Server.ListenAndServe"},
-			{Package: "google.golang.org/grpc", Symbol: "NewServer"},
-			{Package: "google.golang.org/grpc", Symbol: "Server.Serve"},
-			{Package: "google.golang.org/grpc", Symbol: "Server.ServeHTTP"},
-		},
-		ListenAddrArg: map[string]int{
-			"net.Listen":                              1,
-			"net.ListenTCP":                           1,
-			"net.ListenUDP":                           1,
-			"net/http.ListenAndServe":                 0,
-			"net/http.ListenAndServeTLS":              0,
-			"net/http.Server.ListenAndServe":          -1,
-			"net/http.Server.Serve":                   -1,
-			"google.golang.org/grpc.NewServer":        -1,
-			"google.golang.org/grpc.Server.Serve":     -1,
-			"google.golang.org/grpc.Server.ServeHTTP": -1,
-			"net.Listener.Accept":                     -1,
-		},
+	f, err := parseKnowledgeFile(bytes.NewReader(defaultKnowledgeJSON))
+	if err != nil {
+		panic(fmt.Sprintf("embedded knowledge.json: %v", err))
+	}
+	kb := &Knowledge{}
+	if err := kb.Merge(f); err != nil {
+		panic(fmt.Sprintf("embedded knowledge.json: %v", err))
+	}
+	return kb
+}
+
+// AsFile renders the knowledge base in the extension-file schema —
+// what `analyzer knowledge` prints and what a --knowledge file looks
+// like.
+func (k *Knowledge) AsFile() KnowledgeFile {
+	return KnowledgeFile{
+		SourceFuncs:         originStrings(k.SourceFuncs),
+		PassthroughFuncs:    k.PassthroughFuncs,
+		PassthroughMethods:  k.PassthroughMethods,
+		SlicePopulateFuncs:  k.SlicePopulateFuncs,
+		ReadIntoMethods:     k.ReadIntoMethods,
+		RecvMutateMethods:   k.RecvMutateMethods,
+		PopulateNames:       k.PopulateNames,
+		ConfigTagKeys:       k.ConfigTagKeys,
+		AuthCallNames:       k.AuthCallNames,
+		DBPkgs:              k.DBPkgs,
+		DBPkgHints:          k.DBPkgHints,
+		ServiceCallPkgHints: k.ServiceCallPkgHints,
+		HTTPClientPkgs:      k.HTTPClientPkgs,
+		ListenerPrimitives:  k.ListenerPrimitives,
+		ListenAddrArg:       k.ListenAddrArg,
 	}
 }
 
@@ -207,20 +157,25 @@ type KnowledgeFile struct {
 // indexes, `false` set members) are errors — a silently skipped entry
 // would pretend coverage it does not add.
 func LoadKnowledgeFile(path string) (KnowledgeFile, error) {
-	var f KnowledgeFile
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return f, err
+		return KnowledgeFile{}, err
 	}
-	dec := json.NewDecoder(bytes.NewReader(b))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&f); err != nil {
-		return f, fmt.Errorf("%s: %w", path, err)
-	}
-	if err := f.validate(); err != nil {
+	f, err := parseKnowledgeFile(bytes.NewReader(b))
+	if err != nil {
 		return f, fmt.Errorf("%s: %w", path, err)
 	}
 	return f, nil
+}
+
+func parseKnowledgeFile(r io.Reader) (KnowledgeFile, error) {
+	var f KnowledgeFile
+	dec := json.NewDecoder(r)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&f); err != nil {
+		return f, err
+	}
+	return f, f.validate()
 }
 
 func (f KnowledgeFile) validate() error {
@@ -277,9 +232,11 @@ func validOrigin(o string) bool {
 	return false
 }
 
-// Merge additively merges a validated KnowledgeFile into k. An entry
-// already present aborts the merge with a conflict error — explicit
-// edits beat silent overrides, so a file may only add knowledge.
+// Merge additively merges a validated KnowledgeFile into k. Repeating an
+// entry with its existing value is a no-op — a file built on top of
+// `analyzer knowledge` output stays valid. Repeating it with a
+// different value aborts the merge: explicit edits beat silent
+// overrides, so a file may add knowledge but never rewrite it.
 func (k *Knowledge) Merge(f KnowledgeFile) error {
 	k.init()
 	join := func(field string, errs []error) error {
@@ -312,25 +269,24 @@ func (k *Knowledge) Merge(f KnowledgeFile) error {
 			return err
 		}
 	}
-	for field, pair := range map[string]struct {
+	for _, pair := range []struct {
 		dst *[]string
 		src []string
 	}{
-		"config_tag_keys":        {&k.ConfigTagKeys, f.ConfigTagKeys},
-		"db_pkgs":                {&k.DBPkgs, f.DBPkgs},
-		"db_pkg_hints":           {&k.DBPkgHints, f.DBPkgHints},
-		"service_call_pkg_hints": {&k.ServiceCallPkgHints, f.ServiceCallPkgHints},
+		{&k.ConfigTagKeys, f.ConfigTagKeys},
+		{&k.DBPkgs, f.DBPkgs},
+		{&k.DBPkgHints, f.DBPkgHints},
+		{&k.ServiceCallPkgHints, f.ServiceCallPkgHints},
 	} {
 		for _, v := range pair.src {
-			if slices.Contains(*pair.dst, v) {
-				return fmt.Errorf("%s: entry %q already defined", field, v)
+			if !slices.Contains(*pair.dst, v) {
+				*pair.dst = append(*pair.dst, v)
 			}
-			*pair.dst = append(*pair.dst, v)
 		}
 	}
 	for _, p := range f.ListenerPrimitives {
 		if slices.Contains(k.ListenerPrimitives, p) {
-			return fmt.Errorf("listener_primitives: entry %s.%s already defined", p.Package, p.Symbol)
+			continue
 		}
 		k.ListenerPrimitives = append(k.ListenerPrimitives, p)
 	}
@@ -361,6 +317,14 @@ func (k *Knowledge) init() {
 	}
 }
 
+func originStrings(m map[string]domain.DataOrigin) map[string]string {
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[k] = string(v)
+	}
+	return out
+}
+
 func stringMapOrigins(m map[string]string) map[string]domain.DataOrigin {
 	out := make(map[string]domain.DataOrigin, len(m))
 	for k, v := range m {
@@ -369,13 +333,16 @@ func stringMapOrigins(m map[string]string) map[string]domain.DataOrigin {
 	return out
 }
 
-// mergeMap applies src into dst, returning one error per conflicting
-// key — the caller reports the first.
-func mergeMap[V any](dst map[string]V, src map[string]V) []error {
+// mergeMap applies src into dst: same-value repeats are no-ops, a key
+// defined with a different value is a conflict — the caller reports the
+// first error.
+func mergeMap[V comparable](dst map[string]V, src map[string]V) []error {
 	var errs []error
 	for key, v := range src {
-		if _, ok := dst[key]; ok {
-			errs = append(errs, fmt.Errorf("entry %q already defined", key))
+		if old, ok := dst[key]; ok {
+			if old != v {
+				errs = append(errs, fmt.Errorf("entry %q already defined (%v), refusing to override with %v", key, old, v))
+			}
 			continue
 		}
 		dst[key] = v
