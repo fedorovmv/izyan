@@ -37,7 +37,7 @@
 | [`dev/decisions/reference-projects-analysis.md`](dev/decisions/reference-projects-analysis.md) | актуальный | Разбор VEX Toolset/VulnReach/amihit/govulncheck — обоснование решений |
 | [`dev/current/analysis-internals.md`](dev/current/analysis-internals.md) | актуальный | Механика реализации: evaluators, NV, pattern library, toolchain, audit |
 | [`dev/current/implementation-status.md`](dev/current/implementation-status.md) | живой | Статус срезов MVP, что сделано/что дальше |
-| [`dev/current/gap-analysis.md`](dev/current/gap-analysis.md) | актуальный | Gap analysis спека↔код + канонический бэклог (§3) |
+| [`dev/current/gap-analysis.md`](dev/current/gap-analysis.md) | актуальный | Gap analysis спека↔код + канонический бэклог (§2) |
 | [`dev/plans/mvp-implementation-plan.md`](dev/plans/mvp-implementation-plan.md) | актуальный | Порядок реализации и milestones |
 | [`dev/plans/pattern-library-plan.md`](dev/plans/pattern-library-plan.md) | done | Exploit Pattern Library: classify → patterns → conditions |
 | [`dev/plans/exposure-facts-plan.md`](dev/plans/exposure-facts-plan.md) | done | Deployment/exposure facts: listeners, dial-sites, `C-EXPOSURE` |
