@@ -1,0 +1,127 @@
+# База знаний экосистемы
+
+Статический анализ решает вопросы «откуда пришли данные», «пробрасывает
+ли вызов свой аргумент», «открыт ли listener», «какой источник у
+конфиг-поля» по таблицам семантики экосистемных API. Например:
+`os.Getenv` — источник данных `CONFIGURATION`, `io.ReadAll`
+пробрасывает содержимое reader'а в результат, `net.Listen` открывает
+сетевую точку входа, тег `env` маркирует конфиг-поле.
+
+Эти таблицы — **база знаний**. Она влияет на вердикт напрямую:
+пропущенная запись → provenance не резолвится → `UNKNOWN`; неверная
+запись → неверный origin → неверный вывод. Поэтому база — данные с
+версионированием и аудитом, а не литералы в коде.
+
+## Встроенная база
+
+`internal/goanalysis/knowledge.json` — JSON-файл, embedded в бинарь
+при сборке. Бинарь самодостаточен; посмотреть эффективную базу:
+
+```bash
+vuln-analyzer knowledge                # дамп встроенных дефолтов
+vuln-analyzer knowledge --knowledge m.json  # дефолты + расширение
+```
+
+Дамп — стартовая точка для своего расширения и валидатор файла.
+
+## Зачем расширять
+
+Встроенная база знает только публичные API экосистемы. Если продукт
+использует внутренние библиотеки — корпоративный config-loader,
+обёртки над http-клиентом, framework-хелперы, свои listener'ы — их
+вызовы не резолвятся и provenance останавливается на `UNKNOWN`.
+Расширение дописывает такие записи без пересборки анализатора:
+
+```bash
+vuln-analyzer analyze --repo /src/product --vuln GO-XXXX-YYYY \
+    --knowledge corp-knowledge.json
+```
+
+## Формат файла расширения
+
+```json
+{
+  "schema_version": 1,
+  "language": "go",
+  "name": "corp",
+  "labels": ["corp", "internal"],
+  "data_version": "2026-10-05",
+  "source_funcs": {"example.com/cfg.LoadSecrets": "SECRET"},
+  "passthrough_funcs": {"example.com/buf.Clone": [{"from": 0}]},
+  "slice_populate_funcs": ["example.com/x.FillAll"],
+  "read_into_methods": ["FetchInto"],
+  "recv_mutate_methods": ["Merge"],
+  "populate_names": ["FromYAML"],
+  "config_tag_keys": ["vault"],
+  "auth_call_names": ["WithToken"],
+  "db_pkgs": ["example.com/store"],
+  "service_call_pkg_hints": ["example.com/rpc"],
+  "http_client_pkgs": ["example.com/hclient"],
+  "listener_primitives": ["example.com/serve.Bind"],
+  "listen_addr_arg": {"example.com/serve.Bind": 0}
+}
+```
+
+Метаданные:
+
+- `schema_version` — уровень формата файла (текущий — 1). Файл без
+  поля читается как v1; сборка принимает схемы не новее своей, файл
+  свежей схемы отклоняется с понятной ошибкой, а не misparse-ом.
+- `language` — семейство анализатора; файл с чужим языком (например,
+  `"java"`) отклоняется. Можно опустить.
+- `name` — имя источника; попадает в `sources` отчёта как
+  `name@data_version`. Без `name` берётся basename файла.
+- `labels` — свободные provenance-пометки (`corp`, `internal`, …),
+  информационные, на мерж не влияют.
+- `data_version` — ревизия содержимого (обычно дата). Не путать со
+  `schema_version`: данные меняются часто, формат — редко.
+
+Поля данных:
+
+- `source_funcs` — `полное имя вызова → DataOrigin`
+  (`REMOTE_INPUT`, `CONFIGURATION`, `FILESYSTEM`, `STDIN`, `SECRET`,
+  `CLI_ARG`, `DATABASE`, `SERVICE_CALL`, `INTERNAL_STATE`, `CONSTANT`).
+- `passthrough_funcs` — вызов возвращает данные аргумента `from`
+  (0-based).
+- `slice_populate_funcs` — вызов заполняет slice-аргумент целиком.
+- `read_into_methods` — методы читают данные в receiver/аргумент
+  (`Read`, `Scan`, …).
+- `recv_mutate_methods` — мутируют receiver (`Write`, `Set`, …).
+- `populate_names` — имена populate/unmarshal-семейства (`Unmarshal`,
+  `Decode`, `Set`, `Load`, …).
+- `config_tag_keys` — struct-теги конфиг-источников (`env`,
+  `mapstructure`, …).
+- `auth_call_names` — имена auth-вызовов на клиентских объектах.
+- `db_pkgs` — пакеты БД; `db_pkg_hints` — подстроки имён пакетов БД.
+- `service_call_pkg_hints` — подстроки имён сервисных клиентов.
+- `http_client_pkgs` — пакеты http-клиентов.
+- `listener_primitives` — вызовы, открывающие точку входа.
+- `listen_addr_arg` — `вызов → индекс аргумента-адреса`.
+
+## Семантика мержа
+
+- Только **аддитивно**: новый ключ добавляется; повтор с тем же
+  значением — no-op (дамп можно править и подавать обратно);
+  переопределение значения — **ошибка** (`refusing to override`).
+- Строгая валидация при загрузке: unknown field, невалидный
+  `DataOrigin`, отрицательные индексы, `false` в set-полях, неполный
+  `listener_primitives`, чужой `language`, свежая `schema_version` —
+  всё это ошибки, а не молчаливый пропуск.
+- Направление ошибки консервативно: пропущенная запись оставляет
+  `UNKNOWN` (безопасно), неверная запись искажает вывод (опасно) —
+  поэтому тихой перезаписи встроенных записей нет.
+
+## Провенанс в отчёте
+
+Runtime-факт «knowledge base» фиксирует, на какой семантике считался
+вердикт:
+
+```
+knowledge base: sources=[builtin@2026-09-28 corp@2026-10-05]
+                digest=sha256:4e350fb4…
+```
+
+`sources` — `name@data_version` каждого смёрженного файла; `digest` —
+sha256 канонического содержимого эффективной базы. Проверяющий может
+сверить хеш со своей копией: одинаковый digest = идентичная семантика,
+независимо от имён и версий файлов.
