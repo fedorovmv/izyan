@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"example.com/vuln-analyzer/internal/domain"
@@ -18,7 +19,8 @@ func mockServer(t *testing.T, reply string) (*Client, *httptest.Server) {
 		var req chatRequest
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		resp := chatResponse{Choices: []struct {
-			Message chatMessage `json:"message"`
+			Message      chatMessage `json:"message"`
+			FinishReason string      `json:"finish_reason"`
 		}{{Message: chatMessage{Role: "assistant", Content: reply}}}}
 		_ = json.NewEncoder(w).Encode(resp)
 	}))
@@ -182,7 +184,8 @@ func scriptServer(t *testing.T, replies ...string) (*Client, *httptest.Server, *
 		}
 		n++
 		resp := chatResponse{Choices: []struct {
-			Message chatMessage `json:"message"`
+			Message      chatMessage `json:"message"`
+			FinishReason string      `json:"finish_reason"`
 		}{{Message: chatMessage{Role: "assistant", Content: replies[i]}}}}
 		_ = json.NewEncoder(w).Encode(resp)
 	}))
@@ -251,7 +254,8 @@ func TestBuildRetriesOnBadJSON(t *testing.T) {
 			}
 		}
 		resp := chatResponse{Choices: []struct {
-			Message chatMessage `json:"message"`
+			Message      chatMessage `json:"message"`
+			FinishReason string      `json:"finish_reason"`
 		}{{Message: chatMessage{Role: "assistant", Content: reply}}}}
 		_ = json.NewEncoder(w).Encode(resp)
 	}))
@@ -265,5 +269,34 @@ func TestBuildRetriesOnBadJSON(t *testing.T) {
 	}
 	if c.Workflow.Usage.LLMCalls != 3 { // 1 + 2 retries
 		t.Fatalf("llm calls=%d want 3", c.Workflow.Usage.LLMCalls)
+	}
+}
+
+func TestDescribeBadOutput(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+		finish  string
+		want    string
+	}{
+		{"gemini refusal text", `his request was blocked by Gemini's filters. They can occasionally trigger by mistake on safe coding, security, or biology-related queries.`, "", "provider refusal"},
+		{"finish content_filter", "", "content_filter", "provider refusal (finish_reason=content_filter)"},
+		{"finish safety", "partial", "safety", "provider refusal (finish_reason=safety)"},
+		{"empty stop", "   ", "stop", "empty output"},
+		{"empty max", "", "length", "empty output (finish_reason=length)"},
+		{"truncated json", `{"a": 1, "b":`, "length", "truncated output"},
+		{"prose", "I would suggest looking at the code paths.", "stop", "non-JSON output"},
+		{"generic refusal", "I'm sorry, but I cannot help with exploit code.", "", "provider refusal"},
+	}
+	for _, tc := range cases {
+		got := DescribeBadOutput(tc.content, tc.finish)
+		if !strings.HasPrefix(got, tc.want) {
+			t.Errorf("%s: got %q want prefix %q", tc.name, got, tc.want)
+		}
+	}
+	// snippet carries raw text for diagnosis, bounded
+	d := DescribeBadOutput(strings.Repeat("x", 300), "")
+	if !strings.Contains(d, "non-JSON output: ") || len(d) > 200 {
+		t.Errorf("snippet unbounded or missing: %q…", d[:60])
 	}
 }

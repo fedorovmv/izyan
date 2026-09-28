@@ -74,20 +74,25 @@ func (r *RootCauseResolver) Propose(ctx context.Context, c *domain.AnalysisCase,
 		Mechanism string `json:"mechanism"`
 	}
 	parseOK := false
+	var raw, finish string
 	for attempt := 0; attempt <= r.Client.Retries(); attempt++ {
 		c.IncLLMCalls()
-		out, callErr := r.Client.Complete(ctx, Build, rootCauseSystem, string(user))
+		var callErr error
+		raw, finish, callErr = r.Client.Complete(ctx, Build, rootCauseSystem, string(user))
 		if callErr != nil {
 			lims = append(lims, "llm root cause proposal failed: "+callErr.Error())
 			break
 		}
-		if j := ExtractJSON(out); j != "" && json.Unmarshal([]byte(j), &props) == nil && len(props) > 0 {
+		if j := ExtractJSON(raw); j != "" && json.Unmarshal([]byte(j), &props) == nil && len(props) > 0 {
 			parseOK = true
+			break
+		}
+		if IsRefusal(raw, finish) {
 			break
 		}
 	}
 	if !parseOK {
-		return nil, append(lims, "llm root cause proposal unusable"), nil
+		return nil, append(lims, "llm root cause proposal unusable: "+DescribeBadOutput(raw, finish)), nil
 	}
 	var out []domain.RootCause
 	for i, p := range props {

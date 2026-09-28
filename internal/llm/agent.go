@@ -70,7 +70,7 @@ func (a ClaimEvaluator) Evaluate(cond domain.Condition, c *domain.AnalysisCase) 
 			return claim
 		}
 		c.IncLLMCalls()
-		out, err := a.Client.CompleteMessages(ctx, Analyze, system, transcript)
+		out, _, err := a.Client.CompleteMessages(ctx, Analyze, system, transcript)
 		if err != nil {
 			claim.Limitations = append(claim.Limitations, "agent step failed: "+err.Error())
 			return claim

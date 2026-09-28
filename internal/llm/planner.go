@@ -59,7 +59,7 @@ func (p Planner) Plan(ctx context.Context, cond domain.Condition, c *domain.Anal
 	}
 
 	c.IncLLMCalls()
-	out, err := p.Client.CompleteMessages(ctx, Analyze, planSystem+p.Tools.Schemas(),
+	out, finish, err := p.Client.CompleteMessages(ctx, Analyze, planSystem+p.Tools.Schemas(),
 		[]chatMessage{{Role: "user", Content: planUser(cond, c)}})
 	if err != nil {
 		hyp.Status = domain.HypothesisUnresolved
@@ -71,7 +71,7 @@ func (p Planner) Plan(ctx context.Context, cond domain.Condition, c *domain.Anal
 	j := ExtractJSON(out)
 	if j == "" || json.Unmarshal([]byte(j), &st) != nil {
 		hyp.Status = domain.HypothesisUnresolved
-		hyp.Notes = "llm planner returned unparseable response"
+		hyp.Notes = "llm planner returned unusable output: " + DescribeBadOutput(out, finish)
 		record(hyp)
 		return false
 	}

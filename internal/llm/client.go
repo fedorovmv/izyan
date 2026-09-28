@@ -146,22 +146,25 @@ type chatMessage struct {
 
 type chatResponse struct {
 	Choices []struct {
-		Message chatMessage `json:"message"`
+		Message      chatMessage `json:"message"`
+		FinishReason string      `json:"finish_reason"`
 	} `json:"choices"`
 	Error *struct {
 		Message string `json:"message"`
 	} `json:"error,omitempty"`
 }
 
-// Complete runs a single-shot chat completion.
-func (c *Client) Complete(ctx context.Context, role ModelRole, system, user string) (string, error) {
+// Complete runs a single-shot chat completion. It returns the message
+// content and the provider's finish_reason so callers can tell a
+// truncated or filtered response apart from malformed output.
+func (c *Client) Complete(ctx context.Context, role ModelRole, system, user string) (string, string, error) {
 	return c.CompleteMessages(ctx, role, system, []chatMessage{{Role: "user", Content: user}})
 }
 
 // CompleteMessages runs a multi-turn chat completion: system prompt plus
 // the given transcript (used by the bounded agent loop — per condition,
 // never a global chat history).
-func (c *Client) CompleteMessages(ctx context.Context, role ModelRole, system string, messages []chatMessage) (string, error) {
+func (c *Client) CompleteMessages(ctx context.Context, role ModelRole, system string, messages []chatMessage) (string, string, error) {
 	req := chatRequest{
 		Model:       c.modelFor(role),
 		Messages:    append([]chatMessage{{Role: "system", Content: system}}, messages...),
@@ -172,7 +175,7 @@ func (c *Client) CompleteMessages(ctx context.Context, role ModelRole, system st
 	url := strings.TrimRight(c.cfg.BaseURL, "/") + "/chat/completions"
 	hreq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	hreq.Header.Set("Content-Type", "application/json")
 	if c.cfg.APIKey != "" {
@@ -180,27 +183,27 @@ func (c *Client) CompleteMessages(ctx context.Context, role ModelRole, system st
 	}
 	resp, err := c.http.Do(hreq)
 	if err != nil {
-		return "", fmt.Errorf("llm request: %w", err)
+		return "", "", fmt.Errorf("llm request: %w", err)
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
-		return "", fmt.Errorf("llm read: %w", err)
+		return "", "", fmt.Errorf("llm read: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("llm status %d: %.300s", resp.StatusCode, raw)
+		return "", "", fmt.Errorf("llm status %d: %.300s", resp.StatusCode, raw)
 	}
 	var out chatResponse
 	if err := json.Unmarshal(raw, &out); err != nil {
-		return "", fmt.Errorf("llm decode: %w", err)
+		return "", "", fmt.Errorf("llm decode: %w", err)
 	}
 	if out.Error != nil {
-		return "", fmt.Errorf("llm error: %s", out.Error.Message)
+		return "", "", fmt.Errorf("llm error: %s", out.Error.Message)
 	}
 	if len(out.Choices) == 0 {
-		return "", fmt.Errorf("llm: empty choices")
+		return "", "", fmt.Errorf("llm: empty choices")
 	}
-	return out.Choices[0].Message.Content, nil
+	return out.Choices[0].Message.Content, out.Choices[0].FinishReason, nil
 }
 
 // ExtractJSON pulls the first JSON object/array out of an LLM response,
@@ -243,6 +246,68 @@ func ExtractJSON(s string) string {
 		return ""
 	}
 	return strings.TrimSpace(s[start : end+1])
+}
+
+// refusalMarkers are phrases providers emit when a safety/policy layer
+// declines the request — distinct failure class from malformed output.
+var refusalMarkers = []string{
+	"blocked by", "content filter", "content_filter",
+	"cannot assist", "can't assist", "can't help", "cannot help",
+	"unable to fulfill", "against my guidelines", "safety guidelines",
+	"use-policy", "violates", "i must refuse", "i'm sorry, but",
+}
+
+// DescribeBadOutput classifies model output that failed JSON extraction
+// into an actionable reason — provider refusal, empty or truncated
+// output, or non-JSON text — suffixed with a bounded snippet of the raw
+// response so the failure is diagnosable from the report alone.
+func DescribeBadOutput(content, finishReason string) string {
+	low := strings.ToLower(content)
+	reason := "non-JSON output"
+	switch {
+	case finishReason == "content_filter" || finishReason == "safety":
+		reason = "provider refusal (finish_reason=" + finishReason + ")"
+	case strings.TrimSpace(content) == "":
+		reason = "empty output"
+		if finishReason != "" && finishReason != "stop" {
+			reason += " (finish_reason=" + finishReason + ")"
+		}
+	case hasRefusalMarker(low):
+		reason = "provider refusal (content filter)"
+	case finishReason == "length":
+		reason = "truncated output (finish_reason=length)"
+	}
+	if snip := outputSnippet(content, 160); snip != "" {
+		return reason + ": " + snip
+	}
+	return reason
+}
+
+// IsRefusal reports whether the response is a provider-side refusal
+// (safety/policy block or refusal text). A refusal will not self-heal
+// on retry with the same prompt — retry loops should stop early.
+func IsRefusal(content, finishReason string) bool {
+	if finishReason == "content_filter" || finishReason == "safety" {
+		return true
+	}
+	return hasRefusalMarker(strings.ToLower(content))
+}
+
+func hasRefusalMarker(low string) bool {
+	for _, m := range refusalMarkers {
+		if strings.Contains(low, m) {
+			return true
+		}
+	}
+	return false
+}
+
+func outputSnippet(s string, n int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if len(s) > n {
+		s = s[:n] + "…"
+	}
+	return s
 }
 
 // llmBudgetExhausted reports whether the LLM call budget is spent.

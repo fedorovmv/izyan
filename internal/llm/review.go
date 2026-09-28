@@ -46,7 +46,7 @@ func (rv Reviewer) Review(c *domain.AnalysisCase, proposed domain.VerdictResult)
 	payload := reviewPayload(c, proposed)
 	user, _ := json.Marshal(payload)
 	c.IncLLMCalls()
-	out, err := rv.Client.Complete(context.Background(), Analyze, reviewSystem, string(user))
+	out, finish, err := rv.Client.Complete(context.Background(), Analyze, reviewSystem, string(user))
 	if err != nil {
 		r.Findings = append(r.Findings, domain.ReviewFinding{
 			TargetType: "verdict", Severity: "low",
@@ -61,7 +61,7 @@ func (rv Reviewer) Review(c *domain.AnalysisCase, proposed domain.VerdictResult)
 	if j := ExtractJSON(out); j == "" || json.Unmarshal([]byte(j), &resp) != nil {
 		r.Findings = append(r.Findings, domain.ReviewFinding{
 			TargetType: "verdict", Severity: "low",
-			Problem: "llm review response unparseable",
+			Problem: "llm review response unusable: " + DescribeBadOutput(out, finish),
 		})
 		return r
 	}
