@@ -1,7 +1,7 @@
 # Eval harness / regression corpus — план фичи (gap-analysis кандидат #8)
 
 Статус: done. Закрывает первый слой пункта #8 приоритета и строку
-«Метрики / eval harness» (`09-gap-analysis.md` §3.7).
+«Метрики / eval harness» (`docs/dev/current/gap-analysis.md` §3.7).
 
 ## Проблема
 
@@ -14,7 +14,9 @@ NOT_AFFECTED / NO_EXPLOIT_PATH_FOUND на вход, который safe не я�
 ## Дизайн
 
 - `internal/eval` — типы корпуса и метрик (без зависимости на CLI):
-  `Corpus{repo, cases[]}`, `Case{id, vuln|vuln_file, repo, root_causes,
+  `Corpus{repo, cases[]}` — `repo` поддерживает env-экспансию
+  (`${VA_PRODUCT_REPO}`; `--repo` флаг имеет приоритет),
+  `Case{id, vuln|vuln_file, repo, root_causes,
   exploit_model, expect[], expect_claims{}}`, `Report{Metrics, Results}`,
   `Report.Record`, `Report.Markdown`.
 - `vuln-analyzer eval --corpus <path> [--repo <path>] [--out md]

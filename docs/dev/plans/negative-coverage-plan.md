@@ -1,6 +1,6 @@
 # Negative-check coverage: build-tag + interface dispatch — план фичи (gap-analysis кандидат #4)
 
-Статус: done. Закрывает пункты 3.3 и 3.4 `09-gap-analysis.md`.
+Статус: done. Закрывает пункты 3.3 и 3.4 `docs/dev/current/gap-analysis.md`.
 
 ## Проблема
 

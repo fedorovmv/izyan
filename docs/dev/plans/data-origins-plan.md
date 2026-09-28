@@ -1,6 +1,6 @@
 # DATABASE / INTERNAL_SERVICE data origins — план фичи (gap-analysis кандидат #5)
 
-Статус: done. Закрывает первый слой «Data origins» в `09-gap-analysis.md`:
+Статус: done. Закрывает первый слой «Data origins» в `docs/dev/current/gap-analysis.md`:
 оба origin'а из enum спеки §15 больше не «всегда UNKNOWN».
 
 ## Проблема

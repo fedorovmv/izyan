@@ -1,15 +1,17 @@
-# 20. Live corpus — реальные advisory на реальном репо
+# Live corpus — реальные advisory на реальном репо
 
 ## Статус: первый слой реализован
 
 `eval/live-corpus.json` + `eval/advisories/live/*.json` — 11 advisory
 `github.com/rabbitmq/amqp091-go` (все фиксированы v1.13.0; продукт на
-v1.10.0 → affected по версии) против `продукт-референс`.
+v1.10.0 → affected по версии) против `продукт-референс`. Путь к
+репозиторию продукта — `${VA_PRODUCT_REPO}` (env-экспансия) или флаг
+`--repo`; конкретный локальный репозиторий не коммитится.
 
 ## Прогон
 
 ```
-PATH=$HOME/go/bin:$PATH analyzer eval --corpus eval/live-corpus.json
+PATH=$HOME/go/bin:$PATH VA_PRODUCT_REPO=<product-repo> analyzer eval --corpus eval/live-corpus.json
 ```
 
 Требования: сеть (root-cause резолвер тянет fix-patch по commit-refs из
@@ -27,6 +29,23 @@ module-usage fallback — вердикты могут честно смещат�
 `expect` в корпусе зафиксирован по наблюдаемым вердиктам — это regression
 pinned behavior, не независимый ground truth. false-safe=0 остаётся
 стоп-критерием.
+
+После B2: кейсы, доходящие до GAP_ANALYSIS, без `--allow-exec` несут
+limitation «build/test evidence actions skipped»; с флагом — BUILD/TEST
+evidence, `go build`/`go test` в tool_executions и секция «Build & test»
+в отчёте. На вердикты не влияет.
+
+После B3 (vendor-internal provenance, §3.5): для unexported dep-субъектов
+peer-input условий собираются настоящие dep-internal call sites и flows —
+resolved origin решает claim вместо эвристики «module usage →
+peer-driven» (эвристика остаётся fallback, когда dep-trace пуст или
+UNKNOWN). На живом amqp091 ожидаемое поведение: `readField`-цепь упирается
+в interface dispatch (`m.read(r)`) → trace UNKNOWN → эвристика сохраняет
+TRUE — вердикты EXPLOITABLE-кейсов не должны сдвинуться, но claims могут
+нести дополнительные dep-flow evidence/limitations. Fixture-корпус
+расширен до 18 кейсов (`wire-dep-peer` → EXPLOITABLE через resolved
+EXTERNAL_UNTRUSTED, `wire-dep-const` → NO_EXPLOIT_PATH_FOUND через
+VERIFIED-FALSE по dep-retrace).
 
 ## Что прогон валидировал на живом коде
 

@@ -1,4 +1,4 @@
-# 19. Typed tools (§17) — done
+# Typed tools (§17) — done
 
 ## Статус: реализовано
 
@@ -27,7 +27,7 @@
   (`filepath.Rel` + отказ на `..`); `search_source` итерирует только
   файлы синтаксиса product-пакетов (свой код, не кэш модулей).
 - **Toolchain.** Exec-инструменты наследуют `Index.Env` — сборка идёт
-  под целевым toolchain (см. `15-toolchain-plan.md`).
+  под целевым toolchain (см. `docs/dev/plans/toolchain-plan.md`).
 - **`find_references`** — алиас поверх `SearchSymbol` (имя из §17).
 
 ## Не закрыто
