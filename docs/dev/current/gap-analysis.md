@@ -31,12 +31,6 @@
 Критерий MVP: модуль даёт больше `govulncheck` и выдаёт доказательно
 обоснованные вердикты. Приоритет P0 блокирует критерий.
 
-### P0 — блокирует критерий
-
-| # | Пункт | Зачем | Done-критерий |
-|---|-------|-------|----------------|
-| B1 | **Ground-truth разметка live-корпуса** | `expect` пиннит наблюдаемое поведение — `false-safe=0` это отсутствие регрессий, не доказательство правильности | Истинный вердикт каждого из 11 кейсов зафиксирован вручную по advisory+коду; `expect` сравнивает с истиной; метод разметки описан в [`eval/README.md`](../../../eval/README.md) |
-
 ### P1 — e2e-качество
 
 | # | Пункт | Зачем | Done-критерий |
@@ -57,6 +51,8 @@
 | B16 | LLM semantic-гипотезы для KB | Opaque/unresolvable callee → UNKNOWN навсегда; LLM может подсказать семантику вызова | Гипотеза «f читает env/file» в GAP_ANALYSIS → детерминистический трейс внутрь тела ищет заявленный примитив; evidence с меткой llm-suggested/code-verified; draft-записи в `knowledge_suggestions` отчёта (мерж только через `--knowledge`, никогда не авто); тест: REJECTED-гипотеза не трогает claim |
 | B14 | Build/test результат не влияет на claims | `actBuildTest` пишет BUILD/TEST evidence, но build failure — caveat, не демоция claim; покрытие пути тестами не оценивается → per-vulnerability test-coverage факт или claim-оговорка |
 | B9 | Паттерны вне 4 семейств | По живым кейсам; каждый паттерн = registry entry + фикстура |
+| B18 | Snapshot/toolchain-факты как platform conditions | `go_version` продукта и тулчейн-семантика (TLS 1.2 floor с go1.22+ и т.п.) не моделируются → 33mj истина NEPF, анализатор INCONCLUSIVE. Done: platform-condition claim решается по snapshot `go_version` + тест; 33mj-кейс даёт NEPF |
+| B19 | Точность reflect/unsafe демоций NV | Демоция по маркеру не проверяет, что write-site реально достигает типа субъекта (465g: `amqp091.URI` никогда не создаётся продуктом → истина NEPF, анализатор INCONCLUSIVE). Done: маркер учитывает достижимость типа/поля; 465g-кейс даёт NEPF |
 
 ### P3 — deferred by design
 
@@ -78,13 +74,12 @@
 `VA_PRODUCT_REPO` (env) или `--repo`, проверка — `go test ./...` +
 `go run ./cmd/analyzer eval --corpus eval/live-corpus.json`.
 
-- **Корпус-дрейф**: `ghsa-j497-x9hr-x34x` на продукт-референсе даёт
-  INCONCLUSIVE вместо pinned EXPLOITABLE (C-PEER-INPUT UNKNOWN). Причина
-  — не B12: проверено stash-прогоном; похоже, dep-scope flows (B3)
-  стали резолвиться в CONSTANT → `hasResolvedFlows` гейтит transport-
-  эвристику в `evaluator/transport.go`. Либо баг гейта (CONSTANT не
-  должен считаться «resolved» для peer-input), либо corpus re-pin —
-  решение за B1 ground-truth.
+- **B1 закрыт** (выполнено): истина 11 кейсов — `eval/ground-truth.md`;
+  `expect` пиннит истину. Разметка поймала два false-safe (6c5v,
+  GO-2026-6372 → NEPF): исправлено — covered+silence FALSE теперь
+  требует всех субъектов в `AffectedSymbols`, `ModuleReachable`-цепочка
+  — позитивное TRUE-доказательство до FALSE-ветки. j497: истина
+  INCONCLUSIVE (peer→shortstr config-contingent) → re-pin.
 - **B4** (делегируемо): `internal/states/states.go` — repair demotes
   high-findings; `internal/goanalysis/negative.go` — VERIFIED статусы.
   Правило: demotion VERIFIED-FALSE требует `required_check`/`problem`
@@ -96,7 +91,4 @@
   `internal/goanalysis/provenance.go` — `exprIntValue`,
   `boundsDirection`. Расширять по одной форме: `len(x)`, `x != 0`,
   float. Тесты — `provenance_bound_test.go` образец.
-- **B1** (полу-делегируемо): драфт разметки можно поручить — agent
-  читает advisory (`eval/live-corpus.json` ids) + evidence продукта и
-  предлагает true-verdict с rationale, но финальная разметка — за
-  человеком (это и есть ценность пункта).
+
