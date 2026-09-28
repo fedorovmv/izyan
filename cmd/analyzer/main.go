@@ -272,6 +272,7 @@ func analyzeCase(ctx context.Context, o analyzeOpts) (*domain.AnalysisCase, erro
 		evaluator.ArgumentOrigin{},
 		evaluator.Validation{},
 		evaluator.Exposure{},
+		evaluator.Authentication{},
 		evaluator.ConfigFlag{},
 		evaluator.Presence{},
 		evaluator.VersionFact{},
