@@ -357,3 +357,48 @@ func TestHasExportedCoveredField(t *testing.T) {
 		t.Fatal("no field-backed guard must report false")
 	}
 }
+
+// Dep-internal provenance (backlog B3): an unexported subject has no
+// product callers — its arguments are fed inside the dependency itself.
+// The chain `c.r` <- bufio.NewReader(conn) <- net.Dial must resolve to
+// EXTERNAL_UNTRUSTED: the peer boundary is the net.Conn value.
+func TestTraceDepInternalPeerOrigin(t *testing.T) {
+	ix := fixture(t, "wireprod")
+	subj := domain.SymbolRef{Package: "example.com/dep/vuln", Symbol: "readRecord"}
+	sites, err := ix.FindDepCallers(context.Background(), subj)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sites) != 1 || sites[0].Function != "Next" {
+		t.Fatalf("dep callers=%+v", sites)
+	}
+	flow, _, err := ix.TraceArgumentBound(context.Background(), sites[0], 0, 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if flow.Origin != domain.OriginExternalUntrusted {
+		t.Fatalf("origin=%s want EXTERNAL_UNTRUSTED (%s)", flow.Origin, flow.Summary)
+	}
+}
+
+// Same dep scope, opposite origin: a subject only invoked with constants
+// inside the dep resolves a non-external origin — traced evidence that
+// contradicts the unexported+peer heuristic.
+func TestTraceDepInternalConstantOrigin(t *testing.T) {
+	ix := fixture(t, "wireprod")
+	subj := domain.SymbolRef{Package: "example.com/dep/vuln", Symbol: "parseConstant"}
+	sites, err := ix.FindDepCallers(context.Background(), subj)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sites) != 1 || sites[0].Function != "Fixed" {
+		t.Fatalf("dep callers=%+v", sites)
+	}
+	flow, _, err := ix.TraceArgumentBound(context.Background(), sites[0], 0, 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if flow.Origin != domain.OriginConstant {
+		t.Fatalf("origin=%s want CONSTANT (%s)", flow.Origin, flow.Summary)
+	}
+}

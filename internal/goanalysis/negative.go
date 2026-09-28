@@ -351,6 +351,20 @@ func (v Verifier) verifyInputFalse(ctx context.Context, c *domain.AnalysisCase, 
 			nv.Notes = "caller search failed: " + err.Error()
 			return setNeg(claim, nv)
 		}
+		if len(callers) == 0 && c.Vulnerability.Module != "" &&
+			(subj.Package == c.Vulnerability.Module ||
+				strings.HasPrefix(subj.Package, c.Vulnerability.Module+"/")) {
+			// Unexported dependency subjects have no product callers — the
+			// FALSE under verification may have been produced by dep-internal
+			// provenance; re-trace the same dep scope.
+			depCallers, derr := v.Source.FindDepCallers(ctx, subj)
+			if derr != nil {
+				nv.Status = domain.NegativeInsufficientScope
+				nv.Notes = "dep caller search failed: " + derr.Error()
+				return setNeg(claim, nv)
+			}
+			callers = depCallers
+		}
 		if len(callers) == 0 {
 			continue // no direct call sites of this subject; others may still contradict
 		}

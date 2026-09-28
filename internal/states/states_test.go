@@ -114,6 +114,7 @@ type engineDeps struct {
 	CaseDir     string
 	Govulncheck goanalysis.Runner
 	UseSource   bool                     // wire the go/packages source index + verifier
+	AllowExec   bool                     // permit the gap loop's build/test evidence actions
 	RCResolver  states.RootCauseResolver // overrides default rootcause.Resolver
 }
 
@@ -161,7 +162,7 @@ func runEngine(t *testing.T, d engineDeps) *domain.AnalysisCase {
 			evaluator.Presence{},
 			evaluator.Platform{},
 		}},
-		states.GapAnalysis{Source: srcIndex, Evaluators: []evaluator.ConditionEvaluator{
+		states.GapAnalysis{Source: srcIndex, AllowExec: d.AllowExec, Evaluators: []evaluator.ConditionEvaluator{
 			evaluator.SymbolReachable{},
 			evaluator.ArgumentOrigin{},
 			evaluator.Validation{},
@@ -1676,5 +1677,294 @@ func TestE2EConfigGatedGuardStaysInconclusive(t *testing.T) {
 	}
 	if c.Verdict == nil || c.Verdict.Verdict != domain.VerdictInconclusive {
 		t.Fatalf("verdict=%+v want INCONCLUSIVE", c.Verdict)
+	}
+}
+
+// initRepoFiles git-inits a temp repo with the given files.
+func initRepoFiles(t *testing.T, files map[string]string) string {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go toolchain not available")
+	}
+	dir := t.TempDir()
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return initGit(t, dir)
+}
+
+// unknownReachModel leaves C-REACH UNKNOWN without a source index, so the
+// pipeline reaches GAP_ANALYSIS — the state under test here.
+func unknownReachModel(t *testing.T, dir string) string {
+	t.Helper()
+	mp := filepath.Join(dir, "model.json")
+	model := `{"impact":"t","mandatory_conditions":[
+		{"id":"C-REACH","kind":"SYMBOL_REACHABLE","mandatory":true,
+		 "subject":{"package":"example.com/dep/vuln","symbol":"Parse"}}
+	]}`
+	if err := os.WriteFile(mp, []byte(model), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return mp
+}
+
+// gapCaseDeps fills the shared engine deps for a case that lands in
+// GAP_ANALYSIS with an unresolved C-REACH claim.
+func gapCaseDeps(t *testing.T, repo, dir string) engineDeps {
+	t.Helper()
+	return engineDeps{
+		RepoPath: repo,
+		VulnSrc: vulnerability.StaticSource{Vulns: map[string]*domain.Vulnerability{
+			"GO-TEST-1": {ID: "GO-TEST-1", Module: "example.com/dep"},
+		}},
+		VulnID:   "GO-TEST-1",
+		Resolver: stubResolver{},
+		ManualRC: []domain.RootCause{{Package: "example.com/dep/vuln", Symbol: "Parse"}},
+		Model:    unknownReachModel(t, dir),
+		CaseDir:  filepath.Join(dir, "cases"),
+	}
+}
+
+func evidenceKinds(c *domain.AnalysisCase) map[domain.EvidenceKind]bool {
+	out := map[domain.EvidenceKind]bool{}
+	for _, e := range c.EvidenceGraph.Evidence {
+		out[e.Kind] = true
+	}
+	return out
+}
+
+func hasLimitation(c *domain.AnalysisCase, substr string) bool {
+	for _, l := range c.EvidenceGraph.Limitations {
+		if strings.Contains(l, substr) {
+			return true
+		}
+	}
+	return false
+}
+
+// B2: with --allow-exec the gap loop runs `go build`/`go test` once as
+// case-level evidence — BUILD/TEST records land in the graph, the runs in
+// tool_executions, a hypothesis in the case and a section in report.md.
+func TestE2EBuildTestEvidence(t *testing.T) {
+	repo := initRepoFiles(t, map[string]string{
+		"go.mod":       "module example.com/product\n\ngo 1.23\n",
+		"main.go":      "package main\n\nfunc main() {}\n",
+		"main_test.go": "package main\n\nimport \"testing\"\n\nfunc TestCompiles(t *testing.T) {}\n",
+	})
+	dir := t.TempDir()
+	d := gapCaseDeps(t, repo, dir)
+	d.AllowExec = true
+	c := runEngine(t, d)
+
+	if c.Workflow.State != domain.StateCompleted {
+		t.Fatalf("state=%s reason=%s", c.Workflow.State, c.Workflow.Reason)
+	}
+	kinds := evidenceKinds(c)
+	if !kinds[domain.EvidenceBuild] || !kinds[domain.EvidenceTest] {
+		t.Fatalf("BUILD/TEST evidence missing: %v", kinds)
+	}
+	var ranBuild, ranTest bool
+	for _, tx := range c.EvidenceGraph.ToolExecutions {
+		if tx.Tool != "go" || len(tx.Args) < 2 || tx.Args[len(tx.Args)-1] != "./..." {
+			continue
+		}
+		ranBuild = ranBuild || tx.Args[0] == "build"
+		ranTest = ranTest || tx.Args[0] == "test"
+	}
+	if !ranBuild || !ranTest {
+		t.Fatalf("go build/test executions not audited: %+v", c.EvidenceGraph.ToolExecutions)
+	}
+	// go build writes main-package executables into the work dir by
+	// default — the action must not mutate the analyzed repository.
+	if _, err := os.Stat(filepath.Join(repo, "product")); err == nil {
+		t.Fatal("go build polluted the analyzed repo with an executable")
+	}
+	var hyp *domain.Hypothesis
+	for i := range c.Hypotheses {
+		if len(c.Hypotheses[i].ExpectedEvidence) == 2 &&
+			c.Hypotheses[i].ExpectedEvidence[0] == domain.EvidenceBuild {
+			hyp = &c.Hypotheses[i]
+		}
+	}
+	if hyp == nil || len(hyp.EvidenceIDs) != 2 {
+		t.Fatalf("build/test hypothesis missing: %+v", c.Hypotheses)
+	}
+	md, err := os.ReadFile(filepath.Join(d.CaseDir, string(c.ID), "report.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(md), "## Build & test") {
+		t.Fatal("report.md lacks the Build & test section")
+	}
+}
+
+// Without --allow-exec the actions must not run: an honest limitation
+// records the skip and no BUILD/TEST evidence exists.
+func TestE2EBuildTestSkippedWithoutExec(t *testing.T) {
+	repo := initRepoFiles(t, map[string]string{
+		"go.mod":  "module example.com/product\n\ngo 1.23\n",
+		"main.go": "package main\n\nfunc main() {}\n",
+	})
+	dir := t.TempDir()
+	d := gapCaseDeps(t, repo, dir)
+	c := runEngine(t, d)
+
+	kinds := evidenceKinds(c)
+	if kinds[domain.EvidenceBuild] || kinds[domain.EvidenceTest] {
+		t.Fatalf("exec evidence recorded without --allow-exec: %v", kinds)
+	}
+	if !hasLimitation(c, "requires --allow-exec") {
+		t.Fatalf("skip limitation missing: %v", c.EvidenceGraph.Limitations)
+	}
+}
+
+// A non-compiling snapshot is evidence, not a silent failure: BUILD
+// records the failure and a limitation warns that static evidence may be
+// unreliable.
+func TestE2EBuildFailureLimitation(t *testing.T) {
+	repo := initRepoFiles(t, map[string]string{
+		"go.mod":  "module example.com/product\n\ngo 1.23\n",
+		"main.go": "package main\n\nfunc main( {\n",
+	})
+	dir := t.TempDir()
+	d := gapCaseDeps(t, repo, dir)
+	d.AllowExec = true
+	c := runEngine(t, d)
+
+	var build *domain.Evidence
+	for i, e := range c.EvidenceGraph.Evidence {
+		if e.Kind == domain.EvidenceBuild {
+			build = &c.EvidenceGraph.Evidence[i]
+		}
+	}
+	if build == nil || !strings.Contains(build.Content, "FAILED") {
+		t.Fatalf("BUILD evidence missing or not failed: %+v", build)
+	}
+	if !hasLimitation(c, "does not compile") {
+		t.Fatalf("compile limitation missing: %v", c.EvidenceGraph.Limitations)
+	}
+	if c.Verdict == nil || c.Verdict.Verdict != domain.VerdictInconclusive {
+		t.Fatalf("verdict=%+v want INCONCLUSIVE", c.Verdict)
+	}
+}
+
+// Backlog B3: provenance inside the dependency. readRecord is unexported
+// — product code cannot call it — but its argument is the peer-fed wire
+// reader. The dep-internal trace must resolve EXTERNAL_UNTRUSTED through
+// c.r <- bufio.NewReader(conn) <- net.Dial, and the claim must carry the
+// traced explanation, not the unexported+peer heuristic.
+func TestE2EDepInternalPeerInput(t *testing.T) {
+	repo := initRepoFrom(t, "wireprod")
+	dir := t.TempDir()
+	model := `{"impact":"peer bytes reach dep-internal parser","mandatory_conditions":[
+		{"id":"C-REACH","kind":"SYMBOL_REACHABLE","mandatory":true,
+		 "description":"readRecord reachable",
+		 "subject":{"package":"example.com/dep/vuln","symbol":"readRecord"}},
+		{"id":"C-PEER-INPUT","kind":"ATTACKER_CONTROL","mandatory":true,
+		 "description":"peer bytes drive the dep-internal parser",
+		 "subject":{"package":"example.com/dep/vuln","symbol":"readRecord"},
+		 "params":{"input_source":"peer"}}
+	]}`
+	mp := filepath.Join(dir, "model.json")
+	if err := os.WriteFile(mp, []byte(model), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	c := runEngine(t, engineDeps{
+		RepoPath: repo,
+		VulnSrc: vulnerability.StaticSource{Vulns: map[string]*domain.Vulnerability{
+			"GO-TEST-WIRE": {ID: "GO-TEST-WIRE", Module: "example.com/dep",
+				AffectedSymbols: []domain.SymbolRef{{Package: "example.com/dep/vuln", Symbol: "readRecord"}}},
+		}},
+		VulnID:    "GO-TEST-WIRE",
+		Resolver:  stubResolver{},
+		ManualRC:  []domain.RootCause{{Package: "example.com/dep/vuln", Symbol: "readRecord", Role: domain.RootCauseSink}},
+		Model:     mp,
+		CaseDir:   filepath.Join(dir, "cases"),
+		UseSource: true,
+	})
+
+	if c.Workflow.State != domain.StateCompleted {
+		t.Fatalf("state=%s reason=%s", c.Workflow.State, c.Workflow.Reason)
+	}
+	var depFlow *domain.DataFlow
+	for i, f := range c.EvidenceGraph.DataFlows {
+		if f.ConditionID == "C-PEER-INPUT" {
+			depFlow = &c.EvidenceGraph.DataFlows[i]
+		}
+	}
+	if depFlow == nil {
+		t.Fatal("no data flow recorded for C-PEER-INPUT")
+	}
+	if depFlow.Origin != domain.OriginExternalUntrusted {
+		t.Fatalf("dep-internal origin=%s want EXTERNAL_UNTRUSTED (%s)", depFlow.Origin, depFlow.Summary)
+	}
+	if !strings.Contains(depFlow.Sink.File, "dep") {
+		t.Fatalf("dep flow sink=%s — expected dependency file", depFlow.Sink.File)
+	}
+	claim := findClaimT(t, c.Claims, "C-PEER-INPUT")
+	if claim.Result != domain.ClaimTrue {
+		t.Fatalf("C-PEER-INPUT=%s want TRUE (%s)", claim.Result, claim.Explanation)
+	}
+	if strings.Contains(claim.Explanation, "unexported transport internals") {
+		t.Fatalf("claim used the heuristic, not the trace: %s", claim.Explanation)
+	}
+	if c.Verdict == nil || c.Verdict.Verdict != domain.VerdictExploitable {
+		t.Fatalf("verdict=%+v want EXPLOITABLE", c.Verdict)
+	}
+}
+
+// The traced dep-internal origin wins over the structural heuristic:
+// parseConstant is only ever called with a literal inside the dep, so
+// peer input is disproven — a verified FALSE, not the heuristic's TRUE.
+func TestE2EDepInternalFalseVerified(t *testing.T) {
+	repo := initRepoFrom(t, "wireprod")
+	dir := t.TempDir()
+	model := `{"impact":"peer bytes reach dep-internal parser","mandatory_conditions":[
+		{"id":"C-REACH","kind":"SYMBOL_REACHABLE","mandatory":true,
+		 "description":"parseConstant reachable",
+		 "subject":{"package":"example.com/dep/vuln","symbol":"parseConstant"}},
+		{"id":"C-PEER-INPUT","kind":"ATTACKER_CONTROL","mandatory":true,
+		 "description":"peer bytes drive the dep-internal parser",
+		 "subject":{"package":"example.com/dep/vuln","symbol":"parseConstant"},
+		 "params":{"input_source":"peer"}}
+	]}`
+	mp := filepath.Join(dir, "model.json")
+	if err := os.WriteFile(mp, []byte(model), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	c := runEngine(t, engineDeps{
+		RepoPath: repo,
+		VulnSrc: vulnerability.StaticSource{Vulns: map[string]*domain.Vulnerability{
+			"GO-TEST-CONST": {ID: "GO-TEST-CONST", Module: "example.com/dep",
+				AffectedSymbols: []domain.SymbolRef{{Package: "example.com/dep/vuln", Symbol: "parseConstant"}}},
+		}},
+		VulnID:    "GO-TEST-CONST",
+		Resolver:  stubResolver{},
+		ManualRC:  []domain.RootCause{{Package: "example.com/dep/vuln", Symbol: "parseConstant", Role: domain.RootCauseSink}},
+		Model:     mp,
+		CaseDir:   filepath.Join(dir, "cases"),
+		UseSource: true,
+	})
+
+	if c.Workflow.State != domain.StateCompleted {
+		t.Fatalf("state=%s reason=%s", c.Workflow.State, c.Workflow.Reason)
+	}
+	claim := findClaimT(t, c.Claims, "C-PEER-INPUT")
+	if claim.Result != domain.ClaimFalse {
+		t.Fatalf("C-PEER-INPUT=%s want FALSE (%s)", claim.Result, claim.Explanation)
+	}
+	if claim.NegativeVerification == nil ||
+		claim.NegativeVerification.Status != domain.NegativeVerified {
+		t.Fatalf("negative verification=%+v want VERIFIED", claim.NegativeVerification)
+	}
+	if c.Verdict == nil || c.Verdict.Verdict != domain.VerdictNoExploitPathFound {
+		t.Fatalf("verdict=%+v want NO_EXPLOIT_PATH_FOUND", c.Verdict)
 	}
 }

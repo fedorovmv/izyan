@@ -644,9 +644,32 @@ func (h CollectEvidence) collectProvenance(ctx context.Context, c *domain.Analys
 		return
 	}
 	if len(sites) == 0 {
-		c.EvidenceGraph.AddLimitation(
-			fmt.Sprintf("no call sites of %s.%s found in product packages", subj.Package, subj.Symbol))
-		return
+		// Unexported dep subjects have no product callers — for peer-input
+		// conditions their arguments are fed inside the dependency itself:
+		// trace the dep-internal call sites of the subject.
+		if evaluator.SymbolExported(subj) || !evaluator.WantsPeerInput(cond, c.Vulnerability) {
+			c.EvidenceGraph.AddLimitation(
+				fmt.Sprintf("no call sites of %s.%s found in product packages", subj.Package, subj.Symbol))
+			return
+		}
+		depSites, derr := h.Source.FindDepCallers(ctx, subj)
+		if derr != nil {
+			c.EvidenceGraph.AddToolLimitation(fmt.Sprintf("dep find_callers %s.%s: %v", subj.Package, subj.Symbol, derr))
+			return
+		}
+		if len(depSites) == 0 {
+			c.EvidenceGraph.AddLimitation(
+				fmt.Sprintf("no call sites of %s.%s found in product or dependency packages", subj.Package, subj.Symbol))
+			return
+		}
+		c.EvidenceGraph.AddEvidence(domain.Evidence{
+			Kind:    domain.EvidenceSearchResult,
+			Quality: domain.QualityDeterministic,
+			Source:  "dep-internal caller scan " + subj.Package + "." + subj.Symbol,
+			Tool:    "goanalysis.Index.FindDepCallers",
+			Content: fmt.Sprintf("%d dep-internal call site(s) of %s.%s", len(depSites), subj.Package, subj.Symbol),
+		})
+		sites = depSites
 	}
 	for _, site := range sites {
 		flows, evs, err := h.traceArgs(ctx, site, cond)

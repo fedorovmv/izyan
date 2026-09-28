@@ -93,9 +93,11 @@ func (ix *Index) TraceArgument(ctx context.Context, site domain.CallSite, argInd
 	return flow, ev, nil
 }
 
-// callAt finds the CallExpr at the File:Line position of site.
+// callAt finds the CallExpr at the File:Line position of site. Product
+// packages are searched first, then dependency packages loaded on demand
+// (dep-internal sink sites resolve to module-cache/replaced-dep paths).
 func (ix *Index) callAt(site domain.CallSite) (*ast.CallExpr, *ast.FuncDecl, *packages.Package, error) {
-	for _, pkg := range ix.pkgs {
+	for _, pkg := range append(append([]*packages.Package{}, ix.pkgs...), ix.allExtras()...) {
 		for _, f := range pkg.Syntax {
 			var found *ast.CallExpr
 			var enc *ast.FuncDecl
@@ -131,7 +133,23 @@ func (ix *Index) classify(pkg *packages.Package, enc *ast.FuncDecl, expr ast.Exp
 	case *ast.BasicLit:
 		return domain.OriginConstant, "literal constant"
 	case *ast.CompositeLit:
-		return domain.OriginConstant, "composite literal"
+		// The literal's provenance is the merge of its elements — a
+		// `&io.LimitedReader{R: connReader}` carries the reader's origin,
+		// not the literal's shape. Empty literals stay constant.
+		out := domain.OriginConstant
+		var whys []string
+		for _, el := range e.Elts {
+			if kv, ok := el.(*ast.KeyValueExpr); ok {
+				el = kv.Value
+			}
+			o, w := ix.classify(pkg, enc, el, depth)
+			whys = append(whys, w)
+			out = mergeOrigin(out, o)
+		}
+		if len(whys) == 0 {
+			return domain.OriginConstant, "composite literal"
+		}
+		return out, fmt.Sprintf("composite literal {%s}", strings.Join(whys, "; "))
 	case *ast.Ident:
 		return ix.classifyIdent(pkg, enc, e, depth)
 	case *ast.SelectorExpr:
@@ -211,77 +229,143 @@ func (ix *Index) classifyIdent(pkg *packages.Package, enc *ast.FuncDecl, id *ast
 		}
 		return merged, fmt.Sprintf("local %s <- {%s}", id.Name, strings.Join(whys, " | "))
 	}
-	// populated by a call taking &v — rows.Scan(&v), json.Unmarshal(data,&v):
-	// the variable is written in place, not assigned.
-	if o, why, ok := ix.populateOrigin(pkg, enc, obj, depth); ok {
+	// populated by a call rather than assigned: out-parameters f(..., &v),
+	// slice destinations io.ReadFull(r, buf), receiver mutations v.Write(x).
+	if o, why, ok := ix.populatedByCall(pkg, enc, obj, depth, ix.topEval(pkg, enc)); ok {
 		return o, fmt.Sprintf("local %s <- %s", id.Name, why)
 	}
 	return domain.OriginUnknown, fmt.Sprintf("identifier %s without resolvable initializer", id.Name)
 }
 
-// populateOrigin detects out-parameter writes: calls of the form
-// `f(..., &v)` inside the enclosing function where `v` is our variable.
-// DB-ish receivers (`rows.Scan(&v)`, `row.Scan(&v)`) → DATABASE;
-// unmarshal/decode families propagate the origin of the data argument;
-// grpc/stub out-params → INTERNAL_SERVICE.
-func (ix *Index) populateOrigin(pkg *packages.Package, enc *ast.FuncDecl, obj types.Object, depth int) (domain.DataOrigin, string, bool) {
+// slicePopulateFuncs maps pkgpath.Func to (dst, src) argument indexes:
+// calls that fill a byte slice or writer from a source reader —
+// `io.ReadFull(r, buf)`, `binary.Read(r, order, data)`, `io.Copy(w, r)`.
+// The destination's provenance becomes the source's.
+var slicePopulateFuncs = map[string][2]int{
+	"io.ReadFull":    {1, 0},
+	"io.ReadAtLeast": {1, 0},
+	"binary.Read":    {2, 0},
+	"io.Copy":        {0, 1},
+}
+
+// readIntoMethods are methods whose first argument is a destination slice
+// the receiver's data is written into: `conn.Read(buf)`, `r.ReadAt(b,off)`.
+var readIntoMethods = map[string]bool{
+	"Read": true, "ReadAt": true,
+}
+
+// recvMutateMethods are receiver-mutating calls that append/store their
+// argument's data into the receiver value: `buf.Write(x)`, `buf.ReadFrom(r)`.
+var recvMutateMethods = map[string]bool{
+	"Write": true, "WriteString": true, "WriteByte": true, "WriteRune": true,
+	"ReadFrom": true,
+}
+
+// populatedByCall detects writes that flow into v through a call rather
+// than an assignment:
+//
+//   - out-parameters `f(..., &v)`: DB/service scanners return their family
+//     origin; unmarshal/decode families propagate the source's origin;
+//   - slice destinations `io.ReadFull(r, buf)`, `x.Read(buf)`: v carries
+//     the source reader's origin;
+//   - receiver mutation `v.Write(arg)`, `v.ReadFrom(r)`: buffer-like
+//     accumulators take their argument's origin.
+//
+// Every matching call contributes; origins merge worst-wins. eval resolves
+// source expressions in the caller's frame (topEval for call-site args,
+// the callee evaluator for forward body traces).
+func (ix *Index) populatedByCall(pkg *packages.Package, enc *ast.FuncDecl, obj types.Object, depth int, eval exprEval) (domain.DataOrigin, string, bool) {
 	if enc == nil || enc.Body == nil || depth >= ix.hops() {
 		return "", "", false
 	}
-	var found *ast.CallExpr
+	var calls []*ast.CallExpr
 	ast.Inspect(enc.Body, func(n ast.Node) bool {
-		call, ok := n.(*ast.CallExpr)
-		if !ok || found != nil {
-			return !ok
+		if call, ok := n.(*ast.CallExpr); ok {
+			calls = append(calls, call)
 		}
+		return true
+	})
+	isObj := func(e ast.Expr) bool {
+		if u, ok := e.(*ast.UnaryExpr); ok && u.Op == token.AND {
+			e = u.X
+		}
+		id, ok := e.(*ast.Ident)
+		return ok && sameObject(pkg.TypesInfo.ObjectOf(id), obj)
+	}
+	var merged domain.DataOrigin
+	var whys []string
+	merge := func(o domain.DataOrigin, why string) {
+		merged = mergeOrigin(merged, o)
+		whys = append(whys, why)
+	}
+	for _, call := range calls {
+		fn, _ := calleeObject(pkg.TypesInfo, call.Fun).(*types.Func)
+		if fn == nil {
+			continue
+		}
+		// &v out-parameter
 		for _, a := range call.Args {
 			u, ok := a.(*ast.UnaryExpr)
 			if !ok || u.Op != token.AND {
 				continue
 			}
 			id, ok := u.X.(*ast.Ident)
-			if !ok {
+			if !ok || !sameObject(pkg.TypesInfo.ObjectOf(id), obj) {
 				continue
 			}
-			if pkg.TypesInfo.ObjectOf(id) == obj {
-				found = call
-				return false
+			switch {
+			case isDBFunc(fn):
+				merge(domain.OriginDatabase, fmt.Sprintf("%s populates &%s", fn.Name(), obj.Name()))
+			case isServiceCall(fn):
+				merge(domain.OriginInternalService, fmt.Sprintf("%s populates &%s", fn.Name(), obj.Name()))
+			default:
+				// unmarshal/decode: origin of the *source* propagates — for
+				// methods the source is the receiver (`dec.Decode(&x)`), for
+				// package funcs the data argument (`json.Unmarshal(data, &x)`).
+				switch fn.Name() {
+				case "Unmarshal", "Decode", "DecodeElement", "UnmarshalExact", "DecodeValues", "Read":
+					var src ast.Expr
+					if sig, ok := fn.Type().(*types.Signature); ok && sig.Recv() != nil {
+						if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
+							src = sel.X
+						}
+					} else if len(call.Args) > 0 {
+						src = call.Args[0]
+					}
+					if src != nil {
+						o, w := eval(src, depth+1)
+						merge(o, fmt.Sprintf("%s into &%s: %s", fn.Name(), obj.Name(), w))
+					}
+				}
 			}
 		}
-		return true
-	})
-	if found == nil {
-		return "", "", false
-	}
-	fn, _ := calleeObject(pkg.TypesInfo, found.Fun).(*types.Func)
-	if fn == nil {
-		return "", "", false
-	}
-	if isDBFunc(fn) {
-		return domain.OriginDatabase, fmt.Sprintf("%s populates &%s", fn.Name(), obj.Name()), true
-	}
-	if isServiceCall(fn) {
-		return domain.OriginInternalService, fmt.Sprintf("%s populates &%s", fn.Name(), obj.Name()), true
-	}
-	// unmarshal/decode: origin of the *source* propagates — for methods
-	// the source is the receiver (`dec.Decode(&x)`), for package funcs the
-	// data argument (`json.Unmarshal(data, &x)`).
-	switch fn.Name() {
-	case "Unmarshal", "Decode", "DecodeElement", "UnmarshalExact", "DecodeValues":
-		var src ast.Expr
-		if sig, ok := fn.Type().(*types.Signature); ok && sig.Recv() != nil {
-			if sel, ok := found.Fun.(*ast.SelectorExpr); ok {
-				src = sel.X
-			}
-		} else if len(found.Args) > 0 {
-			src = found.Args[0]
+		// slice/writer destination at a known position: f(src, ..., v, ...)
+		if idx, ok := slicePopulateFuncs[fn.Pkg().Path()+"."+fn.Name()]; ok &&
+			idx[0] < len(call.Args) && idx[1] < len(call.Args) && isObj(call.Args[idx[0]]) {
+			o, w := eval(call.Args[idx[1]], depth+1)
+			merge(o, fmt.Sprintf("%s into %s: %s", fn.Name(), obj.Name(), w))
+			continue
 		}
-		if src != nil {
-			o, why := ix.classify(pkg, enc, src, depth+1)
-			return o, fmt.Sprintf("%s into &%s: %s", fn.Name(), obj.Name(), why), true
+		sel, isSel := call.Fun.(*ast.SelectorExpr)
+		if !isSel {
+			continue
+		}
+		// x.Read(v): the destination slice receives the reader's origin.
+		if readIntoMethods[fn.Name()] && len(call.Args) > 0 && isObj(call.Args[0]) {
+			o, w := eval(sel.X, depth+1)
+			merge(o, fmt.Sprintf("%s into %s: %s", fn.Name(), obj.Name(), w))
+			continue
+		}
+		// v.Write(arg)/v.ReadFrom(r): the accumulator takes arg's origin.
+		if recvMutateMethods[fn.Name()] && len(call.Args) > 0 && isObj(sel.X) {
+			o, w := eval(call.Args[0], depth+1)
+			merge(o, fmt.Sprintf("%s.%s(%s)", obj.Name(), fn.Name(), w))
 		}
 	}
-	return "", "", false
+	if merged == "" {
+		return "", "", false
+	}
+	return merged, strings.Join(whys, "; "), true
 }
 
 // isDBFunc reports whether fn is a database/kv-store API — method on a
@@ -513,7 +597,11 @@ var configTagKeys = []string{"mapstructure", "env", "envconfig", "toml", "ini"}
 // fieldConfigTagged locates the field's declaration and reports whether
 // its struct tag marks a configuration-decoded value.
 func (ix *Index) fieldConfigTagged(field *types.Var) bool {
-	for _, pkg := range ix.pkgs {
+	pkgPath := ""
+	if field.Pkg() != nil {
+		pkgPath = field.Pkg().Path()
+	}
+	for _, pkg := range ix.memberScope(pkgPath) {
 		info := pkg.TypesInfo
 		for _, f := range pkg.Syntax {
 			found := false
@@ -527,7 +615,7 @@ func (ix *Index) fieldConfigTagged(field *types.Var) bool {
 					return true
 				}
 				for _, name := range fd.Names {
-					if info.ObjectOf(name) == types.Object(field) {
+					if sameObject(info.ObjectOf(name), field) {
 						found = true
 						if fd.Tag != nil {
 							tag := strings.Trim(fd.Tag.Value, "`")
@@ -565,12 +653,18 @@ type fieldWrite struct {
 	pos token.Pos
 }
 
-// fieldWriteSites scans product packages for writes to field:
+// fieldWriteSites scans the field's owner scope for writes to it:
 // `x.field = rhs` assignments (any receiver of the same struct type —
-// matched by field object identity) and `T{field: rhs}` literals.
+// matched by field object identity) and `T{field: rhs}` literals. Product
+// fields are matched in product packages; dependency fields in the loaded
+// dep sources (plus product callers).
 func (ix *Index) fieldWriteSites(field *types.Var) []fieldWrite {
 	var sites []fieldWrite
-	for _, pkg := range ix.pkgs {
+	pkgPath := ""
+	if field.Pkg() != nil {
+		pkgPath = field.Pkg().Path()
+	}
+	for _, pkg := range ix.memberScope(pkgPath) {
 		info := pkg.TypesInfo
 		if info == nil {
 			continue
@@ -599,7 +693,7 @@ func (ix *Index) fieldWriteSites(field *types.Var) []fieldWrite {
 						}
 					}
 				case *ast.KeyValueExpr:
-					if id, ok := n.Key.(*ast.Ident); ok && info.ObjectOf(id) == types.Object(field) {
+					if id, ok := n.Key.(*ast.Ident); ok && sameObject(info.ObjectOf(id), field) {
 						sites = append(sites, fieldWrite{pkg, enc, n.Value, n.Pos()})
 					}
 				}
@@ -633,7 +727,11 @@ func (ix *Index) fieldOrigin(field *types.Var, depth int) (domain.DataOrigin, st
 // fieldWriteSites.
 func (ix *Index) fieldAddressTaken(field *types.Var) bool {
 	found := false
-	for _, pkg := range ix.pkgs {
+	pkgPath := ""
+	if field.Pkg() != nil {
+		pkgPath = field.Pkg().Path()
+	}
+	for _, pkg := range ix.memberScope(pkgPath) {
 		info := pkg.TypesInfo
 		if info == nil {
 			continue
@@ -648,7 +746,7 @@ func (ix *Index) fieldAddressTaken(field *types.Var) bool {
 					return true
 				}
 				if se, ok := u.X.(*ast.SelectorExpr); ok &&
-					info.ObjectOf(se.Sel) == types.Object(field) {
+					sameObject(info.ObjectOf(se.Sel), field) {
 					found = true
 					return false
 				}
@@ -667,13 +765,20 @@ func (ix *Index) fieldAddressTaken(field *types.Var) bool {
 func writesField(info *types.Info, lhs ast.Expr, field *types.Var) bool {
 	found := false
 	ast.Inspect(lhs, func(n ast.Node) bool {
-		if se, ok := n.(*ast.SelectorExpr); ok && info.ObjectOf(se.Sel) == types.Object(field) {
+		if se, ok := n.(*ast.SelectorExpr); ok && sameObject(info.ObjectOf(se.Sel), field) {
 			found = true
 			return false
 		}
 		return !found
 	})
 	return found
+}
+
+// sameObject compares type objects by their package-qualified Id — pointer
+// equality fails across separate packages.Load calls (dependency packages
+// load on demand into the shared fileset with fresh object graphs).
+func sameObject(a, b types.Object) bool {
+	return a != nil && b != nil && a.Id() == b.Id()
 }
 
 func isHTTPRequest(t types.Type) bool {
@@ -713,6 +818,11 @@ func (ix *Index) classifyCall(pkg *packages.Package, enc *ast.FuncDecl, call *as
 		if o, why, ok := ix.httpClientOrigin(pkg, enc, fn, call, depth); ok {
 			return o, why
 		}
+		// Peer channel constructors and readers: a net.Conn/tls value and
+		// bytes read through it are peer-controlled by construction.
+		if peerSourceCallee(fn) {
+			return domain.OriginExternalUntrusted, "peer channel " + key
+		}
 		if o, ok := knownSourceFuncs[key]; ok {
 			return o, key
 		}
@@ -743,6 +853,35 @@ func (ix *Index) classifyCall(pkg *packages.Package, enc *ast.FuncDecl, call *as
 		return ix.classify(pkg, enc, call.Args[0], depth)
 	}
 	return domain.OriginUnknown, "unresolvable call"
+}
+
+// peerSourceCallee reports whether fn produces or reads peer-controlled
+// data: dial functions returning a connection, Accept on listeners, and
+// Read-family methods on net/tls receivers. The peer boundary is the
+// receiver type — a value of static type net.Conn carries wire bytes
+// regardless of how deep inside a library it is materialized.
+func peerSourceCallee(fn *types.Func) bool {
+	if sig, ok := fn.Type().(*types.Signature); ok && sig.Recv() != nil {
+		if n := recvNamed(sig.Recv().Type()); n != nil && n.Obj() != nil && n.Obj().Pkg() != nil {
+			switch n.Obj().Pkg().Path() {
+			case "net", "crypto/tls":
+				switch fn.Name() {
+				case "Read", "ReadFrom", "Accept", "AcceptTCP", "AcceptUnix":
+					return true
+				}
+			}
+		}
+	}
+	switch fn.Pkg().Path() {
+	case "net":
+		return strings.HasPrefix(fn.Name(), "Dial")
+	case "crypto/tls":
+		switch fn.Name() {
+		case "Dial", "DialWithDialer", "Client", "Server":
+			return true
+		}
+	}
+	return false
 }
 
 // httpClientOrigin refines outbound HTTP calls: `http.Get(url)`,
@@ -937,6 +1076,15 @@ func (ix *Index) evalCalleeExpr(dp *packages.Package, decl *ast.FuncDecl, e ast.
 			if merged != "" {
 				return merged, "local " + v.Name + " <- merged assignments"
 			}
+		}
+		// Call-populated locals inside the callee: io.ReadFull(r, buf),
+		// binary.Read(r, _, &size), buf.Write(x) — same rules as the
+		// caller-frame scan, evaluated in the callee's frame.
+		inner := func(e ast.Expr, d int) (domain.DataOrigin, string) {
+			return ix.evalCalleeExpr(dp, decl, e, argAt, evalArg, d)
+		}
+		if o, w, ok := ix.populatedByCall(dp, decl, dp.TypesInfo.ObjectOf(v), depth, inner); ok {
+			return o, "local " + v.Name + " <- " + w
 		}
 		return domain.OriginUnknown, "unresolvable ident " + v.Name
 	case *ast.ParenExpr:
@@ -1218,6 +1366,8 @@ var passthroughFuncs = map[string]int{
 	"io.ReadAll":                     0,
 	"io/ioutil.ReadAll":              0,
 	"bufio.NewScanner":               0,
+	"bufio.NewReader":                0,
+	"bufio.NewReaderSize":            0,
 	"bytes.NewReader":                0,
 	"bytes.NewBuffer":                0,
 	"bytes.NewBufferString":          0,
@@ -1247,13 +1397,15 @@ func (ix *Index) traceParam(pkg *packages.Package, enc *ast.FuncDecl, v *types.V
 	if paramIdx < 0 {
 		return domain.OriginUnknown, "parameter index not found"
 	}
-	// callers of enclosing function
+	// callers of enclosing function — product scope for product code; for
+	// dependency functions the dep package plus product roots (peer-driven
+	// internals are invoked entirely inside the dep).
 	var encRef domain.SymbolRef
 	if pkg.Types != nil {
 		encRef = funcSymbolRef(pkg, enc)
 	}
-	refs, err := ix.findCallSites(context.Background(), encRef)
-	if err != nil || len(refs) == 0 {
+	refs := ix.findCallSitesIn(ix.callerScope(pkg), encRef)
+	if len(refs) == 0 {
 		return domain.OriginUnknown, fmt.Sprintf("no static callers of %s found", enc.Name.Name)
 	}
 	var merged domain.DataOrigin

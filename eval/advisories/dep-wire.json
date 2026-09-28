@@ -1,0 +1,16 @@
+{
+  "id": "GO-EVAL-WIRE",
+  "summary": "Unbounded allocation in dep/vuln.readRecord when parsing peer-supplied wire frames",
+  "details": "The record parser allocates from a wire-controlled size while decoding malformed input from a remote peer.",
+  "affected": [
+    {
+      "package": {"name": "example.com/dep", "ecosystem": "Go"},
+      "ranges": [{"type": "SEMVER", "events": [{"introduced": "0"}, {"fixed": "1.0.1"}]}],
+      "ecosystem_specific": {
+        "imports": [{"path": "example.com/dep/vuln", "symbols": ["readRecord"]}]
+      }
+    }
+  ],
+  "database_specific": {"cwe_ids": ["CWE-770"]},
+  "references": [{"type": "ADVISORY", "url": "https://example.com/adv/GO-EVAL-WIRE"}]
+}

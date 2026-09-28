@@ -52,6 +52,13 @@ func (ServerTransportInput) Evaluate(cond domain.Condition, c *domain.AnalysisCa
 		}
 	}
 	if len(frames) == 0 {
+		// Dep-internal argument provenance recorded for this condition
+		// outranks the structural heuristic below: a resolved origin —
+		// external or not — is decided by the real trace, while a trace
+		// that stayed UNKNOWN everywhere leaves the heuristic as fallback.
+		if hasResolvedFlows(c, cond.ID) {
+			return ArgumentOrigin{}.Evaluate(cond, c)
+		}
 		// Client side: the product calls the vulnerable module's API, so
 		// unexported internals run inside its peer-driven read path — input
 		// is controlled by the remote peer (broker/server), not product code.
@@ -114,6 +121,12 @@ func describesRemoteInput(cond domain.Condition, v domain.Vulnerability) bool {
 		remoteInputRe.MatchString(v.Description)
 }
 
+// WantsPeerInput exposes the peer-input predicate for the evidence
+// collector's dep-scope gate — same semantics as wantsPeerInput.
+func WantsPeerInput(cond domain.Condition, v domain.Vulnerability) bool {
+	return wantsPeerInput(cond, v)
+}
+
 // wantsPeerInput reports whether the condition is about peer-controlled
 // input. An explicit input_source param outranks the description regex —
 // patterns declare peer input even when the condition text carries no
@@ -123,6 +136,18 @@ func wantsPeerInput(cond domain.Condition, v domain.Vulnerability) bool {
 		return true
 	}
 	return describesRemoteInput(cond, v)
+}
+
+// hasResolvedFlows reports whether any data flow recorded for this
+// condition resolved to a concrete origin — dep-internal traces with a
+// real answer take precedence over the unexported+peer-driven heuristic.
+func hasResolvedFlows(c *domain.AnalysisCase, id domain.ConditionID) bool {
+	for _, f := range c.EvidenceGraph.DataFlows {
+		if f.ConditionID == id && f.Origin != "" && f.Origin != domain.OriginUnknown {
+			return true
+		}
+	}
+	return false
 }
 
 func frameName(fr domain.CallSite) string {

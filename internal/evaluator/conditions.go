@@ -344,6 +344,12 @@ func moduleUsageEvidence(c *domain.AnalysisCase) []domain.EvidenceID {
 	return ids
 }
 
+// SymbolExported reports whether the subject can be named by product code —
+// the inverse of the unexported check used for peer-driven internals.
+func SymbolExported(s domain.SymbolRef) bool {
+	return !allUnexported([]domain.SymbolRef{s})
+}
+
 // allUnexported reports whether every subject symbol is package-internal —
 // product code (and reflect/plugin lookups) cannot name them directly.
 func allUnexported(subjects []domain.SymbolRef) bool {

@@ -225,6 +225,36 @@
    "expect_claims": {
     "C-VALID": "UNKNOWN"
    }
+  },
+  {
+   "id": "wire-dep-peer",
+   "vuln": "GO-EVAL-WIRE",
+   "vuln_file": "advisories/dep-wire.json",
+   "repo": "../testdata/wireprod",
+   "root_causes": [
+    "example.com/dep/vuln.readRecord"
+   ],
+   "expect": [
+    "EXPLOITABLE"
+   ],
+   "expect_claims": {
+    "C-PEER-INPUT": "TRUE"
+   }
+  },
+  {
+   "id": "wire-dep-const",
+   "vuln": "GO-EVAL-WCONST",
+   "vuln_file": "advisories/dep-wire-const.json",
+   "repo": "../testdata/wireprod",
+   "root_causes": [
+    "example.com/dep/vuln.parseConstant"
+   ],
+   "expect": [
+    "NO_EXPLOIT_PATH_FOUND"
+   ],
+   "expect_claims": {
+    "C-PEER-INPUT": "FALSE"
+   }
   }
  ]
 }

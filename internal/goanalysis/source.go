@@ -38,9 +38,13 @@ type Index struct {
 	// traceSeen, when non-nil during TraceArgument, marks local vars whose
 	// assignment merge is in progress — breaks self-referential cycles
 	// (x = x + n re-entering x's assignments).
-	traceSeen    map[types.Object]bool
-	mu           sync.Mutex // serializes queries; shared across cases in scan mode
-	pkgs         []*packages.Package
+	traceSeen map[types.Object]bool
+	mu        sync.Mutex // serializes queries; shared across cases in scan mode
+	pkgs      []*packages.Package
+	// extraPkgs caches dependency packages loaded on demand via loadExtra
+	// (keyed by package path), so dep-internal scans (call sites, provenance)
+	// can reuse their syntax without re-running packages.Load.
+	extraPkgs    map[string][]*packages.Package
 	fset         *token.FileSet
 	loaded       bool
 	loadErr      error
@@ -89,9 +93,15 @@ func (ix *Index) load(ctx context.Context) error {
 
 // loadExtra loads additional root patterns (e.g. the vulnerable dependency
 // package) into the same fileset so its syntax is available for reading.
+// Results are cached per pattern: dep packages are reused by dep-internal
+// call-site and provenance scans.
 func (ix *Index) loadExtra(ctx context.Context, patterns ...string) ([]*packages.Package, error) {
 	if err := ix.load(ctx); err != nil {
 		return nil, err
+	}
+	key := strings.Join(patterns, "|")
+	if pkgs, ok := ix.extraPkgs[key]; ok {
+		return pkgs, nil
 	}
 	cfg := &packages.Config{
 		Mode: loadMode,
@@ -102,7 +112,52 @@ func (ix *Index) loadExtra(ctx context.Context, patterns ...string) ([]*packages
 	if len(ix.Build.BuildTags) > 0 {
 		cfg.BuildFlags = []string{"-tags", strings.Join(ix.Build.BuildTags, ",")}
 	}
-	return packages.Load(cfg, patterns...)
+	pkgs, err := packages.Load(cfg, patterns...)
+	if err != nil {
+		return nil, err
+	}
+	if ix.extraPkgs == nil {
+		ix.extraPkgs = map[string][]*packages.Package{}
+	}
+	ix.extraPkgs[key] = pkgs
+	return pkgs, nil
+}
+
+// extrasFor returns cached dependency packages matching pkgPath (loaded
+// via loadExtra), or nil when the package was never loaded.
+func (ix *Index) extrasFor(pkgPath string) []*packages.Package {
+	var out []*packages.Package
+	for _, pkgs := range ix.extraPkgs {
+		for _, p := range pkgs {
+			if p.PkgPath == pkgPath {
+				out = append(out, p)
+			}
+		}
+	}
+	return out
+}
+
+// allExtras returns every dependency package loaded so far — used by
+// dep-internal scans that must look beyond product roots.
+func (ix *Index) allExtras() []*packages.Package {
+	var out []*packages.Package
+	for _, pkgs := range ix.extraPkgs {
+		out = append(out, pkgs...)
+	}
+	return out
+}
+
+// isProductPkg reports whether pkg is one of the ./... product roots.
+// Dependency packages (module cache, replaced local deps) are not product
+// even when their path looks similar — provenance scans use this to keep
+// product-scope and dep-scope callers apart.
+func (ix *Index) isProductPkg(pkg *packages.Package) bool {
+	for _, p := range ix.pkgs {
+		if p == pkg {
+			return true
+		}
+	}
+	return false
 }
 
 // Loaded reports whether the index can answer structural queries; if false,
@@ -343,8 +398,12 @@ func (ix *Index) findCallSites(ctx context.Context, ref domain.SymbolRef) ([]Cal
 	if err := ix.load(ctx); err != nil {
 		return nil, err
 	}
+	return ix.findCallSitesIn(ix.pkgs, ref), nil
+}
+
+func (ix *Index) findCallSitesIn(pkgs []*packages.Package, ref domain.SymbolRef) []CallSiteRef {
 	var out []CallSiteRef
-	for _, pkg := range ix.pkgs {
+	for _, pkg := range pkgs {
 		info := pkg.TypesInfo
 		if info == nil {
 			continue
@@ -367,7 +426,62 @@ func (ix *Index) findCallSites(ctx context.Context, ref domain.SymbolRef) ([]Cal
 			})
 		}
 	}
+	return out
+}
+
+// FindDepCallers locates call sites of the symbol inside the dependency
+// packages themselves — for unexported subjects that product code cannot
+// name (peer-driven library internals). The subject's package is loaded on
+// demand; unexported callers can only live in that same package.
+func (ix *Index) FindDepCallers(ctx context.Context, ref domain.SymbolRef) ([]domain.CallSite, error) {
+	ix.mu.Lock()
+	defer ix.mu.Unlock()
+	refs, err := ix.findDepCallSites(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]domain.CallSite, 0, len(refs))
+	for _, r := range refs {
+		out = append(out, r.Site)
+	}
 	return out, nil
+}
+
+func (ix *Index) findDepCallSites(ctx context.Context, ref domain.SymbolRef) ([]CallSiteRef, error) {
+	if _, err := ix.loadExtra(ctx, ref.Package); err != nil {
+		return nil, err
+	}
+	return ix.findCallSitesIn(ix.extrasFor(ref.Package), ref), nil
+}
+
+// callerScope returns the packages to search for callers of a function
+// declared in pkg: product packages for product code; for dependency code
+// the union of the dep package and product roots (an exported dep function
+// may be invoked from either side).
+func (ix *Index) callerScope(pkg *packages.Package) []*packages.Package {
+	if ix.isProductPkg(pkg) {
+		return ix.pkgs
+	}
+	return append(append([]*packages.Package{}, ix.allExtras()...), ix.pkgs...)
+}
+
+// isProductPath reports whether pkgPath is one of the product roots.
+func (ix *Index) isProductPath(pkgPath string) bool {
+	for _, p := range ix.pkgs {
+		if p.PkgPath == pkgPath {
+			return true
+		}
+	}
+	return false
+}
+
+// memberScope returns the packages to scan for writes to a struct field
+// declared in pkgPath — the same product-vs-dep rule as callerScope.
+func (ix *Index) memberScope(pkgPath string) []*packages.Package {
+	if ix.isProductPath(pkgPath) {
+		return ix.pkgs
+	}
+	return append(append([]*packages.Package{}, ix.allExtras()...), ix.pkgs...)
 }
 
 func callIsSymbol(info *types.Info, fun ast.Expr, ref domain.SymbolRef) bool {
