@@ -1,8 +1,9 @@
 {
-  "version": 1,
+  "schema_version": 1,
   "language": "go",
   "name": "builtin",
   "labels": ["builtin", "upstream"],
+  "data_version": "2026-09-28",
   "source_funcs": {
     "os.Getenv": "CONFIGURATION",
     "os.ReadFile": "CONFIGURATION",

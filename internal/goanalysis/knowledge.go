@@ -2,7 +2,9 @@ package goanalysis
 
 import (
 	"bytes"
+	"crypto/sha256"
 	_ "embed"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -73,6 +75,9 @@ type Knowledge struct {
 	// ("pkg.Symbol" → arg index); -1 when the address lives outside the
 	// call (http.Server.Addr field, Serve(listener)).
 	ListenAddrArg map[string]int
+	// Sources records which files built this base ("name@data_version"),
+	// in merge order — populated by Merge, not part of the JSON schema.
+	Sources []string
 }
 
 // knowledge.json is the built-in ecosystem knowledge base — the same
@@ -104,7 +109,7 @@ func DefaultKnowledge() *Knowledge {
 // like.
 func (k *Knowledge) AsFile() KnowledgeFile {
 	return KnowledgeFile{
-		Version:             KnowledgeFileVersion,
+		SchemaVersion:       KnowledgeSchemaVersion,
 		Language:            knowledgeLanguage,
 		SourceFuncs:         originStrings(k.SourceFuncs),
 		PassthroughFuncs:    k.PassthroughFuncs,
@@ -133,11 +138,21 @@ func (ix *Index) kb() *Knowledge {
 	return ix.KB
 }
 
-// KnowledgeFileVersion is the schema level this build writes and the
-// newest it accepts: files without a version read as v1, files above it
-// fail to load rather than misparse a schema they predate. Bump it when
-// the format changes (e.g. per-language sections for non-Go analyzers).
-const KnowledgeFileVersion = 1
+// Knowledge returns the index's effective knowledge base, installing
+// the defaults on first use — for reporting which sources/digest an
+// analysis ran against.
+func (ix *Index) Knowledge() *Knowledge {
+	ix.mu.Lock()
+	defer ix.mu.Unlock()
+	return ix.kb()
+}
+
+// KnowledgeSchemaVersion is the schema level this build writes and the
+// newest it accepts: files without schema_version read as v1, files
+// above it fail to load rather than misparse a schema they predate.
+// Bump it when the format changes (e.g. per-language sections for
+// non-Go analyzers).
+const KnowledgeSchemaVersion = 1
 
 // knowledgeLanguage tags files for this analyzer family — a file
 // declaring another language is rejected instead of merging keys the
@@ -148,8 +163,8 @@ const knowledgeLanguage = "go"
 // field mirrors the same-named Knowledge field; files only add entries,
 // never replace them.
 type KnowledgeFile struct {
-	// Version is the file's schema level — absent means v1.
-	Version int `json:"version,omitempty"`
+	// SchemaVersion is the file format level — absent means v1.
+	SchemaVersion int `json:"schema_version,omitempty"`
 	// Language names the analyzer family the file targets ("go").
 	// Absent reads as this analyzer's language for compatibility.
 	Language string `json:"language,omitempty"`
@@ -157,8 +172,12 @@ type KnowledgeFile struct {
 	// embedded defaults declare name=builtin, labels=[builtin,upstream];
 	// an org overlay might use labels=[corp]. They do not affect merge
 	// semantics.
-	Name                string             `json:"name,omitempty"`
-	Labels              []string           `json:"labels,omitempty"`
+	Name   string   `json:"name,omitempty"`
+	Labels []string `json:"labels,omitempty"`
+	// DataVersion marks the revision of the table data itself — bump it
+	// (a date works) when entries change. Recorded into Knowledge.Sources
+	// so reports cite the exact data revision they ran against.
+	DataVersion         string             `json:"data_version,omitempty"`
 	SourceFuncs         map[string]string  `json:"source_funcs"`
 	PassthroughFuncs    map[string]int     `json:"passthrough_funcs"`
 	PassthroughMethods  map[string]bool    `json:"passthrough_methods"`
@@ -197,20 +216,20 @@ func parseKnowledgeFile(r io.Reader) (KnowledgeFile, error) {
 	if err != nil {
 		return KnowledgeFile{}, err
 	}
-	// Version and language are checked before the strict decode: a file
-	// written for a newer schema or another analyzer must report that,
-	// not a misleading "unknown field".
+	// Schema version and language are checked before the strict decode:
+	// a file written for a newer schema or another analyzer must report
+	// that, not a misleading "unknown field".
 	var head struct {
-		Version  int    `json:"version"`
-		Language string `json:"language"`
+		SchemaVersion int    `json:"schema_version"`
+		Language      string `json:"language"`
 	}
 	if err := json.Unmarshal(b, &head); err != nil {
 		return KnowledgeFile{}, err
 	}
-	if head.Version < 0 || head.Version > KnowledgeFileVersion {
+	if head.SchemaVersion < 0 || head.SchemaVersion > KnowledgeSchemaVersion {
 		return KnowledgeFile{}, fmt.Errorf(
-			"unsupported knowledge file version %d (this build accepts up to %d)",
-			head.Version, KnowledgeFileVersion)
+			"unsupported knowledge schema version %d (this build accepts up to %d)",
+			head.SchemaVersion, KnowledgeSchemaVersion)
 	}
 	if head.Language != "" && head.Language != knowledgeLanguage {
 		return KnowledgeFile{}, fmt.Errorf(
@@ -287,6 +306,9 @@ func validOrigin(o string) bool {
 // overrides, so a file may add knowledge but never rewrite it.
 func (k *Knowledge) Merge(f KnowledgeFile) error {
 	k.init()
+	if src := f.sourceDescriptor(); src != "" && !slices.Contains(k.Sources, src) {
+		k.Sources = append(k.Sources, src)
+	}
 	join := func(field string, errs []error) error {
 		if len(errs) > 0 {
 			return fmt.Errorf("%s: %w", field, errs[0])
@@ -339,6 +361,32 @@ func (k *Knowledge) Merge(f KnowledgeFile) error {
 		k.ListenerPrimitives = append(k.ListenerPrimitives, p)
 	}
 	return nil
+}
+
+// sourceDescriptor identifies a file for Knowledge.Sources — "name@data_version"
+// when both are declared, whichever is present otherwise.
+func (f KnowledgeFile) sourceDescriptor() string {
+	switch {
+	case f.Name != "" && f.DataVersion != "":
+		return f.Name + "@" + f.DataVersion
+	case f.Name != "":
+		return f.Name
+	default:
+		return f.DataVersion
+	}
+}
+
+// Digest is a content hash of the effective tables — the canonical
+// file-schema rendering hashed with SHA-256. Reports cite it so a
+// verdict is verifiable against a concrete knowledge content, not just
+// a version label.
+func (k *Knowledge) Digest() string {
+	b, err := json.Marshal(k.AsFile())
+	if err != nil {
+		return "sha256:unmarshalable"
+	}
+	sum := sha256.Sum256(b)
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 // init allocates nil maps so Merge works on a zero-value Knowledge too.

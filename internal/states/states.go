@@ -275,6 +275,15 @@ func (h CollectEvidence) Run(ctx context.Context, c *domain.AnalysisCase) (workf
 		h.runGovulncheck(ctx, c)
 	}
 	if h.Source != nil {
+		// Pin the knowledge base the scans consulted — sources +
+		// content digest let a report be checked against the exact
+		// semantic revision that produced it.
+		kb := h.Source.Knowledge()
+		c.EvidenceGraph.AddRuntimeEvidence(domain.Evidence{
+			Quality: domain.QualityDeterministic,
+			Source:  "knowledge base",
+			Content: fmt.Sprintf("sources=%v digest=%s", kb.Sources, kb.Digest()),
+		})
 		h.runSourceAnalysis(ctx, c)
 		h.runListenerScan(ctx, c)
 		h.runModuleUsage(ctx, c)

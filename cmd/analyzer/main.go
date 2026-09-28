@@ -144,6 +144,10 @@ func loadKnowledgeBase(path string) (*goanalysis.Knowledge, error) {
 	if err != nil {
 		return nil, fmt.Errorf("knowledge: %w", err)
 	}
+	// Files without a declared name identify in reports by their path.
+	if f.Name == "" {
+		f.Name = filepath.Base(path)
+	}
 	kb := goanalysis.DefaultKnowledge()
 	if err := kb.Merge(f); err != nil {
 		return nil, fmt.Errorf("knowledge: %w", err)

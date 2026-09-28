@@ -40,8 +40,8 @@ func TestDefaultKnowledgeEmbedded(t *testing.T) {
 	if len(f.SourceFuncs) != len(kb.SourceFuncs) || len(f.ListenerPrimitives) != len(kb.ListenerPrimitives) {
 		t.Fatal("AsFile round-trip lost entries")
 	}
-	if f.Version != KnowledgeFileVersion || f.Language != "go" {
-		t.Fatalf("dump meta version=%d language=%q", f.Version, f.Language)
+	if f.SchemaVersion != KnowledgeSchemaVersion || f.Language != "go" {
+		t.Fatalf("dump meta schema_version=%d language=%q", f.SchemaVersion, f.Language)
 	}
 	// name/labels are informational — they must not break parsing.
 	if _, err := parseKnowledgeFile(strings.NewReader(
@@ -52,6 +52,37 @@ func TestDefaultKnowledgeEmbedded(t *testing.T) {
 	// are no-ops, only rewrites conflict.
 	if err := DefaultKnowledge().Merge(f); err != nil {
 		t.Fatalf("dump re-merge must be a no-op: %v", err)
+	}
+}
+
+// The digest pins the effective content for reports: deterministic for
+// the same tables, changed by any merged entry; Sources name the files
+// that contributed.
+func TestKnowledgeProvenance(t *testing.T) {
+	base := DefaultKnowledge()
+	if !slices.Contains(base.Sources, "builtin@2026-09-28") {
+		t.Fatalf("sources=%v", base.Sources)
+	}
+	d1 := base.Digest()
+	if !strings.HasPrefix(d1, "sha256:") || len(d1) != len("sha256:")+64 {
+		t.Fatalf("digest=%q", d1)
+	}
+	if d2 := DefaultKnowledge().Digest(); d2 != d1 {
+		t.Fatalf("digest not deterministic: %s vs %s", d1, d2)
+	}
+	f, err := LoadKnowledgeFile(writeKnowledge(t,
+		`{"name": "corp", "data_version": "2026-10-01", "source_funcs": {"x.Y": "DATABASE"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := base.Merge(f); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(base.Sources, "corp@2026-10-01") {
+		t.Fatalf("sources=%v", base.Sources)
+	}
+	if base.Digest() == d1 {
+		t.Fatal("merge must change the digest")
 	}
 }
 
@@ -104,11 +135,11 @@ func TestKnowledgeExtendSourceFuncs(t *testing.T) {
 func TestKnowledgeFileValidation(t *testing.T) {
 	for _, tc := range []struct{ name, body, want string }{
 		{"unknown key", `{"source_funcz": {}}`, "unknown field"},
-		{"future version", `{"version": 99}`, "unsupported knowledge file version"},
+		{"future version", `{"schema_version": 99}`, "unsupported knowledge schema version"},
 		// A newer schema's fields must surface as a version error, not
 		// a misleading unknown-field one.
-		{"future schema fields", `{"version": 2, "java": {}}`, "unsupported knowledge file version"},
-		{"negative version", `{"version": -1}`, "unsupported knowledge file version"},
+		{"future schema fields", `{"schema_version": 2, "java": {}}`, "unsupported knowledge schema version"},
+		{"negative version", `{"schema_version": -1}`, "unsupported knowledge schema version"},
 		{"wrong language", `{"language": "java"}`, `targets language "java"`},
 		{"bad origin", `{"source_funcs": {"x.Y": "TRUSTED"}}`, "unknown data origin"},
 		{"negative passthrough", `{"passthrough_funcs": {"x.Y": -1}}`, "negative"},

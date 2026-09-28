@@ -119,11 +119,15 @@ func DefaultKnowledge() *Knowledge
 дефолты+расширение) как шаблон для своего файла и валидирует его.
 Мерж аддитивный с same-value-допуском: повтор записи с тем же
 значением — no-op (дамп базы можно править и подавать обратно),
-переопределение значения — ошибка. Файл версионируется (`"version": 1`,
-peek до strict-decode — будущая схема даёт ошибку версии, не unknown
-field) и маркируется метаданными: `"language"` — семейство анализатора
-(чужой язык → ошибка), `"name"`/`"labels"` — свободные provenance-теги
-(builtin/upstream/corp), информационные. Помимо полей плана таблицы покрыли
+переопределение значения — ошибка. Файл версионируется
+(`"schema_version"`, peek до strict-decode — будущая схема даёт ошибку
+версии, не unknown field) и маркируется метаданными: `"language"` —
+семейство анализатора (чужой язык → ошибка), `"name"`/`"labels"` —
+свободные provenance-теги (builtin/upstream/corp), `"data_version"` —
+ревизия данных. `Knowledge.Sources` собирает `name@data_version` всех
+смёрженных файлов, `Digest()` — sha256 канонического содержимого; пара
+пишется в отчёт как RUNTIME evidence («knowledge base») — вердикт
+привязан к конкретной ревизии базы. Помимо полей плана таблицы покрыли
 также `PopulateNames`, `DBPkgs`/`DBPkgHints` и `ListenerPrimitives`
 (список `domain.SymbolRef`) — все семантические наборы goanalysis за
 KB. Юнит-тест расширения на фикстуре `testdata/kbprod` (origin
