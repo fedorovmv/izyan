@@ -18,7 +18,18 @@
   пропускает уже-FALSE. В `EvaluateConditions` fallback'а нет
   намеренно — LLM-TRUE иначе вытесняет доказуемый det-FALSE.
 - Repair только ослабляет (demotion): high → demotion, medium/low —
-  advisory. Демоция VERIFIED-FALSE → UNKNOWN легитимна, но история
+  advisory. Демоция VERIFIED-FALSE → UNKNOWN легитимна только по
+  артефакту, названному в `problem` и записанному как ослабляющий для
+  этого claim'а: dynamic-маркер или site `file.go:line` из nv.Limitations
+  (точное file:line-совпадение), traced origin из flows, claim-linked
+  evidence-id, либо dangling evidence-ссылка (claim- или nv-evidence;
+  Structural поднимает finding по обеим). Не считаются артефактом:
+  `required_check` (желаемое, не найденное), nv.Notes (позитивный итог и
+  dismissed-маркеры — «unrelated go:linkname pragma(s) ignored»),
+  content evidence (dismissed-маркеры, benign-прованс), validations и
+  Covers (покрытие, не опровержение), explanation/limitations claim'а
+  (rationale/process-текст; rejected finding не может цитировать сам
+  себя). Без артефакта — advisory concern, claim стоит. История
   falsifier+verification сохраняется и видна в отчёте
   (`VERIFIED (demoted)`).
 - Gap-planner действия per-arg (`f.Arg`); `ReplaceDataFlow` матчит

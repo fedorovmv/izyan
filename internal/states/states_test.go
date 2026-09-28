@@ -1427,6 +1427,280 @@ func TestReviewRepairLoopConverges(t *testing.T) {
 	}
 }
 
+// A VERIFIED FALSE falls only to a finding that cites a concrete
+// counterexample artifact already present in the claim's own record
+// (dynamic marker, uncovered site, traced origin, linked evidence) — or
+// to a structural defect like a dangling evidence reference. A semantic
+// reinterpretation — e.g. the twice-observed "contradicts the root
+// cause" misread — or a merely proposed check is downgraded to advisory
+// and the deterministic negative stands.
+func TestRepairVerifiedFalseArtifactGate(t *testing.T) {
+	cases := []struct {
+		name     string
+		nv       *domain.NegativeVerification
+		prob     string
+		req      string
+		findings []domain.ReviewFinding // replaces the single prob/req finding when set
+		setup    func(c *domain.AnalysisCase, cl *domain.Claim)
+		want     domain.ClaimResult
+		wantV    bool // want a "reviewer concern" advisory on the claim
+	}{
+		{name: "semantic misread keeps FALSE",
+			nv:   &domain.NegativeVerification{Status: domain.NegativeVerified},
+			prob: "FALSE claim contradicts the root cause mechanism",
+			want: domain.ClaimFalse, wantV: true},
+		{name: "bare english word keeps FALSE",
+			nv:   &domain.NegativeVerification{Status: domain.NegativeVerified},
+			prob: "the conclusion is unsafe to rely on",
+			want: domain.ClaimFalse, wantV: true},
+		{name: "proposed check keeps FALSE",
+			nv:   &domain.NegativeVerification{Status: domain.NegativeVerified},
+			prob: "sink argument may be peer-controlled",
+			req:  "trace the sink argument to EXTERNAL_UNTRUSTED origin",
+			want: domain.ClaimFalse, wantV: true},
+		{name: "marker named but never recorded keeps FALSE",
+			nv:   &domain.NegativeVerification{Status: domain.NegativeVerified},
+			prob: "func_value marker lets the symbol escape the static call graph",
+			want: domain.ClaimFalse, wantV: true},
+		{name: "dismissed linkname keeps FALSE",
+			nv: &domain.NegativeVerification{
+				Status: domain.NegativeVerified,
+				Notes: "all 1 call site(s) across 1 subject(s) pass non-external input;" +
+					" 1 unrelated go:linkname pragma(s) ignored",
+				EvidenceIDs: []domain.EvidenceID{"EV-001"},
+			},
+			prob: "the go:linkname pragma at link.go:9 provides a path to the symbol",
+			setup: func(c *domain.AnalysisCase, _ *domain.Claim) {
+				c.EvidenceGraph.AddEvidence(domain.Evidence{
+					ID: "EV-001", Kind: domain.EvidenceSourceSnippet,
+					Source:  "go-analysis ScanDynamic",
+					Content: "linkname at link.go:9: //go:linkname local upstream/pkg.handler",
+				})
+			},
+			want: domain.ClaimFalse, wantV: true},
+		{name: "recorded marker limitation demotes",
+			nv: &domain.NegativeVerification{
+				Status: domain.NegativeVerified,
+				Limitations: []string{
+					"reflect usage in product widens the call graph; static negative verification is weaker",
+				},
+			},
+			prob: "reflect usage in product widens the call graph; static negative verification is weaker",
+			want: domain.ClaimUnknown},
+		{name: "site named but never recorded keeps FALSE",
+			nv:   &domain.NegativeVerification{Status: domain.NegativeVerified},
+			prob: "uncovered write site at server.go:41 reaches the guarded field",
+			want: domain.ClaimFalse, wantV: true},
+		{name: "marker site demotes",
+			nv: &domain.NegativeVerification{
+				Status: domain.NegativeVerified,
+				Limitations: []string{
+					"reflect.Value.Set* call at /repo/server.go:41 can write fields invisibly; guard coverage is weaker",
+				},
+			},
+			prob: "uncovered write site at server.go:41 reaches the guarded field",
+			want: domain.ClaimUnknown},
+		{name: "recorded site suffix demotes",
+			nv: &domain.NegativeVerification{
+				Status: domain.NegativeVerified,
+				Limitations: []string{
+					"reflect.Value.Set* call at /repo/server.go:41 can write fields invisibly; guard coverage is weaker",
+				},
+			},
+			prob: "uncovered write site at /repo/server.go:41 reaches the guarded field",
+			want: domain.ClaimUnknown},
+		{name: "backtick-quoted site demotes",
+			nv: &domain.NegativeVerification{
+				Status: domain.NegativeVerified,
+				Limitations: []string{
+					"reflect.Value.Set* call at server.go:41 can write fields invisibly; guard coverage is weaker",
+				},
+			},
+			prob: "uncovered write site at `server.go:41` reaches the guarded field",
+			want: domain.ClaimUnknown},
+		{name: "covered site keeps FALSE",
+			nv:   &domain.NegativeVerification{Status: domain.NegativeVerified},
+			prob: "uncovered write site at server.go:41 reaches the guarded field",
+			setup: func(c *domain.AnalysisCase, _ *domain.Claim) {
+				c.EvidenceGraph.AddDataFlows(domain.DataFlow{
+					ConditionID: "C-1",
+					Sink:        domain.CallSite{File: "server.go", Line: 41},
+				})
+				c.EvidenceGraph.AddValidations(domain.Validation{
+					CallSite: domain.CallSite{File: "guard.go", Line: 12},
+					Property: "cond=C-1 bound", Guard: true,
+					Covers: &domain.CallSite{File: "server.go", Line: 41},
+				})
+			},
+			want: domain.ClaimFalse, wantV: true},
+		{name: "line-prefix site keeps FALSE",
+			nv: &domain.NegativeVerification{
+				Status: domain.NegativeVerified,
+				Limitations: []string{
+					"reflect.Value.Set* call at /repo/server.go:410 can write fields invisibly; guard coverage is weaker",
+				},
+			},
+			prob: "uncovered write site at server.go:41 reaches the guarded field",
+			want: domain.ClaimFalse, wantV: true},
+		{name: "origin named but never traced keeps FALSE",
+			nv:   &domain.NegativeVerification{Status: domain.NegativeVerified},
+			prob: "the sink argument traces to EXTERNAL_UNTRUSTED input",
+			want: domain.ClaimFalse, wantV: true},
+		{name: "recorded external origin demotes",
+			nv:   &domain.NegativeVerification{Status: domain.NegativeVerified},
+			prob: "the sink argument traces to EXTERNAL_UNTRUSTED input",
+			setup: func(c *domain.AnalysisCase, _ *domain.Claim) {
+				c.EvidenceGraph.AddDataFlows(domain.DataFlow{
+					ConditionID: "C-1",
+					Origin:      domain.OriginExternalUntrusted,
+				})
+			},
+			want: domain.ClaimUnknown},
+		{name: "claim-linked evidence id demotes",
+			nv: &domain.NegativeVerification{
+				Status:      domain.NegativeVerified,
+				EvidenceIDs: []domain.EvidenceID{"EV-001"},
+			},
+			prob: "EV-001 shows the sink argument is peer-controlled",
+			setup: func(c *domain.AnalysisCase, _ *domain.Claim) {
+				c.EvidenceGraph.AddEvidence(domain.Evidence{
+					ID: "EV-001", Kind: domain.EvidenceSourceSnippet,
+					Content: "traced flow",
+				})
+			},
+			want: domain.ClaimUnknown},
+		{name: "evidence id mentioned in explanation keeps FALSE",
+			nv:   &domain.NegativeVerification{Status: domain.NegativeVerified},
+			prob: "EV-001 shows the sink argument is peer-controlled",
+			setup: func(_ *domain.AnalysisCase, cl *domain.Claim) {
+				cl.Explanation = "evaluator: guard coverage recorded under EV-001"
+			},
+			want: domain.ClaimFalse, wantV: true},
+		{name: "unlinked evidence id keeps FALSE",
+			nv:   &domain.NegativeVerification{Status: domain.NegativeVerified},
+			prob: "EV-001 shows the sink argument is peer-controlled",
+			setup: func(c *domain.AnalysisCase, _ *domain.Claim) {
+				c.EvidenceGraph.AddEvidence(domain.Evidence{
+					ID: "EV-001", Kind: domain.EvidenceSourceSnippet,
+					Content: "unrelated record",
+				})
+			},
+			want: domain.ClaimFalse, wantV: true},
+		{name: "substring of another id keeps FALSE",
+			nv: &domain.NegativeVerification{
+				Status:      domain.NegativeVerified,
+				EvidenceIDs: []domain.EvidenceID{"EV-001"},
+			},
+			prob: "EV-0010 shows the sink argument is peer-controlled",
+			setup: func(c *domain.AnalysisCase, _ *domain.Claim) {
+				c.EvidenceGraph.AddEvidence(domain.Evidence{
+					ID: "EV-001", Kind: domain.EvidenceSourceSnippet,
+					Content: "traced flow",
+				})
+			},
+			want: domain.ClaimFalse, wantV: true},
+		{name: "dangling claim evidence demotes",
+			nv:   &domain.NegativeVerification{Status: domain.NegativeVerified},
+			prob: "FALSE claim contradicts the root cause mechanism",
+			setup: func(_ *domain.AnalysisCase, cl *domain.Claim) {
+				cl.EvidenceIDs = []domain.EvidenceID{"EV-777"}
+			},
+			want: domain.ClaimUnknown},
+		{name: "dangling verification evidence demotes",
+			nv: &domain.NegativeVerification{
+				Status:      domain.NegativeVerified,
+				EvidenceIDs: []domain.EvidenceID{"EV-777"},
+			},
+			prob: "FALSE claim contradicts the root cause mechanism",
+			want: domain.ClaimUnknown},
+		{name: "unverified FALSE demotes without artifact",
+			nv:   &domain.NegativeVerification{Status: domain.NegativeInsufficientScope},
+			prob: "FALSE claim contradicts the root cause mechanism",
+			want: domain.ClaimUnknown},
+		{name: "FALSE without verification demotes without artifact",
+			prob: "FALSE claim contradicts the root cause mechanism",
+			want: domain.ClaimUnknown},
+		{name: "repeated artifact-free finding keeps FALSE",
+			nv: &domain.NegativeVerification{Status: domain.NegativeVerified},
+			findings: []domain.ReviewFinding{
+				{TargetType: "claim", TargetID: "CL-1", Severity: "high",
+					Problem: "uncovered write site at server.go:41 reaches the guarded field"},
+				{TargetType: "claim", TargetID: "CL-1", Severity: "high",
+					Problem: "uncovered write site at server.go:41 reaches the guarded field"},
+			},
+			want: domain.ClaimFalse, wantV: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			findings := tc.findings
+			if findings == nil {
+				findings = []domain.ReviewFinding{{
+					TargetType: "claim", TargetID: "CL-1", Severity: "high",
+					Problem: tc.prob, RequiredCheck: tc.req,
+				}}
+			}
+			c := &domain.AnalysisCase{
+				Claims: []domain.Claim{{
+					ID: "CL-1", ConditionID: "C-1", Result: domain.ClaimFalse,
+					NegativeVerification: tc.nv,
+				}},
+				Reviews: []domain.Review{{
+					Result: domain.ReviewRevise, Findings: findings,
+				}},
+			}
+			if tc.setup != nil {
+				tc.setup(c, &c.Claims[0])
+			}
+			tr, err := states.RepairAnalysis{}.Run(context.Background(), c)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if c.Claims[0].Result != tc.want {
+				t.Fatalf("claim result=%s want %s", c.Claims[0].Result, tc.want)
+			}
+			concern := false
+			for _, l := range c.Claims[0].Limitations {
+				if strings.Contains(l, "reviewer concern") {
+					concern = true
+				}
+			}
+			if concern != tc.wantV {
+				t.Fatalf("advisory concern recorded=%v want %v (limitations=%v)",
+					concern, tc.wantV, c.Claims[0].Limitations)
+			}
+			if tc.want == domain.ClaimFalse && tr.Next != domain.StateEvaluateVerdict {
+				t.Fatalf("kept claim must not loop to re-review, next=%s", tr.Next)
+			}
+		})
+	}
+}
+
+// The structural reviewer must surface a dangling negative-verification
+// evidence reference on the normal path — claimCitesMissingEvidence can
+// only demote it once a review finding exists.
+func TestStructuralDetectsDanglingVerificationEvidence(t *testing.T) {
+	c := &domain.AnalysisCase{
+		Claims: []domain.Claim{{
+			ID: "CL-1", ConditionID: "C-1", Result: domain.ClaimFalse,
+			NegativeVerification: &domain.NegativeVerification{
+				Status:      domain.NegativeVerified,
+				EvidenceIDs: []domain.EvidenceID{"EV-777"},
+			},
+		}},
+	}
+	rev := review.Structural{}.Review(c, domain.VerdictResult{})
+	if rev.Result != domain.ReviewRevise {
+		t.Fatalf("structural review=%s want REVISE (findings=%v)", rev.Result, rev.Findings)
+	}
+	c.Reviews = append(c.Reviews, rev)
+	if _, err := (states.RepairAnalysis{}).Run(context.Background(), c); err != nil {
+		t.Fatal(err)
+	}
+	if c.Claims[0].Result != domain.ClaimUnknown {
+		t.Fatalf("claim result=%s want UNKNOWN", c.Claims[0].Result)
+	}
+}
+
 // Multi-step LLM planner: Plan is retried per iteration while it reports an
 // attempted step, bounded by maxLLMPlanSteps per condition.
 type countingPlanner struct {

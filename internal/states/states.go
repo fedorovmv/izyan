@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 
 	"example.com/vuln-analyzer/internal/affected"
@@ -1084,6 +1085,22 @@ func (RepairAnalysis) Run(_ context.Context, c *domain.AnalysisCase) (workflow.T
 					"reviewer concern (claim kept: deterministic evidence): "+f.Problem)
 				continue
 			}
+			// A VERIFIED FALSE was already re-checked against dynamic
+			// markers and coverage: it falls to a structural defect —
+			// evidence the claim cites but the graph lacks — or to a
+			// finding that cites a concrete counterexample artifact found
+			// in the claim's own record. Semantic reinterpretation or a
+			// merely proposed check is advisory — the deterministic
+			// negative stands.
+			nv := c.Claims[i].NegativeVerification
+			if c.Claims[i].Result == domain.ClaimFalse &&
+				nv != nil && nv.Status == domain.NegativeVerified &&
+				!claimCitesMissingEvidence(c, &c.Claims[i]) &&
+				!citesConcreteArtifact(c, &c.Claims[i], f) {
+				c.Claims[i].Limitations = append(c.Claims[i].Limitations,
+					"reviewer concern (VERIFIED FALSE kept: no concrete artifact cited): "+f.Problem)
+				continue
+			}
 			c.Claims[i].Result = domain.ClaimUnknown
 			c.Claims[i].Limitations = append(c.Claims[i].Limitations,
 				"demoted by reviewer: "+f.Problem)
@@ -1097,6 +1114,140 @@ func (RepairAnalysis) Run(_ context.Context, c *domain.AnalysisCase) (workflow.T
 	return workflow.Transition{Next: domain.StateReview,
 		Reason: "repaired claims; re-review"}, nil
 }
+
+// claimCitesMissingEvidence reports whether the claim references evidence
+// ids the graph does not hold — a structural defect that cannot be waved
+// away by semantic review and demotes the claim unconditionally.
+func claimCitesMissingEvidence(c *domain.AnalysisCase, cl *domain.Claim) bool {
+	present := map[domain.EvidenceID]bool{}
+	for _, e := range c.EvidenceGraph.Evidence {
+		present[e.ID] = true
+	}
+	ids := append([]domain.EvidenceID{}, cl.EvidenceIDs...)
+	if cl.NegativeVerification != nil {
+		ids = append(ids, cl.NegativeVerification.EvidenceIDs...)
+	}
+	for _, id := range ids {
+		if !present[id] {
+			return true
+		}
+	}
+	return false
+}
+
+// citesConcreteArtifact reports whether a review finding points at a
+// concrete counterexample against this verified negative claim — one that
+// is both named in the finding's problem and found in the claim's own
+// record: a dynamic marker, a traced external origin, an uncovered site
+// (file:line), or one of the claim's evidence ids. required_check is not
+// scanned: it names a desired check outcome, not a found artifact.
+func citesConcreteArtifact(c *domain.AnalysisCase, cl *domain.Claim, f domain.ReviewFinding) bool {
+	var cited, citedSites []string
+	for _, p := range artifactPatterns {
+		cited = append(cited, p.FindAllString(f.Problem, -1)...)
+	}
+	citedIDs := evidenceIDPattern.FindAllString(f.Problem, -1)
+	citedSites = sitePattern.FindAllString(f.Problem, -1)
+	if len(cited)+len(citedIDs)+len(citedSites) == 0 {
+		return false
+	}
+	linked, sites, corpus := claimArtifactCorpus(c, cl)
+	for _, id := range citedIDs {
+		if linked[id] {
+			return true
+		}
+	}
+	for _, tok := range cited {
+		if strings.Contains(corpus, tok) {
+			return true
+		}
+	}
+	for _, s := range citedSites {
+		if sites[s] {
+			return true
+		}
+	}
+	return false
+}
+
+// claimArtifactCorpus collects the weakening artifacts recorded for a
+// claim's verified negative: its cited evidence ids, the verification
+// limitations (the record where weakening markers land), and the origins
+// of flows traced for its condition. Everything else is deliberately
+// excluded because it documents what the verification accounted for, not
+// what weakens it: nv.Notes carry the positive outcome and dismissed
+// markers ("unrelated go:linkname pragma(s) ignored"), marker evidence
+// records dismissed markers verbatim, validations and benign flow sites
+// document coverage, the evaluator explanation and claim limitations are
+// rationale/process text — the last also lets a rejected finding cite
+// itself. A marker that weakened verification is substantiable through
+// its limitation line (kind phrase, and file:line for write-markers);
+// a marker the verifier dismissed has no limitation and must not
+// substantiate.
+func claimArtifactCorpus(c *domain.AnalysisCase, cl *domain.Claim) (linked, sites map[string]bool, corpus string) {
+	var ids []domain.EvidenceID
+	ids = append(ids, cl.EvidenceIDs...)
+	if cl.NegativeVerification != nil {
+		ids = append(ids, cl.NegativeVerification.EvidenceIDs...)
+	}
+	linked = map[string]bool{}
+	for _, id := range ids {
+		linked[string(id)] = true
+	}
+	var b strings.Builder
+	if cl.NegativeVerification != nil {
+		for _, l := range cl.NegativeVerification.Limitations {
+			b.WriteString(l + "\n")
+		}
+	}
+	for _, f := range c.EvidenceGraph.DataFlows {
+		if f.ConditionID != cl.ConditionID && f.ConditionID != "" {
+			continue
+		}
+		b.WriteString(string(f.Origin) + "\n")
+	}
+	corpus = b.String()
+	sites = map[string]bool{}
+	for _, tok := range sitePattern.FindAllString(corpus, -1) {
+		file, line, ok := strings.Cut(tok, ":")
+		if !ok {
+			continue
+		}
+		// Every path suffix is a valid citation: a finding may write the
+		// site as a/b.go:41, pkg/a/b.go:41 or the full recorded path.
+		for i := 0; i < len(file); {
+			sites[file[i:]+":"+line] = true
+			j := strings.IndexByte(file[i:], '/')
+			if j < 0 {
+				break
+			}
+			i += j + 1
+		}
+	}
+	return linked, sites, corpus
+}
+
+// artifactPatterns recognize the artifact citations that legitimately refute
+// a VERIFIED negative: dynamic marker kinds (goanalysis ScanDynamic kinds and
+// the negative-scope extensions), the marker phrases negative verification
+// itself records, and traced external origins.
+var artifactPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`\breflect_write\b|\bunsafe_write\b|\bunsafe_ptr\b|\bfunc_value\b|\blinkname\b|\bgo:linkname\b`),
+	regexp.MustCompile(`\breflect\s+(import|usage)\b|\breflect\.Value\b|\bunsafe\s+(import|usage)\b|\bunsafe\.(Pointer|Add)\b|\bplugins?\s+(import|usage)\b|\bgoroutines?\b`),
+	regexp.MustCompile(`interface[- ]dispatch|build[- ]tags?`),
+	regexp.MustCompile(`\bEXTERNAL_UNTRUSTED\b|\bEXTERNAL_AUTHENTICATED\b|\bCONFIGURATION\b|\bDATABASE\b|\bINTERNAL_SERVICE\b`),
+}
+
+// sitePattern extracts file.go:line citations; the charset allows only
+// path characters, so markdown/quote delimiters wrapping a citation
+// (`server.go:41`, "server.go:41", **server.go:41**) are not part of the
+// token. A cited site substantiates only against an exact recorded site,
+// never a line-prefix match.
+var sitePattern = regexp.MustCompile(`[\w./~-]+\.go:\d+`)
+
+// evidenceIDPattern extracts evidence-id citations; a cited id must be one
+// of the claim's own to substantiate.
+var evidenceIDPattern = regexp.MustCompile(`\bEV-\d+\b`)
 
 // claimHasDeterministicEvidence reports whether any evidence attached to the
 // claim carries deterministic quality (tool output, not LLM inference).

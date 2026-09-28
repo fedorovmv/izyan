@@ -35,7 +35,6 @@
 
 | # | Пункт | Зачем | Done-критерий |
 |---|-------|-------|----------------|
-| B4 | Устойчивость repair к bogus-демоциям | LLM-ревьюер дважды демотировал VERIFIED-FALSE семантическим misread («противоречит root cause»); промпт дополнен, но защита нужна детерминистическая | Демоция VERIFIED-FALSE требует ссылки на конкретный артефакт (маркер/uncovered site/traced origin); тест на bogus-demotion |
 | B13 | **Расширение корпуса доказательной базы** | Live-слой узок: 11 кейсов, 1 dep, 1 класс; нет сравнительной базы vs standalone govulncheck | ≥30 кейсов суммарно (≥4 класса, ≥3 реальных dep) через generated-manifest продукты `eval/products/` без committed уязвимых манифестов; baseline-таблица govulncheck-vs-analyzer в [`eval/README.md`](../../../eval/README.md); ground-truth файл на каждый позитивный вердикт; `false_safe=0`; план: [`dev/plans/corpus-expansion-plan.md`](../plans/corpus-expansion-plan.md) |
 
 ### P2 — глубина покрытия
@@ -81,12 +80,6 @@
   требует всех субъектов в `AffectedSymbols`, `ModuleReachable`-цепочка
   — позитивное TRUE-доказательство до FALSE-ветки. j497: истина
   INCONCLUSIVE (peer→shortstr config-contingent) → re-pin.
-- **B4** (делегируемо): `internal/states/states.go` — repair demotes
-  high-findings; `internal/goanalysis/negative.go` — VERIFIED статусы.
-  Правило: demotion VERIFIED-FALSE требует `required_check`/`problem`
-  со ссылкой на артефакт (marker `reflect_write`/`unsafe_*`/uncovered
-  site/origin) — иначе finding понижается до advisory. Тест —
-  `internal/states/` bogus-demotion case.
 - **B8** (делегируемо): `internal/evaluator/provenance.go` —
   `parseBound`/`boundTerm.satisfies`/`falsifiedBy`;
   `internal/goanalysis/provenance.go` — `exprIntValue`,

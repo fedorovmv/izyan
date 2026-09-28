@@ -31,10 +31,12 @@ Claim semantics — read before judging "contradictions":
   re-checked against dynamic-dispatch and coverage markers. If the claim was
   later demoted to UNKNOWN by a review, the VERIFIED tag stays as history —
   that pairing is expected, not an internal contradiction.
-- Demote a FALSE claim only when you can point to a concrete artifact: an
-  uncovered write site, a traced external origin, a dynamic-dispatch marker,
-  or a missing condition — not because its conclusion feels incompatible
-  with the advisory.
+- Demote a FALSE claim only when you can point to a concrete artifact in
+  the problem text: an uncovered write site, a traced external origin, a
+  dynamic-dispatch marker, or a missing condition — not because its
+  conclusion feels incompatible with the advisory. Naming a desired check
+  outcome in required_check or an artifact absent from the claim's own
+  record is recorded as advisory; the VERIFIED FALSE stands.
 Output JSON: {"result":"ACCEPT"|"REVISE","findings":[{"target_type":"claim|condition|model|verdict","target_id":"...","problem":"...","severity":"low|medium|high","required_check":"..."}]}
 Never propose a different verdict. Only flag gaps a human would check.`
 

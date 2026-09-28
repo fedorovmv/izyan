@@ -225,9 +225,13 @@ name-matched гарды из других conditions фильтровались 
 root cause» — промпт дополнен семантикой claim'ов (FALSE на exploit-
 condition = безопасный результат про продукт, не опровержение advisory;
 VERIFIED+demoted — ожидаемая история, не внутреннее противоречие;
-демоция только по конкретному артефакту). Вердикт NO_EXPLOIT_PATH_FOUND
-воспроизводим в корпусе; INCONCLUSIVE остаётся допустимым ожиданием —
-LLM-ревью недетерминирован.
+демоция только по конкретному артефакту), а REPAIR_ANALYSIS теперь
+детерминистически отклоняет демоцию VERIFIED-FALSE, если названный в
+`problem` артефакт (dynamic-маркер, site, traced origin, evidence-id)
+не записан как ослабляющий для этого claim'а — semantic-misread finding
+понижается до advisory concern на claim'е. Вердикт
+NO_EXPLOIT_PATH_FOUND воспроизводим в корпусе; INCONCLUSIVE остаётся
+допустимым ожиданием — LLM-ревью недетерминирован.
 
 Дополнительная гарантия покрытия: `fieldWriteGuards` теперь отклоняет
 Covers при `&x.f` address-taken — запись через pointer-alias невидима

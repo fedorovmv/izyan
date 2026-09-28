@@ -22,7 +22,7 @@ harness, tool audit, экспорты, известные границы.
 | GAP_ANALYSIS | hypothesis loop | `Hypothesis` OPEN→CONFIRMED/REJECTED/UNRESOLVED; новые flows → re-evaluate |
 | NEGATIVE_CHECK | `goanalysis.Verifier` | FALSE-кандидат → VERIFIED/CONTRADICTED/INSUFFICIENT_SCOPE |
 | REVIEW | Structural + LLM reviewer | findings → bounded repair (только демоция в UNKNOWN) |
-| REPAIR_ANALYSIS | demotion-only repair по high-severity findings | только понижает claim до UNKNOWN → re-REVIEW |
+| REPAIR_ANALYSIS | demotion-only repair по high-severity findings | только понижает claim до UNKNOWN → re-REVIEW; VERIFIED-FALSE демотируется лишь по артефакту, названному в `problem` и записанному как ослабляющий для этого claim'а (dynamic-маркер/site `file.go:line` из nv.Limitations — не из notes, coverage-записей или rationale, traced origin из flows, claim-linked evidence-id), либо при dangling evidence-ссылке — иначе concern записывается advisory |
 | EVALUATE_VERDICT | `VerdictEvaluator` | вердикт |
 | BUILD_REPORT | — | `report.{json,md}` + `tracker_comment.md` |
 

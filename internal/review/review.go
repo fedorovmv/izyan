@@ -60,7 +60,13 @@ func (Structural) Review(c *domain.AnalysisCase, proposed domain.VerdictResult) 
 
 	for i := range c.Claims {
 		cl := c.Claims[i]
-		for _, id := range cl.EvidenceIDs {
+		// Dangling references hide both in the claim's own list and in its
+		// negative verification record — repair demotes on either.
+		ids := append([]domain.EvidenceID{}, cl.EvidenceIDs...)
+		if cl.NegativeVerification != nil {
+			ids = append(ids, cl.NegativeVerification.EvidenceIDs...)
+		}
+		for _, id := range ids {
 			if !evIDs[id] {
 				findings = append(findings, domain.ReviewFinding{
 					TargetType: "claim", TargetID: string(cl.ID), Severity: "high",
