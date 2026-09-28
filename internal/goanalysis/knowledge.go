@@ -105,6 +105,7 @@ func DefaultKnowledge() *Knowledge {
 func (k *Knowledge) AsFile() KnowledgeFile {
 	return KnowledgeFile{
 		Version:             KnowledgeFileVersion,
+		Language:            knowledgeLanguage,
 		SourceFuncs:         originStrings(k.SourceFuncs),
 		PassthroughFuncs:    k.PassthroughFuncs,
 		PassthroughMethods:  k.PassthroughMethods,
@@ -138,12 +139,26 @@ func (ix *Index) kb() *Knowledge {
 // the format changes (e.g. per-language sections for non-Go analyzers).
 const KnowledgeFileVersion = 1
 
+// knowledgeLanguage tags files for this analyzer family — a file
+// declaring another language is rejected instead of merging keys the
+// Go analyzers will never look up.
+const knowledgeLanguage = "go"
+
 // KnowledgeFile is the JSON schema of a --knowledge extension file. Every
 // field mirrors the same-named Knowledge field; files only add entries,
 // never replace them.
 type KnowledgeFile struct {
 	// Version is the file's schema level — absent means v1.
-	Version             int                `json:"version,omitempty"`
+	Version int `json:"version,omitempty"`
+	// Language names the analyzer family the file targets ("go").
+	// Absent reads as this analyzer's language for compatibility.
+	Language string `json:"language,omitempty"`
+	// Name and Labels are informational provenance tags — e.g. the
+	// embedded defaults declare name=builtin, labels=[builtin,upstream];
+	// an org overlay might use labels=[corp]. They do not affect merge
+	// semantics.
+	Name                string             `json:"name,omitempty"`
+	Labels              []string           `json:"labels,omitempty"`
 	SourceFuncs         map[string]string  `json:"source_funcs"`
 	PassthroughFuncs    map[string]int     `json:"passthrough_funcs"`
 	PassthroughMethods  map[string]bool    `json:"passthrough_methods"`
@@ -182,10 +197,12 @@ func parseKnowledgeFile(r io.Reader) (KnowledgeFile, error) {
 	if err != nil {
 		return KnowledgeFile{}, err
 	}
-	// Version is checked before the strict decode: a file written for a
-	// newer schema must report that, not a misleading "unknown field".
+	// Version and language are checked before the strict decode: a file
+	// written for a newer schema or another analyzer must report that,
+	// not a misleading "unknown field".
 	var head struct {
-		Version int `json:"version"`
+		Version  int    `json:"version"`
+		Language string `json:"language"`
 	}
 	if err := json.Unmarshal(b, &head); err != nil {
 		return KnowledgeFile{}, err
@@ -194,6 +211,11 @@ func parseKnowledgeFile(r io.Reader) (KnowledgeFile, error) {
 		return KnowledgeFile{}, fmt.Errorf(
 			"unsupported knowledge file version %d (this build accepts up to %d)",
 			head.Version, KnowledgeFileVersion)
+	}
+	if head.Language != "" && head.Language != knowledgeLanguage {
+		return KnowledgeFile{}, fmt.Errorf(
+			"knowledge file targets language %q; this build analyzes %s",
+			head.Language, knowledgeLanguage)
 	}
 	var f KnowledgeFile
 	dec := json.NewDecoder(bytes.NewReader(b))

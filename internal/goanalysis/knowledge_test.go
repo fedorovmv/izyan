@@ -40,8 +40,13 @@ func TestDefaultKnowledgeEmbedded(t *testing.T) {
 	if len(f.SourceFuncs) != len(kb.SourceFuncs) || len(f.ListenerPrimitives) != len(kb.ListenerPrimitives) {
 		t.Fatal("AsFile round-trip lost entries")
 	}
-	if f.Version != KnowledgeFileVersion {
-		t.Fatalf("dump version=%d want %d", f.Version, KnowledgeFileVersion)
+	if f.Version != KnowledgeFileVersion || f.Language != "go" {
+		t.Fatalf("dump meta version=%d language=%q", f.Version, f.Language)
+	}
+	// name/labels are informational — they must not break parsing.
+	if _, err := parseKnowledgeFile(strings.NewReader(
+		`{"name": "corp", "labels": ["org", "internal"], "source_funcs": {}}`)); err != nil {
+		t.Fatalf("meta labels rejected: %v", err)
 	}
 	// A file built on the dump merges back cleanly — same-value repeats
 	// are no-ops, only rewrites conflict.
@@ -104,6 +109,7 @@ func TestKnowledgeFileValidation(t *testing.T) {
 		// a misleading unknown-field one.
 		{"future schema fields", `{"version": 2, "java": {}}`, "unsupported knowledge file version"},
 		{"negative version", `{"version": -1}`, "unsupported knowledge file version"},
+		{"wrong language", `{"language": "java"}`, `targets language "java"`},
 		{"bad origin", `{"source_funcs": {"x.Y": "TRUSTED"}}`, "unknown data origin"},
 		{"negative passthrough", `{"passthrough_funcs": {"x.Y": -1}}`, "negative"},
 		{"negative populate dst", `{"slice_populate_funcs": {"x.Y": [-1, 0]}}`, "negative"},
