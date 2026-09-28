@@ -353,6 +353,29 @@ duration_ms, error. Реализация — `internal/toolaudit`: рекорд�
 subcomponent `pkg:golang/<module>@<resolved_version>`. CycloneDX не
 экспортируется.
 
+## 12c. Knowledge base — семантика экосистемы как данные
+
+Таблицы, по которым provenance/exposure резолвят origins и
+deployment-факты (какой вызов производит какой `DataOrigin`,
+passthrough-индексы, populate-семейства, config-теги, auth-имена,
+listener-примитивы + адрес-аргумент, db/service/http подсказки), живут
+в `internal/goanalysis/knowledge.json` — embedded в бинарь,
+`DefaultKnowledge()` парсит его тем же кодом, что и внешние файлы.
+
+- `Index.KB` — эффективная база; nil → ленивые дефолты (`ix.kb()`).
+- `--knowledge <json>` (analyze/scan/eval/remediate) — аддитивный мерж:
+  повтор тем же значением — no-op, переопределение значения — ошибка,
+  unknown key / невалидный origin / чужой `language` / свежая
+  `schema_version` — ошибки загрузки.
+- `vuln-analyzer knowledge` — дамп эффективной базы в схеме файла
+  (шаблон + валидатор).
+- Провенанс: `Knowledge.Sources` собирает `name@data_version` файлов,
+  `Digest()` — sha256 канонического содержимого; CollectEvidence пишет
+  пару в RUNTIME evidence → вердикт привязан к ревизии базы.
+
+Правила правки базы и версионирования — `agent-rules/knowledge-base.md`;
+что допустимо класть в базу — `agent-rules/generality.md`.
+
 ## 13. Чего не хватает (известные границы)
 
 - `ModuleInternalReach` работает по vendored-исходникам; без `vendor/`

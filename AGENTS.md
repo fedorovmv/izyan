@@ -58,6 +58,7 @@ go test ./...
 | CLI, схемы и внешние интерфейсы      | `api.md`                                         |
 | метрики, аудит и отчётность          | `observability.md`                               |
 | генеральность: knowledge-base, case-specific хардкод | `generality.md`                    |
+| правка `internal/goanalysis/knowledge.json`, `--knowledge` | `knowledge-base.md`                 |
 | `internal/goanalysis`                | `provenance-and-bounds.md`, `dynamic-markers.md` |
 | `internal/evaluator`, `cmd/analyzer` | `evaluators.md`                                  |
 | `internal/llm`, `internal/states`    | `llm-layer.md`                                   |

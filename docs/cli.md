@@ -1,8 +1,8 @@
 # CLI-справочник
 
 Бинарь собирается как `vuln-analyzer` (`go build -o vuln-analyzer
-./cmd/analyzer`). Четыре сабкоманды: `analyze`, `scan`, `eval`,
-`remediate`.
+./cmd/analyzer`). Пять сабкоманд: `analyze`, `scan`, `eval`,
+`remediate`, `knowledge`.
 
 ## analyze — полный анализ одной advisory
 

@@ -152,6 +152,12 @@ LLM — слой поверх детерминистического ядра. �
   уязвимости вместо одной generic-модели.
 - **Target toolchain** (`internal/toolchain`) — анализ `std`-advisory
   под версией Go реального релиза, не локальной.
+- **Knowledge base** (`internal/goanalysis/knowledge.json`, embedded)
+  — семантика экосистемы как данные, не код: какие вызовы производят
+  какой origin, passthrough/populate-семейства, config-теги, listener-
+  примитивы. Расширяется `--knowledge` без пересборки; в отчёт пишутся
+  `sources` (name@data_version) + `digest` эффективной базы — вердикт
+  привязан к конкретной ревизии семантики.
 
 ## 5. Модель данных
 
