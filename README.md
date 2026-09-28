@@ -44,12 +44,16 @@ go build ./cmd/analyzer
 
 ## Документация
 
-- `docs/INDEX.md` — индекс и рекомендуемый порядок чтения.
-- `docs/goals-scope.md` — цель, задачи, границы, verdicts, MVP.
-- `docs/dev/specs/governing-spec.md` — главная спецификация системы.
-- `docs/dev/specs/analyzer-agent-spec.md` — контракт Analyzer Agent.
-- `docs/dev/decisions/architecture-decisions.md` — ключевые архитектурные решения и запреты.
-- `docs/cli.md` — справочник команд и флагов.
-- `docs/architecture.md` — архитектура: конвейер, средства, модель данных.
-- `docs/how-it-works.md` — гарантии, вердикты, известные границы.
-- `docs/dev/history/` — история эволюции решения.
+- [`INDEX.md`](docs/INDEX.md) — индекс и рекомендуемый порядок чтения.
+- [`goals-scope.md`](docs/goals-scope.md) — цель, задачи, границы, verdicts, MVP.
+- [`dev/specs/governing-spec.md`](docs/dev/specs/governing-spec.md) — главная спецификация системы.
+- [`dev/specs/analyzer-agent-spec.md`](docs/dev/specs/analyzer-agent-spec.md) — контракт Analyzer Agent.
+- [`dev/decisions/architecture-decisions.md`](docs/dev/decisions/architecture-decisions.md) — ключевые архитектурные решения и запреты.
+- [`cli.md`](docs/cli.md) — справочник команд и флагов.
+- [`architecture.md`](docs/architecture.md) — архитектура: конвейер, средства, модель данных.
+- [`how-it-works.md`](docs/how-it-works.md) — гарантии, вердикты, известные границы.
+- [`dev/history/`](docs/dev/history/) — история эволюции решения.
+
+## Лицензия
+
+MIT — см. [`LICENSE`](LICENSE).
