@@ -78,6 +78,7 @@
    "vuln_file": "advisories/live/GHSA-rm6m-hrcw-jw33.json",
    "repo": "$VA_PRODUCT_REPO",
    "expect": [
+    "NO_EXPLOIT_PATH_FOUND",
     "INCONCLUSIVE"
    ]
   },

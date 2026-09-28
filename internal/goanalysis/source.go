@@ -985,10 +985,45 @@ func (ix *Index) ScanDynamic(ctx context.Context, ref domain.SymbolRef) ([]Dynam
 			}
 			callFuns := map[ast.Node]bool{}
 			ast.Inspect(f, func(n ast.Node) bool {
+				if as, ok := n.(*ast.AssignStmt); ok {
+					for _, lhs := range as.Lhs {
+						// A store through an unsafe.Pointer-derived deref —
+						// `*(*T)(unsafe.Pointer(&x)) = v` or an index-assign
+						// into an unsafe.Slice — can write any field (even
+						// unexported) out of sight of syntactic write-site
+						// scans. The bare `unsafe` import cannot write
+						// anything by itself.
+						var target ast.Expr
+						switch l := lhs.(type) {
+						case *ast.StarExpr:
+							target = l.X
+						case *ast.IndexExpr:
+							target = l
+						}
+						if target != nil && callsUnsafe(pkg.TypesInfo, target) {
+							out = append(out, DynamicMarker{
+								CallSite: pos(as), Kind: "unsafe_write",
+								Detail: "store through unsafe.Pointer-derived value can write fields invisibly",
+							})
+						}
+					}
+				}
 				if call, ok := n.(*ast.CallExpr); ok {
 					callFuns[call.Fun] = true
 					if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
 						callFuns[sel.Sel] = true
+						// A materialized unsafe.Pointer (Pointer conversion
+						// or unsafe.Add) can be stored anywhere and written
+						// through later — its aliased uses are untraceable
+						// cheaply, so its mere presence weakens field-write
+						// coverage.
+						if (sel.Sel.Name == "Pointer" || sel.Sel.Name == "Add") &&
+							isUnsafePkg(pkg.TypesInfo, sel.X) {
+							out = append(out, DynamicMarker{
+								CallSite: pos(call), Kind: "unsafe_ptr",
+								Detail: "unsafe." + sel.Sel.Name + " materializes a raw pointer; aliased writes are untraceable",
+							})
+						}
 						// reflect.Value.Set* mutates the underlying value —
 						// the only reflect shape that can write a guarded
 						// field/variable. The bare `reflect` import or
@@ -1255,4 +1290,42 @@ func isReflectValue(info *types.Info, e ast.Expr) bool {
 		return false
 	}
 	return n.Obj().Pkg().Path() == "reflect" && n.Obj().Name() == "Value"
+}
+
+// callsUnsafe reports whether e contains a call to a function from the
+// unsafe package — unsafe.Pointer, unsafe.Add, unsafe.Slice and friends.
+func callsUnsafe(info *types.Info, e ast.Expr) bool {
+	if info == nil {
+		return false
+	}
+	found := false
+	ast.Inspect(e, func(n ast.Node) bool {
+		if found {
+			return false
+		}
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if sel, ok := call.Fun.(*ast.SelectorExpr); ok && isUnsafePkg(info, sel.X) {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
+}
+
+// isUnsafePkg reports whether e is a qualifier ident resolving to the
+// unsafe package.
+func isUnsafePkg(info *types.Info, e ast.Expr) bool {
+	if info == nil {
+		return false
+	}
+	id, ok := e.(*ast.Ident)
+	if !ok {
+		return false
+	}
+	pn, ok := info.ObjectOf(id).(*types.PkgName)
+	return ok && pn.Imported().Path() == "unsafe"
 }

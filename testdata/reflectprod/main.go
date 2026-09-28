@@ -2,6 +2,7 @@ package main
 
 import (
 	"reflect"
+	"unsafe"
 
 	"example.com/dep/vuln"
 )
@@ -23,6 +24,12 @@ func writevia(c *cfg, v int) {
 	// reflect.Value.Set* on an exported field — an invisible write.
 	reflect.ValueOf(c).Elem().FieldByName("Mode").SetInt(int64(v))
 	vuln.Parse("y")
+}
+
+func unsafewrite(c *cfg, v int) {
+	// Store through an unsafe.Pointer deref — can hit unexported fields.
+	*(*int)(unsafe.Pointer(&c.limit)) = v
+	vuln.Parse("z")
 }
 
 func main() {

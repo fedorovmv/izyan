@@ -119,13 +119,13 @@ func (v Verifier) VerifyFalse(ctx context.Context, c *domain.AnalysisCase, claim
 				strayLinkname++
 			case "reflect", "unsafe", "plugin":
 				// reflect/plugin can only look up *exported* identifiers; an
-				// unexported sink is unreachable to them. unsafe alone calls
-				// nothing — it matters through linkname/func_value, which are
-				// checked per-symbol above.
-				// For guard-based FALSE claims a bare reflect import is
-				// irrelevant: it cannot write the guarded value — only
-				// reflect_write (Value.Set*) markers can.
-				if m.Kind == "reflect" && claim.Falsifier == "guards" {
+				// unexported sink is unreachable to them.
+				// For guard-based FALSE claims bare reflect/unsafe imports
+				// are irrelevant: an import cannot write the guarded value —
+				// only reflect_write (Value.Set*) and unsafe_write
+				// (store through unsafe.Pointer deref) markers can.
+				if (m.Kind == "reflect" || m.Kind == "unsafe") &&
+					claim.Falsifier == "guards" {
 					continue
 				}
 				if anyExported && !dynSeen[m.Kind] {
@@ -146,6 +146,17 @@ func (v Verifier) VerifyFalse(ctx context.Context, c *domain.AnalysisCase, claim
 					nv.Limitations = append(nv.Limitations,
 						"reflect.Value.Set* call at "+m.File+":"+fmt.Sprint(m.Line)+
 							" can write fields invisibly; guard coverage is weaker")
+				}
+			case "unsafe_write", "unsafe_ptr":
+				// A store through an unsafe.Pointer-derived value — or a
+				// materialized raw pointer whose aliased writes cannot be
+				// traced — can write *any* field, including unexported ones,
+				// so it weakens guard coverage unconditionally.
+				if !dynSeen[m.Kind] {
+					dynSeen[m.Kind] = true
+					nv.Limitations = append(nv.Limitations,
+						m.Detail+" at "+m.File+":"+fmt.Sprint(m.Line)+
+							"; guard coverage is weaker")
 				}
 			}
 		}

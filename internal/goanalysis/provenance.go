@@ -623,6 +623,40 @@ func (ix *Index) fieldOrigin(field *types.Var, depth int) (domain.DataOrigin, st
 	return merged, fmt.Sprintf("%d write site(s): %s", len(sites), strings.Join(whys, "; ")), true
 }
 
+// fieldAddressTaken reports whether any product code takes the field's
+// address (&x.f) — such a pointer alias allows writes invisible to
+// fieldWriteSites.
+func (ix *Index) fieldAddressTaken(field *types.Var) bool {
+	found := false
+	for _, pkg := range ix.pkgs {
+		info := pkg.TypesInfo
+		if info == nil {
+			continue
+		}
+		for _, f := range pkg.Syntax {
+			ast.Inspect(f, func(n ast.Node) bool {
+				if found {
+					return false
+				}
+				u, ok := n.(*ast.UnaryExpr)
+				if !ok || u.Op != token.AND {
+					return true
+				}
+				if se, ok := u.X.(*ast.SelectorExpr); ok &&
+					info.ObjectOf(se.Sel) == types.Object(field) {
+					found = true
+					return false
+				}
+				return true
+			})
+			if found {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // writesField reports whether the lhs expression assigns to the field —
 // a direct x.f = v or an indexed/dereferenced variant like x.f[i] = v.
 func writesField(info *types.Info, lhs ast.Expr, field *types.Var) bool {
@@ -1376,6 +1410,17 @@ func (ix *Index) fieldWriteGuards(pkg *packages.Package, sink domain.CallSite, a
 		return nil
 	}
 	var out []domain.Validation
+	// &x.f anywhere hands out a writable alias — pointer writes through it
+	// are invisible to the syntactic write-site scan, so coverage claims
+	// must not be emitted.
+	if ix.fieldAddressTaken(fv) {
+		out = append(out, domain.Validation{
+			CallSite:    sink,
+			Property:    fmt.Sprintf("field %s has its address taken (&x.%s); writes through the pointer alias are invisible", fv.Name(), fv.Name()),
+			Conditional: true,
+		})
+		return out
+	}
 	allBounded := true
 	for _, w := range sites {
 		if _, ok := w.rhs.(*ast.BasicLit); ok {

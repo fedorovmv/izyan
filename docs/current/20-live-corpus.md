@@ -167,9 +167,27 @@ prefetchSize < 0` — signed→unsigned cast именно в этих аргум
   (`guards / VERIFIED (demoted)`) — история доказательства видима,
   а не только финальный результат.
 
-Итоговая доказательная цепочка rm6m: sink аргументы → field-writes →
-setter-параметры → callers → `cfg.*` mapstructure-теги → CONFIGURATION
-+ Covers bound-гарды + NV VERIFIED + ревью-демоция по unsafe →
-INCONCLUSIVE. Это и есть «доказуемый» уровень: каждое утверждение
-опирается на записанное evidence, а отказ от FALSE — на конкретный
-маркер (unsafe), а не на «не нашли путь».
+Итоговая доказательная цепочка rm6m (финал): sink аргументы →
+field-writes → setter-параметры → callers → `cfg.*` mapstructure-теги →
+CONFIGURATION + Covers bound-гарды + NV VERIFIED → **вердикт
+NO_EXPLOIT_PATH_FOUND** — первый доказуемый негативный результат на
+живом кейсе.
+
+Что сняло последнюю демоцию: `unsafe` в продукте встречается только как
+read-only `unsafe.Slice/StringData` (fastbytes) — ни одной
+`unsafe.Pointer`-материализации, поля `prefetchCount/Size` unexported
+(reflect.Set недостижим) и `&r.prefetch*` нигде не берётся →
+write-site покрытие полное, ревьюеру не на что демотить выше medium.
+Corpus-ожидание обновлено: rm6m теперь принимает
+NO_EXPLOIT_PATH_FOUND (INCONCLUSIVE остаётся допустимым — LLM-ревью
+недетерминированно может демотить).
+
+Дополнительная гарантия покрытия: `fieldWriteGuards` теперь отклоняет
+Covers при `&x.f` address-taken — запись через pointer-alias невидима
+синтаксическому скану write-site'ов (фикстура `addrtakenprod`,
+`unsafe_write`/`unsafe_ptr` маркеры в `reflectprod`).
+
+Это и есть «доказуемый» уровень: каждое утверждение опирается на
+записанное evidence, а отказ от FALSE — на конкретный маркер
+(unsafe_ptr/unsafe_write/address-taken/exported-reflect-write), а не на
+«не нашли путь».

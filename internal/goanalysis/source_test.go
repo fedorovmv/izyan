@@ -247,6 +247,33 @@ func TestSanitizeSwitchOneSidedNoGuard(t *testing.T) {
 	}
 }
 
+// &r.limit hands out a writable alias — fieldWriteGuards must refuse to
+// emit a Covers record even though the only syntactic write is clamped.
+func TestFieldWriteGuardsAddressTaken(t *testing.T) {
+	ix := fixture(t, "addrtakenprod")
+	sites, err := ix.FindCallers(context.Background(),
+		domain.SymbolRef{Package: "example.com/dep/vuln", Symbol: "Qos"})
+	if err != nil || len(sites) != 1 {
+		t.Fatalf("sites=%v err=%v", sites, err)
+	}
+	vals, _, err := ix.FindValidations(context.Background(), sites[0], 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var noted bool
+	for _, v := range vals {
+		if v.Covers != nil && v.Covers.Line == sites[0].Line {
+			t.Fatalf("address-taken field wrongly covers the sink: %+v", vals)
+		}
+		if strings.Contains(v.Property, "address taken") {
+			noted = true
+		}
+	}
+	if !noted {
+		t.Fatalf("expected address-taken limitation record: %+v", vals)
+	}
+}
+
 // reflectprod imports reflect for both a read-only TypeOf call and a
 // reflect.Value.SetInt write — the import marker and the write marker are
 // distinct kinds.
@@ -256,7 +283,7 @@ func TestScanDynamicReflectWrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var bare, write bool
+	var bare, write, uwrite, uptr bool
 	for _, m := range markers {
 		switch m.Kind {
 		case "reflect":
@@ -266,6 +293,10 @@ func TestScanDynamicReflectWrite(t *testing.T) {
 			if !strings.Contains(m.Detail, "SetInt") {
 				t.Fatalf("reflect_write detail=%q", m.Detail)
 			}
+		case "unsafe_write":
+			uwrite = true
+		case "unsafe_ptr":
+			uptr = true
 		}
 	}
 	if !bare {
@@ -273,6 +304,12 @@ func TestScanDynamicReflectWrite(t *testing.T) {
 	}
 	if !write {
 		t.Fatalf("expected reflect_write marker for Value.SetInt, got %+v", markers)
+	}
+	if !uwrite {
+		t.Fatalf("expected unsafe_write marker for deref store, got %+v", markers)
+	}
+	if !uptr {
+		t.Fatalf("expected unsafe_ptr marker for Pointer conversion, got %+v", markers)
 	}
 }
 
