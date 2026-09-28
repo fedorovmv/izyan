@@ -2,6 +2,8 @@ package evaluator
 
 import (
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"example.com/vuln-analyzer/internal/domain"
@@ -69,6 +71,17 @@ func (ArgumentOrigin) Evaluate(cond domain.Condition, c *domain.AnalysisCase) do
 		claim.Limitations = append(claim.Limitations,
 			"security-relevant transform(s) on traced path (not modeled as guards): "+strings.Join(sec, ", "))
 	}
+	// A constant argument that satisfies a bound term violates the
+	// constraint deterministically — no guard can save it. Checked before
+	// the guard-coverage path: constant args are skipped from coverage.
+	if cond.Kind == domain.ConditionInputConstraint &&
+		cond.Params[domain.ParamBound] != "" {
+		if hit := constViolatesBound(cond, flows); hit != "" {
+			claim.Result = domain.ClaimTrue
+			claim.Explanation = hit
+			return claim
+		}
+	}
 	// Constraint coverage: an INPUT_CONSTRAINT can be falsified by guards
 	// bounding the value at the sink or at its field write sites — but only
 	// when every traced argument's origin is resolved (an UNKNOWN origin
@@ -98,10 +111,22 @@ func (ArgumentOrigin) Evaluate(cond domain.Condition, c *domain.AnalysisCase) do
 			claim.Result = domain.ClaimFalse
 			claim.Falsifier = "guards"
 			claim.Explanation = fmt.Sprintf(
-				"all %d traced sink site(s) are covered by bound guards; input cannot violate the constraint",
+				"all %d traced sink site(s) are covered by bound guards in the product: the values reaching the sink "+
+					"are provably outside the violating range, so this exploit condition cannot be satisfied "+
+					"(this says nothing about checks inside the vulnerable dependency itself)",
 				len(flows))
 			claim.Limitations = append(claim.Limitations,
 				"FALSE is a candidate: sanitize guards are heuristic (comparison+clean reassign shape)")
+			if note := verifyBound(cond, c, flows); note != "" {
+				claim.Explanation += "; " + note
+				if !strings.HasPrefix(note, "bound verified") {
+					claim.Limitations = append(claim.Limitations, note)
+				} else {
+					// The declared violating range is provably excluded —
+					// the heuristic-shape caveat no longer applies.
+					claim.Limitations = claim.Limitations[:len(claim.Limitations)-1]
+				}
+			}
 			return claim
 		}
 	}
@@ -122,6 +147,227 @@ func (ArgumentOrigin) Evaluate(cond domain.Condition, c *domain.AnalysisCase) do
 			"FALSE is a candidate: provenance coverage is limited to direct call sites")
 	}
 	return claim
+}
+
+// boundTerm is one disjunct of a declared violating constraint, e.g.
+// `prefetchCount < 0` inside "prefetchCount < 0 or prefetchSize < 0".
+// arg is the sink-argument position bound by the term — terms bind
+// positionally by order of first appearance of their variable.
+type boundTerm struct {
+	name    string
+	op      string // <, <=, >, >=
+	val     int64
+	hasVal  bool
+	arg     int
+	rawTerm string
+}
+
+var boundTermRe = regexp.MustCompile(`^([A-Za-z_]\w*(?:\.\w+)?)\s*(<=|>=|<|>)\s*(-?\w+)$`)
+
+// parseBound parses a violating-constraint expression into disjunct
+// terms: "x < 0 or y > MAX" → [{x < 0}, {y > MAX}]. Literals resolve to
+// integers; symbolic right sides (INT32_MAX) stay flagged hasVal=false.
+// Unparseable terms are returned as leftovers, not silently dropped.
+func parseBound(bound string) (terms []boundTerm, leftovers []string) {
+	norm := strings.NewReplacer("||", " or ", " or ", ",", " && ", ",", " and ", ",").Replace(bound)
+	var argNames []string
+	for _, piece := range strings.Split(norm, ",") {
+		piece = strings.TrimSpace(piece)
+		if piece == "" {
+			continue
+		}
+		m := boundTermRe.FindStringSubmatch(piece)
+		if m == nil {
+			leftovers = append(leftovers, piece)
+			continue
+		}
+		t := boundTerm{name: m[1], op: m[2], rawTerm: piece}
+		if v, err := strconv.ParseInt(m[3], 0, 64); err == nil {
+			t.val, t.hasVal = v, true
+		}
+		// Positional binding: first appearance order → arg index.
+		idx := -1
+		for i, n := range argNames {
+			if n == t.name {
+				idx = i
+			}
+		}
+		if idx < 0 {
+			argNames = append(argNames, t.name)
+			idx = len(argNames) - 1
+		}
+		t.arg = idx
+		terms = append(terms, t)
+	}
+	return terms, leftovers
+}
+
+// satisfies reports whether value v satisfies the violating term
+// (`v < K` is satisfied when v is below K).
+func (t boundTerm) satisfies(v int64) bool {
+	if !t.hasVal {
+		return false
+	}
+	switch t.op {
+	case "<":
+		return v < t.val
+	case "<=":
+		return v <= t.val
+	case ">":
+		return v > t.val
+	case ">=":
+		return v >= t.val
+	}
+	return false
+}
+
+// falsifiedBy reports whether a guard's enforced range [lo,hi] excludes
+// every value satisfying the term.
+func (t boundTerm) falsifiedBy(lo, hi *int64) bool {
+	if !t.hasVal {
+		return false
+	}
+	switch t.op {
+	case "<":
+		return lo != nil && *lo >= t.val
+	case "<=":
+		return lo != nil && *lo > t.val
+	case ">":
+		return hi != nil && *hi <= t.val
+	case ">=":
+		return hi != nil && *hi < t.val
+	}
+	return false
+}
+
+// coveringGuards collects the non-conditional guard validations covering
+// flow f's sink.
+func coveringGuards(c *domain.AnalysisCase, f domain.DataFlow) []domain.Validation {
+	var out []domain.Validation
+	for _, v := range c.EvidenceGraph.Validations {
+		if !v.Guard || v.Conditional {
+			continue
+		}
+		if v.Arg >= 0 && f.Arg >= 0 && v.Arg != f.Arg {
+			continue
+		}
+		if v.Covers != nil && v.Covers.File == f.Sink.File && v.Covers.Line == f.Sink.Line {
+			out = append(out, v)
+			continue
+		}
+		if v.Covers == nil && v.File == f.Sink.File && v.Line > 0 && f.Sink.Line > 0 && v.Line < f.Sink.Line {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// verifyBound checks the condition's declared violating constraint
+// against the bounds the covering guards enforce. Every disjunct must be
+// contradicted by a recorded range — a guard whose Property names the
+// term's variable, or (when nothing names it) every mutable arg's cover.
+// Returns "" when no bound is declared, else a note: "bound verified"
+// when all terms are excluded, or a limitation describing the gap.
+func verifyBound(cond domain.Condition, c *domain.AnalysisCase, flows []domain.DataFlow) string {
+	bound := cond.Params[domain.ParamBound]
+	if bound == "" {
+		return ""
+	}
+	terms, leftovers := parseBound(bound)
+	if len(leftovers) > 0 {
+		return fmt.Sprintf("bound %q partially unparseable: %s", bound, strings.Join(leftovers, "; "))
+	}
+	if len(terms) == 0 {
+		return fmt.Sprintf("bound %q unparseable — not machine-verified", bound)
+	}
+	var unverified []string
+	for _, t := range terms {
+		if !t.hasVal {
+			unverified = append(unverified, t.rawTerm+" (non-literal bound)")
+			continue
+		}
+		falsified := false
+		// Prefer a guard whose Property names the term's variable — the
+		// dep's parameter names and the product's field names usually
+		// coincide on the wire. Name-matched guards are collected across
+		// all conditions (coverage is a fact about the field, not about
+		// which condition traced it) but must still sit on a traced sink's
+		// file/region. Positional binding is the fallback.
+		var named, positional []domain.Validation
+		for _, v := range c.EvidenceGraph.Validations {
+			if !v.Guard || v.Conditional || (v.BoundLow == nil && v.BoundHigh == nil) {
+				continue
+			}
+			if !strings.Contains(v.Property, t.name) {
+				continue
+			}
+			for _, f := range flows {
+				if (v.Covers != nil && v.Covers.File == f.Sink.File && v.Covers.Line == f.Sink.Line) ||
+					(v.Covers == nil && v.File == f.Sink.File && v.Line > 0 && f.Sink.Line > 0 && v.Line < f.Sink.Line) {
+					named = append(named, v)
+					break
+				}
+			}
+		}
+		for _, f := range flows {
+			if f.Origin == domain.OriginConstant || f.Origin == domain.OriginGenerated {
+				continue
+			}
+			if f.Arg != t.arg {
+				continue
+			}
+			for _, g := range coveringGuards(c, f) {
+				if g.BoundLow != nil || g.BoundHigh != nil {
+					positional = append(positional, g)
+				}
+			}
+		}
+		for _, pool := range [][]domain.Validation{named, positional} {
+			for _, g := range pool {
+				if t.falsifiedBy(g.BoundLow, g.BoundHigh) {
+					falsified = true
+					break
+				}
+			}
+			if falsified {
+				break
+			}
+		}
+		if !falsified {
+			unverified = append(unverified, t.rawTerm)
+		}
+	}
+	if len(unverified) > 0 {
+		return fmt.Sprintf("bound %q not fully falsified by recorded clamp ranges: %s",
+			bound, strings.Join(unverified, "; "))
+	}
+	return fmt.Sprintf("bound verified: every disjunct of %q is excluded by recorded clamp ranges", bound)
+}
+
+// constViolatesBound reports a violation when a constant sink argument's
+// resolved value satisfies one of the bound's disjunct terms — the
+// constraint is then deterministically satisfiable, not falsified.
+func constViolatesBound(cond domain.Condition, flows []domain.DataFlow) string {
+	terms, leftovers := parseBound(cond.Params[domain.ParamBound])
+	if len(leftovers) > 0 || len(terms) == 0 {
+		return ""
+	}
+	byArg := map[int][]boundTerm{}
+	for _, t := range terms {
+		byArg[t.arg] = append(byArg[t.arg], t)
+	}
+	for _, f := range flows {
+		if f.Value == nil || f.Arg < 0 {
+			continue
+		}
+		for _, t := range byArg[f.Arg] {
+			if t.satisfies(*f.Value) {
+				return fmt.Sprintf("constant arg%d=%d at %s:%d satisfies violating bound %q",
+					f.Arg, *f.Value, f.Sink.File, f.Sink.Line, t.rawTerm)
+			}
+		}
+	}
+	return ""
 }
 
 func flowsFor(c *domain.AnalysisCase, id domain.ConditionID) []domain.DataFlow {

@@ -224,6 +224,20 @@ func TestFieldWriteGuardsRangeGated(t *testing.T) {
 	if !covers {
 		t.Fatalf("range-gated write sites fully bounded but no Covers record: %+v", vals)
 	}
+	// The range-gated guard must carry its enforced numeric range:
+	// size<0 → fs=0, size>1024 → fs=1024, default fs=size → [0,1024].
+	var gotLo, gotHi bool
+	for _, v := range vals {
+		if v.BoundLow != nil && *v.BoundLow == 0 {
+			gotLo = true
+		}
+		if v.BoundHigh != nil && *v.BoundHigh == 1024 {
+			gotHi = true
+		}
+	}
+	if !gotLo || !gotHi {
+		t.Fatalf("expected bound range [0,1024] on guard records: %+v", vals)
+	}
 }
 
 // A switch that bounds the compared var on one side only must not be a

@@ -19,6 +19,22 @@ analysis package (root cause, exploit conditions, claims, limitations,
 proposed verdict), find problems the pipeline missed: unsupported claims,
 missed mandatory conditions, scope mismatch, dynamic behavior, contradicted
 evidence, wrong patch interpretation.
+Claim semantics — read before judging "contradictions":
+- A FALSE claim on a mandatory exploit condition means "the product's inputs
+  or paths provably cannot satisfy this condition" — a legitimate safe
+  outcome (verdict NO_EXPLOIT_PATH_FOUND), NOT a claim that the advisory or
+  root cause is wrong. The advisory describes the dependency's flaw; claims
+  describe whether this product snapshot can trigger it. A FALSE claim does
+  not "contradict the root cause mechanism" just because the condition text
+  restates the mechanism.
+- negative_verification VERIFIED on a FALSE claim means the falsifier was
+  re-checked against dynamic-dispatch and coverage markers. If the claim was
+  later demoted to UNKNOWN by a review, the VERIFIED tag stays as history —
+  that pairing is expected, not an internal contradiction.
+- Demote a FALSE claim only when you can point to a concrete artifact: an
+  uncovered write site, a traced external origin, a dynamic-dispatch marker,
+  or a missing condition — not because its conclusion feels incompatible
+  with the advisory.
 Output JSON: {"result":"ACCEPT"|"REVISE","findings":[{"target_type":"claim|condition|model|verdict","target_id":"...","problem":"...","severity":"low|medium|high","required_check":"..."}]}
 Never propose a different verdict. Only flag gaps a human would check.`
 

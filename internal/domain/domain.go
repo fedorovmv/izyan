@@ -429,6 +429,10 @@ type DataFlow struct {
 	Transformations []CallSite `json:"transformations,omitempty"`
 	Sink            CallSite   `json:"sink"`
 	Summary         string     `json:"summary,omitempty"`
+	// Value is the argument's resolved integer literal/constant when the
+	// trace could determine it — used to check constant arguments against
+	// declared input bounds.
+	Value *int64 `json:"value,omitempty"`
 }
 
 type Entrypoint struct {
@@ -456,6 +460,11 @@ type Validation struct {
 	// Arg is the sink-call argument index this record constrains;
 	// -1 means it applies regardless of position.
 	Arg int `json:"arg"`
+	// BoundLow/BoundHigh record the inclusive range a sanitize guard
+	// enforces on the value — resolved to integers when the guard's
+	// comparison side is a literal or a named constant.
+	BoundLow  *int64 `json:"bound_low,omitempty"`
+	BoundHigh *int64 `json:"bound_high,omitempty"`
 }
 
 type ConfigItem struct {

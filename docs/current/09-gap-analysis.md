@@ -29,7 +29,7 @@
 
 | Область | Спека | Сейчас | Пробел |
 |---|---|---|---|
-| Exploit model | §8–9: атомарные условия по классу уязвимости | `Classify` (CWE → keywords → fix-diff) + `exploit.Registry`: peer-driven, INFO_LEAK, URI_CONFUSION, NIL_DEREF паттерны; `Condition.Params` (`input_source`, `direction=read`, `sequence=`, `bound`, `check`); generic C-REACH/C-INPUT домердживаются; LLM дополняет и заполняет пустой `bound` | Классификация keywords — score-weighted эвристика (плотность словаря, фиксируется limitation); `bound` пока текстовая аннотация без доказательства гарды; паттернов пока 4 семейства — PATH_TRAVERSAL/INJECTION/SSRF/etc. сидят на generic-модели |
+| Exploit model | §8–9: атомарные условия по классу уязвимости | `Classify` (CWE → keywords → fix-diff) + `exploit.Registry`: peer-driven, INFO_LEAK, URI_CONFUSION, NIL_DEREF паттерны; `Condition.Params` (`input_source`, `direction=read`, `sequence=`, `bound`, `check`); generic C-REACH/C-INPUT домердживаются; LLM дополняет и заполняет пустой `bound` | Классификация keywords — score-weighted эвристика (плотность словаря, фиксируется limitation); `bound` верифицируется численно против `BoundLow/BoundHigh` гардов и `DataFlow.Value` констант (см. ниже); паттернов пока 4 семейства — PATH_TRAVERSAL/INJECTION/SSRF/etc. сидят на generic-модели |
 | Condition kinds | §8 минимум 10 типов | enum есть | `PLATFORM_CONDITION`/`RUNTIME_CONDITION` — `evaluator.Platform` (params `goos`/`goarch`/`go_version` bound против snapshot-фактов; FALSE = snapshot fact → NV `verifySnapshotFalse` VERIFIED); `AUTHENTICATION_CONDITION` — `evaluator.Authentication` (auth-middleware facts + resolved listener → TRUE; никогда не FALSE — отсутствие wiring ≠ отсутствие auth: per-handler/gateway/deployment-проверки вне скана); `CUSTOM` — `evaluator.Custom` (последний в цепочке): `check=reachable`/`direction=read`/`sequence` делегируют в reachability-машинерию, `check=symbol_present|exposure|config_flag|config_key` забирают свои evaluators (kind-agnostic); без распознанных params → UNKNOWN с limitation-списком маршрутов |
 | Data origins | §15: EXTERNAL_UNTRUSTED/AUTHENTICATED, CONFIGURATION, DATABASE, INTERNAL_SERVICE, CONSTANT, GENERATED | enum есть; provenance покрывает http.Request/os.Args/net/config/generated + `populateOrigin` (Scan/Unmarshal out-params), DB-драйверы по pkg path, gRPC-стабы и http-клиенты с config-endpoint → INTERNAL_SERVICE (`16`) | `EXTERNAL_AUTHENTICATED` различается для outbound HTTP (auth-маркеры в enclosing-функции: Authorization-заголовок, SetBasicAuth, oauth/credentials-хелперы); inbound — `Index.InboundAuthFacts` записывает auth-middleware-факты (Use/With-аргументы, grpc-interceptors, обёрнутые handler'ы в функциях с listener-сайтами; deployment-hint, не per-route доказательство); `exposure.ScanDeploy` читает k8s/helm/openshift/istio/compose-манифесты → deployment-факты (Service LoadBalancer/NodePort, Ingress/Route/Gateway, hostPort/hostNetwork, published ports; scope=all-interfaces, фиксирует окружение деплоя включая sibling-services); детекция драйверов по pkg path — эвристика, кастомные обёртки не покрыты; struct-field provenance: `x.f = rhs`/`T{f: rhs}` write-sites резолвятся (`fieldOrigin`), reflect/pointer-записи невидимы; fallback — config-decode tags (mapstructure/env/envconfig/toml/ini) → CONFIGURATION; builtin true/false/nil — CONSTANT |
 | Transformations | §15: `source → transformations → validation → sink`, security-relevant transforms | `TraceArgument` даёт origin конечного аргумента | Цепочка записывается: `DataFlow.Transformations` — все вызовы, через которые проходит трейсимое значение (под mu в Trace*); security-relevant (`escape|quote|valid|check|…` по `IsSecurityTransform`) флагируются в claim limitations + секция «Data flows» в отчёте | Семантика трансформов не моделируется: opaque call → UNKNOWN (честно); sanitize-гарды (`if cmp {x=clean}`, exhaustive sanitize-switch) записываются Guard=true; field-write guards покрывают sink при всех bounded write-sites; sanitize-switch поддерживает и range-gated форму — cases сравнивают другой var `cv`, default присваивает `ident=T(cv)`, засчитывается bounded при двусторонней границе `cv` + обязательном default; accessor-обёртки `x.Bytes()`/`int(x)` в RHS разворачиваются к локалу; multi-assign merge по всем присваиваниям локала (worst-origin) + cycle-guard `traceSeen` |
@@ -82,8 +82,18 @@ keywords → fix-diff), декларативный `exploit.Registry`, `Conditio
 
 Остаток: остальные классы (PATH_TRAVERSAL, INJECTION, SSRF, AUTH_BYPASS,
 XXE, REDOS, RACE, DESERIALIZATION) классифицируются, но сидят на
-generic-модели — паттерны добавляются по мере живых кейсов; `bound` —
-текстовая аннотация, доказательство гарды не реализовано.
+generic-модели — паттерны добавляются по мере живых кейсов. `bound`
+верифицируется формально: sanitize-гарды несут enforce'нутый числовой
+диапазон (`Validation.BoundLow/BoundHigh`, вкл.; literal/const/конверсии
+`T(lit)` резолвятся, неразрешённый порог → nil, односторонность
+сохраняется, по нескольким write-site'ам union-диапазон). Evaluator
+разбирает `params.bound` в дизъюнкты `var op lit` (`or`/`||`/`,`/`&&`),
+связывает var→arg позиционно и по имени в guard.Property, и FALSE +
+«bound verified» выдаётся только когда каждый дизъюнкт численно
+контрадиктит записанному диапазону; нераспарсенные термы → limitation,
+не FALSE-буст. Обратный случай: константный аргумент, удовлетворяющий
+дизъюнкту (`DataFlow.Value`), даёт детерминированный TRUE — константа
+нарушает bound, никакой гард её не спасает (проверяется до guard-пути).
 
 Дополнительно после живого перепрогона: subject-пулы по `Bind`-оси —
 INFO_LEAK биндит datum-субъекты (advisory-символы `Type.Field` +

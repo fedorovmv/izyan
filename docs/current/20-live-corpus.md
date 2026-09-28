@@ -178,9 +178,22 @@ read-only `unsafe.Slice/StringData` (fastbytes) — ни одной
 `unsafe.Pointer`-материализации, поля `prefetchCount/Size` unexported
 (reflect.Set недостижим) и `&r.prefetch*` нигде не берётся →
 write-site покрытие полное, ревьюеру не на что демотить выше medium.
-Corpus-ожидание обновлено: rm6m теперь принимает
-NO_EXPLOIT_PATH_FOUND (INCONCLUSIVE остаётся допустимым — LLM-ревью
-недетерминированно может демотить).
+
+Последующий раунд — формальный bound: `params.bound` перестал быть
+аннотацией. `field-write prefetchCount` несёт [0,1024],
+`field-write prefetchSize` — [0,1GiB]; оба дизъюнкта
+`prefetchCount < 0 or prefetchSize < 0` численно контрадиктят →
+claim содержит «bound verified: every disjunct … is excluded by
+recorded clamp ranges». Два дефекта ловились на живых прогонах:
+name-matched гарды из других conditions фильтровались по arg-индексу
+(чинено — name-match снимает arg-фильтр, coverage-фильтр по sink-файлу
+остаётся), и LLM-ревьюер демотировал FALSE как «противоречащий
+root cause» — промпт дополнен семантикой claim'ов (FALSE на exploit-
+condition = безопасный результат про продукт, не опровержение advisory;
+VERIFIED+demoted — ожидаемая история, не внутреннее противоречие;
+демоция только по конкретному артефакту). Вердикт NO_EXPLOIT_PATH_FOUND
+воспроизводим в корпусе; INCONCLUSIVE остаётся допустимым ожиданием —
+LLM-ревью недетерминирован.
 
 Дополнительная гарантия покрытия: `fieldWriteGuards` теперь отклоняет
 Covers при `&x.f` address-taken — запись через pointer-alias невидима

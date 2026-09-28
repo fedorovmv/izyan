@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"go/ast"
+	"go/constant"
 	"go/token"
 	"go/types"
 	"reflect"
+	"strconv"
 	"strings"
 
 	"golang.org/x/tools/go/packages"
@@ -74,6 +76,9 @@ func (ix *Index) TraceArgument(ctx context.Context, site domain.CallSite, argInd
 	ix.traceSeen = nil
 	flow.Origin = origin
 	flow.Summary = why
+	if v, ok := exprIntValue(pkg.TypesInfo, call.Args[argIndex]); ok {
+		flow.Value = &v
+	}
 	flow.Transformations = dedupSites(tx)
 	flow.Source = site
 	src, _ := ix.nodeSource(call)
@@ -1422,8 +1427,13 @@ func (ix *Index) fieldWriteGuards(pkg *packages.Package, sink domain.CallSite, a
 		return out
 	}
 	allBounded := true
+	// Aggregate the enforced range across sites: the value stored is the
+	// union of every site's installs, so bounds widen (min low / max high)
+	// and drop a side any site leaves unbounded.
+	u := unionRange{loOK: true, hiOK: true}
 	for _, w := range sites {
-		if _, ok := w.rhs.(*ast.BasicLit); ok {
+		if v, ok := exprIntValue(w.pkg.TypesInfo, w.rhs); ok {
+			u.add(&v, &v)
 			continue // stores a constant — trivially bounded
 		}
 		name := argIdentifier(w.rhs)
@@ -1434,26 +1444,56 @@ func (ix *Index) fieldWriteGuards(pkg *packages.Package, sink domain.CallSite, a
 		var g []domain.Validation
 		ix.scanGuardStmts(w.pkg, w.enc.Body.List, w.pos, name, false, &g)
 		guarded := false
+		var siteLo, siteHi *int64
 		for _, v := range g {
 			if v.Guard && !v.Conditional {
 				guarded = true
+				siteLo = mergePtrMin(siteLo, v.BoundLow)
+				siteHi = mergePtrMax(siteHi, v.BoundHigh)
 			}
 			v.Property = fmt.Sprintf("field-write %s: %s", fv.Name(), v.Property)
 			out = append(out, v)
 		}
 		if !guarded {
 			allBounded = false
+			continue
 		}
+		u.add(siteLo, siteHi)
 	}
 	if allBounded && len(sites) > 0 {
+		lo, hi := u.bounds()
 		out = append(out, domain.Validation{
-			CallSite: sink,
-			Property: fmt.Sprintf("every write site of field %s stores a bounded value (setter-side clamp or constant)", fv.Name()),
-			Guard:    true,
-			Covers:   &sink,
+			CallSite:  sink,
+			Property:  fmt.Sprintf("every write site of field %s stores a bounded value (setter-side clamp or constant)", fv.Name()),
+			Guard:     true,
+			Covers:    &sink,
+			BoundLow:  lo,
+			BoundHigh: hi,
 		})
 	}
 	return out
+}
+
+// mergePtrMin/mergePtrMax union two optional bounds — the wider side
+// wins; nil means unbounded on that side and dominates.
+func mergePtrMin(a, b *int64) *int64 {
+	if a == nil || b == nil {
+		return nil
+	}
+	if *b < *a {
+		return b
+	}
+	return a
+}
+
+func mergePtrMax(a, b *int64) *int64 {
+	if a == nil || b == nil {
+		return nil
+	}
+	if *b > *a {
+		return b
+	}
+	return a
 }
 
 // frameGuards scans enc's body for guard statements on ident that precede
@@ -1642,21 +1682,23 @@ func stmtValidation(ix *Index, pkg *packages.Package, stmt ast.Stmt, ident strin
 		}
 		if terminates(s.Body) {
 			condSrc, _ := ix.nodeSource(s.Cond)
-			return &domain.Validation{Property: condSrc, Guard: true}
+			v := &domain.Validation{Property: condSrc, Guard: true}
+			v.BoundLow, v.BoundHigh = condBounds(pkg.TypesInfo, s.Cond, ident)
+			return v
 		}
 		// `if count > max { count = max }` — a clamp: the branch reassigns
 		// ident to a value not derived from ident whenever the violation
 		// check fires; the false path keeps the already-in-range value.
-		if p, ok := sanitizeIf(ix, pkg, s, ident); ok {
-			return &domain.Validation{Property: p, Guard: true}
+		if p, lo, hi, ok := sanitizeIf(ix, pkg, s, ident); ok {
+			return &domain.Validation{Property: p, Guard: true, BoundLow: lo, BoundHigh: hi}
 		}
 	case *ast.SwitchStmt:
 		// `switch { case count<0: count=0; case count>max: count=max }` —
 		// every listed case sanitizes or terminates ident, and inputs
 		// matching no case pass through already-in-range. Only marked a
 		// guard when every clause conforms.
-		if p, ok := sanitizeSwitch(ix, pkg, s, ident); ok {
-			return &domain.Validation{Property: p, Guard: true}
+		if p, lo, hi, ok := sanitizeSwitch(ix, pkg, s, ident); ok {
+			return &domain.Validation{Property: p, Guard: true, BoundLow: lo, BoundHigh: hi}
 		}
 	case *ast.AssignStmt:
 		for i, lhs := range s.Lhs {
@@ -1673,29 +1715,148 @@ func stmtValidation(ix *Index, pkg *packages.Package, stmt ast.Stmt, ident strin
 
 // sanitizeIf reports whether an if-statement bounds ident: the condition
 // compares ident, the body reassigns it with a clean RHS or terminates,
-// and any else-branch does the same or is empty.
-func sanitizeIf(ix *Index, pkg *packages.Package, s *ast.IfStmt, ident string) (string, bool) {
+// and any else-branch does the same or is empty. low/high report the
+// inclusive range the guard enforces on ident when resolvable.
+func sanitizeIf(ix *Index, pkg *packages.Package, s *ast.IfStmt, ident string) (string, *int64, *int64, bool) {
 	if ident == "" || !exprMentions(s.Cond, ident) || !isComparison(s.Cond) {
-		return "", false
+		return "", nil, nil, false
 	}
 	if !branchBounds(pkg.TypesInfo, s.Body, ident) {
-		return "", false
+		return "", nil, nil, false
+	}
+	// The enforced range is the union of the surviving pass range
+	// (complement of the condition, only when a path keeps ident's value)
+	// and the values each clause installs.
+	u := unionRange{loOK: true, hiOK: true}
+	plo, phi := condBounds(pkg.TypesInfo, s.Cond, ident)
+	pass := s.Else == nil
+	for _, v := range cleanAssignVals(pkg.TypesInfo, s.Body, ident) {
+		if v == nil {
+			u.add(nil, nil) // unresolvable install: bound unknown
+			continue
+		}
+		u.add(v, v)
 	}
 	switch e := s.Else.(type) {
 	case nil:
 	case *ast.BlockStmt:
-		if len(e.List) > 0 && !branchBounds(pkg.TypesInfo, e, ident) {
-			return "", false
+		els := cleanAssignVals(pkg.TypesInfo, e, ident)
+		if len(els) == 0 {
+			pass = true // else does not write ident — value passes through
+		}
+		if len(e.List) > 0 {
+			if !branchBounds(pkg.TypesInfo, e, ident) {
+				return "", nil, nil, false
+			}
+			for _, v := range els {
+				if v == nil {
+					u.add(nil, nil)
+					continue
+				}
+				u.add(v, v)
+			}
 		}
 	case *ast.IfStmt:
-		if _, ok := sanitizeIf(ix, pkg, e, ident); !ok {
-			return "", false
+		_, elo, ehi, ok := sanitizeIf(ix, pkg, e, ident)
+		if !ok {
+			return "", nil, nil, false
 		}
+		u.add(elo, ehi)
 	default:
-		return "", false
+		return "", nil, nil, false
+	}
+	if pass {
+		u.add(plo, phi)
 	}
 	condSrc, _ := ix.nodeSource(s.Cond)
-	return "sanitize-if " + condSrc, true
+	low, high := u.bounds()
+	return "sanitize-if " + condSrc, low, high, true
+}
+
+// condBounds extracts the inclusive bound a comparison imposes on values
+// of ident that survive it (the condition's no-fire side): `v < 0`
+// bounds survivors at >= 0. Only single-var comparisons qualify.
+func condBounds(info *types.Info, cond ast.Expr, ident string) (*int64, *int64) {
+	b, ok := cond.(*ast.BinaryExpr)
+	if !ok {
+		return nil, nil
+	}
+	vars := exprVarIdents(info, b)
+	if len(vars) != 1 || !vars[ident] {
+		return nil, nil
+	}
+	lo, hi, val := boundsDirection(info, b)
+	if lo {
+		return val, nil
+	}
+	if hi {
+		return nil, val
+	}
+	return nil, nil
+}
+
+// cleanAssignVals resolves the values a block installs into ident —
+// literals and named constants. A nil element marks an unresolvable RHS.
+func cleanAssignVals(info *types.Info, b *ast.BlockStmt, ident string) []*int64 {
+	if b == nil {
+		return nil
+	}
+	var out []*int64
+	for _, st := range b.List {
+		as, ok := st.(*ast.AssignStmt)
+		if !ok {
+			continue
+		}
+		for i, lhs := range as.Lhs {
+			id, ok := lhs.(*ast.Ident)
+			if !ok || id.Name != ident || i >= len(as.Rhs) {
+				continue
+			}
+			if exprMentions(as.Rhs[i], ident) {
+				continue // self-derived — not a clean install
+			}
+			if v, ok := exprIntValue(info, as.Rhs[i]); ok {
+				out = append(out, &v)
+			} else {
+				out = append(out, nil)
+			}
+		}
+	}
+	return out
+}
+
+// unionRange accumulates the tightest inclusive bounds covering every
+// added component range — pass-through ranges and installed clean
+// values. A component missing a bound on a side makes the union
+// unbounded on that side: over-approximating the range is the
+// conservative direction for falsification checks.
+type unionRange struct {
+	lo, hi     *int64
+	loOK, hiOK bool
+}
+
+func (u *unionRange) add(lo, hi *int64) {
+	u.loOK = u.loOK && lo != nil
+	u.hiOK = u.hiOK && hi != nil
+	if lo != nil && (u.lo == nil || *lo < *u.lo) {
+		v := *lo
+		u.lo = &v
+	}
+	if hi != nil && (u.hi == nil || *hi > *u.hi) {
+		v := *hi
+		u.hi = &v
+	}
+}
+
+func (u *unionRange) bounds() (*int64, *int64) {
+	var lo, hi *int64
+	if u.loOK {
+		lo = u.lo
+	}
+	if u.hiOK {
+		hi = u.hi
+	}
+	return lo, hi
 }
 
 // sanitizeSwitch reports whether a tagless switch bounds ident. Two
@@ -1713,45 +1874,55 @@ func sanitizeIf(ix *Index, pkg *packages.Package, s *ast.IfStmt, ident string) (
 //
 // A case condition mentioning no variable, or mixing several, makes the
 // switch unanalyzable — not a guard.
-func sanitizeSwitch(ix *Index, pkg *packages.Package, s *ast.SwitchStmt, ident string) (string, bool) {
+func sanitizeSwitch(ix *Index, pkg *packages.Package, s *ast.SwitchStmt, ident string) (string, *int64, *int64, bool) {
 	if ident == "" || s.Tag != nil || s.Body == nil || len(s.Body.List) == 0 {
-		return "", false
+		return "", nil, nil, false
 	}
 	// First pass: find the single compared variable across case
-	// conditions and whether it is bounded on both sides.
+	// conditions and whether it is bounded on both sides. The pass range
+	// (inputs surviving every clause) is the intersection of complements:
+	// lo = max of lower thresholds, hi = min of upper thresholds.
 	cmpVar := ident
 	vars := map[string]bool{}
-	lower, upper := false, false
+	var passLo, passHi *int64
 	for _, stmt := range s.Body.List {
 		cc, ok := stmt.(*ast.CaseClause)
 		if !ok {
-			return "", false
+			return "", nil, nil, false
 		}
 		for _, e := range cc.List {
 			if !isComparison(e) {
-				return "", false
+				return "", nil, nil, false
 			}
 			b := e.(*ast.BinaryExpr)
 			vs := exprVarIdents(pkg.TypesInfo, b)
 			if len(vs) != 1 {
-				return "", false
+				return "", nil, nil, false
 			}
 			for v := range vs {
 				vars[v] = true
 			}
-			lo, hi := boundsDirection(pkg.TypesInfo, b)
-			lower = lower || lo
-			upper = upper || hi
+			lo, hi, val := boundsDirection(pkg.TypesInfo, b)
+			if lo && (passLo == nil || *val > *passLo) {
+				passLo = val
+			}
+			if hi && (passHi == nil || *val < *passHi) {
+				passHi = val
+			}
 		}
 	}
 	if len(vars) > 1 {
-		return "", false
+		return "", nil, nil, false
 	}
 	for v := range vars {
 		cmpVar = v
 	}
 	cases := 0
 	hasDefault := false
+	// The enforced range unions the pass-through range (unmatched inputs
+	// keep the bounded-by-complement value, or a range-gated default
+	// assigns a conversion of it) and each clause's installed constants.
+	u := unionRange{loOK: true, hiOK: true}
 	for _, stmt := range s.Body.List {
 		cc := stmt.(*ast.CaseClause)
 		if cc.List != nil {
@@ -1761,30 +1932,48 @@ func sanitizeSwitch(ix *Index, pkg *packages.Package, s *ast.SwitchStmt, ident s
 		}
 		block := &ast.BlockStmt{List: cc.Body}
 		if branchBounds(pkg.TypesInfo, block, ident) {
+			for _, v := range cleanAssignVals(pkg.TypesInfo, block, ident) {
+				if v == nil {
+					u.add(nil, nil)
+					continue
+				}
+				u.add(v, v)
+			}
 			continue
 		}
 		// Range-gated write: only the default clause sees values that
 		// survived every bound check; assigning it a conversion of the
 		// two-side-bounded compared var keeps ident bounded.
-		if cc.List == nil && cmpVar != ident && lower && upper &&
+		if cc.List == nil && cmpVar != ident && passLo != nil && passHi != nil &&
 			branchBoundsGated(pkg.TypesInfo, block, ident, cmpVar) {
 			continue
 		}
-		return "", false
+		return "", nil, nil, false
 	}
 	if cases == 0 {
-		return "", false
+		return "", nil, nil, false
 	}
 	// Range-gated mode needs a default: without it an unmatched cv leaves
 	// ident's previous value in place, which is not provably bounded. In
 	// self-sanitize mode the pass-through keeps the already-in-range ident.
 	if cmpVar != ident && !hasDefault {
-		return "", false
+		return "", nil, nil, false
+	}
+	if !hasDefault || cmpVar == ident {
+		// No default → unmatched values pass through inside the checked
+		// range; a self-sanitize default assigns a bounded install too.
+		u.add(passLo, passHi)
+	} else if cmpVar != ident {
+		// The gated default installed ident = f(cv) — cv sits inside the
+		// checked range, so ident inherits it.
+		u.add(passLo, passHi)
 	}
 	if cmpVar != ident {
-		return fmt.Sprintf("sanitize-switch on %s range-gated by %s (%d case(s))", ident, cmpVar, cases), true
+		lo, hi := u.bounds()
+		return fmt.Sprintf("sanitize-switch on %s range-gated by %s (%d case(s))", ident, cmpVar, cases), lo, hi, true
 	}
-	return fmt.Sprintf("sanitize-switch on %s (%d case(s))", ident, cases), true
+	lo, hi := u.bounds()
+	return fmt.Sprintf("sanitize-switch on %s (%d case(s))", ident, cases), lo, hi, true
 }
 
 // exprVarIdents collects the distinct variable identifiers (types.Var)
@@ -1809,25 +1998,67 @@ func exprVarIdents(info *types.Info, e ast.Expr) map[string]bool {
 // upper-bound check on the surviving range: `v < x` diverts values below
 // x (lower bound on what passes), `v > x` diverts above (upper bound).
 // The side holding the variable decides the direction; when both sides
-// are variables the bound is ambiguous and neither flag is set.
-func boundsDirection(info *types.Info, b *ast.BinaryExpr) (lower, upper bool) {
+// are variables the bound is ambiguous and neither flag is set. val is
+// the inclusive bound the passing values satisfy, resolved when the
+// non-variable side is a literal or named constant: `v <= K` bounds the
+// pass range at K+1, `v >= K` at K-1.
+func boundsDirection(info *types.Info, b *ast.BinaryExpr) (lower, upper bool, bound *int64) {
 	lv := len(exprVarIdents(info, b.X)) > 0
 	rv := len(exprVarIdents(info, b.Y)) > 0
 	if lv == rv {
-		return false, false
+		return false, false, nil
 	}
 	op := b.Op
+	side := b.Y
 	if rv {
 		// Mirror the comparison so the variable is on the left.
 		op = mirrorOp(op)
+		side = b.X
+	}
+	if k, ok := exprIntValue(info, side); ok {
+		bound = &k
 	}
 	switch op {
-	case token.LSS, token.LEQ:
-		return true, false // v < x: passing values are >= x
-	case token.GTR, token.GEQ:
-		return false, true // v > x: passing values are <= x
+	case token.LSS: // v < K: passing values are >= K
+		return true, false, bound
+	case token.LEQ: // v <= K: passing values are > K
+		if bound != nil {
+			*bound++
+		}
+		return true, false, bound
+	case token.GTR: // v > K: passing values are <= K
+		return false, true, bound
+	case token.GEQ: // v >= K: passing values are < K
+		if bound != nil {
+			*bound--
+		}
+		return false, true, bound
 	}
-	return false, false
+	return false, false, nil
+}
+
+// exprIntValue resolves e to an int64 when it is an integer literal, a
+// named constant, or a single-argument type conversion wrapping one.
+func exprIntValue(info *types.Info, e ast.Expr) (int64, bool) {
+	if call, ok := e.(*ast.CallExpr); ok && len(call.Args) == 1 {
+		if tv, ok := info.Types[call.Fun]; ok && tv.IsType() {
+			return exprIntValue(info, call.Args[0])
+		}
+		return 0, false
+	}
+	if bl, ok := e.(*ast.BasicLit); ok && bl.Kind == token.INT {
+		if v, err := strconv.ParseInt(strings.TrimSpace(bl.Value), 0, 64); err == nil {
+			return v, true
+		}
+		return 0, false
+	}
+	if tv, ok := info.Types[e]; ok && tv.Value != nil &&
+		tv.Value.Kind() == constant.Int {
+		if v, ok := constant.Int64Val(tv.Value); ok {
+			return v, true
+		}
+	}
+	return 0, false
 }
 
 func mirrorOp(op token.Token) token.Token {
