@@ -57,6 +57,7 @@ go test ./...
 | отрицательные выводы и безопасность  | `security.md`                                    |
 | CLI, схемы и внешние интерфейсы      | `api.md`                                         |
 | метрики, аудит и отчётность          | `observability.md`                               |
+| генеральность: knowledge-base, case-specific хардкод | `generality.md`                    |
 | `internal/goanalysis`                | `provenance-and-bounds.md`, `dynamic-markers.md` |
 | `internal/evaluator`, `cmd/analyzer` | `evaluators.md`                                  |
 | `internal/llm`, `internal/states`    | `llm-layer.md`                                   |

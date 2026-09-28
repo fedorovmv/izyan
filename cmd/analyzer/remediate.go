@@ -39,6 +39,11 @@ func runRemediate(args []string) error {
 	if o.repo == "" || o.vulnID == "" {
 		usage()
 	}
+	kb, err := loadKnowledgeBase(o.knowledge)
+	if err != nil {
+		return err
+	}
+	o.kb = kb
 	ctx := context.Background()
 
 	before, err := analyzeCase(ctx, o)

@@ -71,6 +71,7 @@ options:
   --build-tags a,b       build tags
   --root-cause p.Sym     manual root cause symbol (repeatable, comma-separated)
   --exploit-model <path> manual exploit model JSON
+  --knowledge <path>     extend the ecosystem knowledge base (JSON, additive)
   --deterministic-only   disable all LLM-backed states`)
 	os.Exit(2)
 }
@@ -93,6 +94,7 @@ type analyzeOpts struct {
 	releaseGo     string
 	exploitModel  string
 	llmEnv        string
+	knowledge     string
 	detOnly       bool
 	allowExec     bool
 	rootCauseArgs []string
@@ -107,6 +109,9 @@ type analyzeOpts struct {
 	srcIndex *goanalysis.Index
 	goTool   affected.GoTool
 	gvRunner goanalysis.Runner
+	// kb is the resolved ecosystem knowledge base (default + --knowledge
+	// extension); nil = built-in defaults.
+	kb *goanalysis.Knowledge
 }
 
 // commonFlags registers the flags shared by analyze and scan.
@@ -122,6 +127,25 @@ func commonFlags(fs *flag.FlagSet, o *analyzeOpts) {
 	fs.BoolVar(&o.detOnly, "deterministic-only", false, "disable LLM-backed states")
 	fs.BoolVar(&o.allowExec, "allow-exec", false, "permit executing repository code for build/test evidence (run_build/run_tests)")
 	fs.StringVar(&o.llmEnv, "llm-env", "", "path to LLM .env file (default: .env in cwd or repo)")
+	fs.StringVar(&o.knowledge, "knowledge", "", "extend the ecosystem knowledge base with a JSON file (see internal/goanalysis/knowledge.go)")
+}
+
+// loadKnowledgeBase resolves the --knowledge extension: built-in
+// defaults plus the additive entries from the JSON file. Empty path —
+// nil, the index falls back to DefaultKnowledge().
+func loadKnowledgeBase(path string) (*goanalysis.Knowledge, error) {
+	if path == "" {
+		return nil, nil
+	}
+	f, err := goanalysis.LoadKnowledgeFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("knowledge: %w", err)
+	}
+	kb := goanalysis.DefaultKnowledge()
+	if err := kb.Merge(f); err != nil {
+		return nil, fmt.Errorf("knowledge: %w", err)
+	}
+	return kb, nil
 }
 
 func runAnalyze(args []string) error {
@@ -145,6 +169,10 @@ func runAnalyze(args []string) error {
 	}
 	if o.repo == "" || o.vulnID == "" {
 		usage()
+	}
+	var err error
+	if o.kb, err = loadKnowledgeBase(o.knowledge); err != nil {
+		return err
 	}
 	c, err := analyzeCase(context.Background(), o)
 	if err != nil {
@@ -242,6 +270,7 @@ func analyzeCase(ctx context.Context, o analyzeOpts) (*domain.AnalysisCase, erro
 		srcIndex = &goanalysis.Index{
 			Dir: absRepo,
 			Env: tc.Env,
+			KB:  o.kb,
 			Build: domain.ProductSnapshot{
 				GOOS: o.goos, GOARCH: o.goarch, BuildTags: splitCSV(o.tags),
 			},
@@ -466,6 +495,10 @@ func runScan(args []string) error {
 	if o.repo == "" {
 		usage()
 	}
+	var err error
+	if o.kb, err = loadKnowledgeBase(o.knowledge); err != nil {
+		return err
+	}
 	absRepo, err := filepath.Abs(o.repo)
 	if err != nil {
 		return err
@@ -482,6 +515,7 @@ func runScan(args []string) error {
 	o.srcIndex = &goanalysis.Index{
 		Dir: absRepo,
 		Env: o.toolchain.Env,
+		KB:  o.kb,
 		Build: domain.ProductSnapshot{
 			GOOS: o.goos, GOARCH: o.goarch, BuildTags: splitCSV(o.tags),
 		},

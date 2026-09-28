@@ -29,6 +29,11 @@ type Index struct {
 	// loading, so stdlib symbols resolve under the release's GOROOT, not
 	// the local toolchain's.
 	Env []string
+	// KB is the ecosystem-semantics knowledge base provenance and
+	// exposure scans consult; nil installs DefaultKnowledge() on first
+	// use. Set it before the first query — reconfiguring mid-analysis is
+	// not supported.
+	KB *Knowledge
 	// hopLimit overrides the default caller-climb bound during a single
 	// TraceArgumentBound call; 0 = maxTraceHops.
 	hopLimit int
@@ -792,26 +797,10 @@ func isHTTPHandler(pkg *packages.Package, fn *ast.FuncDecl) bool {
 	return sawWriter && sawRequest
 }
 
-// listenerPrimitives are calls that make the product accept inbound network
-// connections. A product function containing one is a "listener" entrypoint:
-// bytes consumed by a reachable server-side transport originate from remote
-// peers, not from product code.
-var listenerPrimitives = []domain.SymbolRef{
-	{Package: "net", Symbol: "Listen"},
-	{Package: "net", Symbol: "ListenTCP"},
-	{Package: "net", Symbol: "ListenUDP"},
-	{Package: "net", Symbol: "Listener.Accept"},
-	{Package: "net/http", Symbol: "ListenAndServe"},
-	{Package: "net/http", Symbol: "ListenAndServeTLS"},
-	{Package: "net/http", Symbol: "Server.Serve"},
-	{Package: "net/http", Symbol: "Server.ListenAndServe"},
-	{Package: "google.golang.org/grpc", Symbol: "NewServer"},
-	{Package: "google.golang.org/grpc", Symbol: "Server.Serve"},
-	{Package: "google.golang.org/grpc", Symbol: "Server.ServeHTTP"},
-}
-
 // FindListeners reports product functions that start network listeners or
-// servers — i.e. functions whose body calls a listener primitive.
+// servers — i.e. functions whose body calls a listener primitive
+// (kb().ListenerPrimitives). Bytes consumed by a reachable server-side
+// transport originate from remote peers, not from product code.
 func (ix *Index) FindListeners(ctx context.Context) ([]domain.Entrypoint, error) {
 	ix.mu.Lock()
 	defer ix.mu.Unlock()
@@ -839,7 +828,7 @@ func (ix *Index) FindListeners(ctx context.Context) ([]domain.Entrypoint, error)
 					if !ok {
 						return true
 					}
-					for _, prim := range listenerPrimitives {
+					for _, prim := range ix.kb().ListenerPrimitives {
 						if callIsSymbol(info, call.Fun, prim) {
 							matched = prim.Package + "." + prim.Symbol
 							return false

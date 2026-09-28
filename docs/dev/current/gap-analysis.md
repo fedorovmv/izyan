@@ -340,6 +340,13 @@ symbols + fixed_versions → минимальный OSV JSON). CLI-флаги
 `VA_PRODUCT_REPO` (env) или `--repo`, проверка — `go test ./...` +
 `go run ./cmd/analyzer eval --corpus eval/live-corpus.json`.
 
+- **Корпус-дрейф**: `ghsa-j497-x9hr-x34x` на продукт-референсе даёт
+  INCONCLUSIVE вместо pinned EXPLOITABLE (C-PEER-INPUT UNKNOWN). Причина
+  — не B12: проверено stash-прогоном; похоже, dep-scope flows (B3)
+  стали резолвиться в CONSTANT → `hasResolvedFlows` гейтит transport-
+  эвристику в `evaluator/transport.go`. Либо баг гейта (CONSTANT не
+  должен считаться «resolved» для peer-input), либо corpus re-pin —
+  решение за B1 ground-truth.
 - **B4** (делегируемо): `internal/states/states.go` — repair demotes
   high-findings; `internal/goanalysis/negative.go` — VERIFIED статусы.
   Правило: demotion VERIFIED-FALSE требует `required_check`/`problem`

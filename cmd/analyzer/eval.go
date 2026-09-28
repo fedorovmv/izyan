@@ -39,6 +39,11 @@ func runEval(args []string) error {
 	if *corpusPath == "" {
 		usage()
 	}
+	kb, err := loadKnowledgeBase(o.knowledge)
+	if err != nil {
+		return err
+	}
+	o.kb = kb
 	// Case state defaults to a temp dir for eval runs — persisted cases stay
 	// available via --case-dir for debugging a failure.
 	caseDirSet := false
@@ -103,6 +108,7 @@ func runEval(args []string) error {
 		o.srcIndex = &goanalysis.Index{
 			Dir: absRepo,
 			Env: o.toolchain.Env,
+			KB:  o.kb,
 			Build: domain.ProductSnapshot{
 				GOOS: o.goos, GOARCH: o.goarch, BuildTags: splitCSV(o.tags),
 			},

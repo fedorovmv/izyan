@@ -8,6 +8,7 @@ import (
 	"go/token"
 	"go/types"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -237,30 +238,6 @@ func (ix *Index) classifyIdent(pkg *packages.Package, enc *ast.FuncDecl, id *ast
 	return domain.OriginUnknown, fmt.Sprintf("identifier %s without resolvable initializer", id.Name)
 }
 
-// slicePopulateFuncs maps pkgpath.Func to (dst, src) argument indexes:
-// calls that fill a byte slice or writer from a source reader —
-// `io.ReadFull(r, buf)`, `binary.Read(r, order, data)`, `io.Copy(w, r)`.
-// The destination's provenance becomes the source's.
-var slicePopulateFuncs = map[string][2]int{
-	"io.ReadFull":    {1, 0},
-	"io.ReadAtLeast": {1, 0},
-	"binary.Read":    {2, 0},
-	"io.Copy":        {0, 1},
-}
-
-// readIntoMethods are methods whose first argument is a destination slice
-// the receiver's data is written into: `conn.Read(buf)`, `r.ReadAt(b,off)`.
-var readIntoMethods = map[string]bool{
-	"Read": true, "ReadAt": true,
-}
-
-// recvMutateMethods are receiver-mutating calls that append/store their
-// argument's data into the receiver value: `buf.Write(x)`, `buf.ReadFrom(r)`.
-var recvMutateMethods = map[string]bool{
-	"Write": true, "WriteString": true, "WriteByte": true, "WriteRune": true,
-	"ReadFrom": true,
-}
-
 // populatedByCall detects writes that flow into v through a call rather
 // than an assignment:
 //
@@ -314,16 +291,15 @@ func (ix *Index) populatedByCall(pkg *packages.Package, enc *ast.FuncDecl, obj t
 				continue
 			}
 			switch {
-			case isDBFunc(fn):
+			case ix.isDBFunc(fn):
 				merge(domain.OriginDatabase, fmt.Sprintf("%s populates &%s", fn.Name(), obj.Name()))
-			case isServiceCall(fn):
+			case ix.isServiceCall(fn):
 				merge(domain.OriginInternalService, fmt.Sprintf("%s populates &%s", fn.Name(), obj.Name()))
 			default:
 				// unmarshal/decode: origin of the *source* propagates — for
 				// methods the source is the receiver (`dec.Decode(&x)`), for
 				// package funcs the data argument (`json.Unmarshal(data, &x)`).
-				switch fn.Name() {
-				case "Unmarshal", "Decode", "DecodeElement", "UnmarshalExact", "DecodeValues", "Read":
+				if ix.kb().PopulateNames[fn.Name()] {
 					var src ast.Expr
 					if sig, ok := fn.Type().(*types.Signature); ok && sig.Recv() != nil {
 						if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
@@ -340,7 +316,7 @@ func (ix *Index) populatedByCall(pkg *packages.Package, enc *ast.FuncDecl, obj t
 			}
 		}
 		// slice/writer destination at a known position: f(src, ..., v, ...)
-		if idx, ok := slicePopulateFuncs[fn.Pkg().Path()+"."+fn.Name()]; ok &&
+		if idx, ok := ix.kb().SlicePopulateFuncs[fn.Pkg().Path()+"."+fn.Name()]; ok &&
 			idx[0] < len(call.Args) && idx[1] < len(call.Args) && isObj(call.Args[idx[0]]) {
 			o, w := eval(call.Args[idx[1]], depth+1)
 			merge(o, fmt.Sprintf("%s into %s: %s", fn.Name(), obj.Name(), w))
@@ -351,13 +327,13 @@ func (ix *Index) populatedByCall(pkg *packages.Package, enc *ast.FuncDecl, obj t
 			continue
 		}
 		// x.Read(v): the destination slice receives the reader's origin.
-		if readIntoMethods[fn.Name()] && len(call.Args) > 0 && isObj(call.Args[0]) {
+		if ix.kb().ReadIntoMethods[fn.Name()] && len(call.Args) > 0 && isObj(call.Args[0]) {
 			o, w := eval(sel.X, depth+1)
 			merge(o, fmt.Sprintf("%s into %s: %s", fn.Name(), obj.Name(), w))
 			continue
 		}
 		// v.Write(arg)/v.ReadFrom(r): the accumulator takes arg's origin.
-		if recvMutateMethods[fn.Name()] && len(call.Args) > 0 && isObj(sel.X) {
+		if ix.kb().RecvMutateMethods[fn.Name()] && len(call.Args) > 0 && isObj(sel.X) {
 			o, w := eval(call.Args[0], depth+1)
 			merge(o, fmt.Sprintf("%s.%s(%s)", obj.Name(), fn.Name(), w))
 		}
@@ -370,36 +346,34 @@ func (ix *Index) populatedByCall(pkg *packages.Package, enc *ast.FuncDecl, obj t
 
 // isDBFunc reports whether fn is a database/kv-store API — method on a
 // driver type (sql.Rows, gorm.DB, mongo.Collection, redis.Client...) or a
-// package-level helper in a known data-store package.
-func isDBFunc(fn *types.Func) bool {
+// package-level helper in a known data-store package. Package paths and
+// substrings come from the knowledge base (DBPkgs / DBPkgHints).
+func (ix *Index) isDBFunc(fn *types.Func) bool {
 	pkgPath := ""
 	if fn.Pkg() != nil {
 		pkgPath = fn.Pkg().Path()
 	}
-	switch {
-	case pkgPath == "database/sql",
-		strings.Contains(pkgPath, "sqlx"),
-		strings.Contains(pkgPath, "gorm"),
-		strings.Contains(pkgPath, "pgx"),
-		strings.Contains(pkgPath, "mongo"),
-		strings.Contains(pkgPath, "redis"),
-		strings.Contains(pkgPath, "etcd"),
-		strings.Contains(pkgPath, "gocql"),
-		strings.Contains(pkgPath, "elasticsearch"):
+	if ix.isDBPkg(pkgPath) {
 		return true
 	}
 	// receiver type in a data-store package (method values too)
 	if sig, ok := fn.Type().(*types.Signature); ok && sig.Recv() != nil {
 		if n := recvNamed(sig.Recv().Type()); n != nil && n.Obj() != nil && n.Obj().Pkg() != nil {
-			p := n.Obj().Pkg().Path()
-			switch {
-			case p == "database/sql",
-				strings.Contains(p, "sqlx"), strings.Contains(p, "gorm"),
-				strings.Contains(p, "pgx"), strings.Contains(p, "mongo"),
-				strings.Contains(p, "redis"), strings.Contains(p, "etcd"),
-				strings.Contains(p, "gocql"), strings.Contains(p, "elasticsearch"):
-				return true
-			}
+			return ix.isDBPkg(n.Obj().Pkg().Path())
+		}
+	}
+	return false
+}
+
+// isDBPkg matches a package path against the knowledge-base data-store
+// entries: exact paths first, then substring hints.
+func (ix *Index) isDBPkg(pkgPath string) bool {
+	if slices.Contains(ix.kb().DBPkgs, pkgPath) {
+		return true
+	}
+	for _, h := range ix.kb().DBPkgHints {
+		if strings.Contains(pkgPath, h) {
+			return true
 		}
 	}
 	return false
@@ -417,8 +391,9 @@ func recvNamed(t types.Type) *types.Named {
 }
 
 // isServiceCall detects RPC-stub methods: a receiver type whose package
-// imports google.golang.org/grpc — generated *Client stubs.
-func isServiceCall(fn *types.Func) bool {
+// imports an RPC framework — generated *Client stubs. Framework import
+// paths come from the knowledge base (ServiceCallPkgHints).
+func (ix *Index) isServiceCall(fn *types.Func) bool {
 	sig, ok := fn.Type().(*types.Signature)
 	if !ok || sig.Recv() == nil {
 		return false
@@ -428,8 +403,10 @@ func isServiceCall(fn *types.Func) bool {
 		return false
 	}
 	for _, imp := range n.Obj().Pkg().Imports() {
-		if strings.Contains(imp.Path(), "google.golang.org/grpc") {
-			return true
+		for _, h := range ix.kb().ServiceCallPkgHints {
+			if strings.Contains(imp.Path(), h) {
+				return true
+			}
 		}
 	}
 	return false
@@ -590,10 +567,6 @@ func (ix *Index) classifySelector(pkg *packages.Package, enc *ast.FuncDecl, e *a
 	return ix.classify(pkg, enc, e.X, depth)
 }
 
-// configTagKeys are struct tags whose fields are populated by
-// configuration decoding, not request payloads.
-var configTagKeys = []string{"mapstructure", "env", "envconfig", "toml", "ini"}
-
 // fieldConfigTagged locates the field's declaration and reports whether
 // its struct tag marks a configuration-decoded value.
 func (ix *Index) fieldConfigTagged(field *types.Var) bool {
@@ -619,7 +592,7 @@ func (ix *Index) fieldConfigTagged(field *types.Var) bool {
 						found = true
 						if fd.Tag != nil {
 							tag := strings.Trim(fd.Tag.Value, "`")
-							for _, k := range configTagKeys {
+							for _, k := range ix.kb().ConfigTagKeys {
 								if _, ok := reflect.StructTag(tag).Lookup(k); ok {
 									tagged = true
 								}
@@ -807,10 +780,10 @@ func (ix *Index) classifyCall(pkg *packages.Package, enc *ast.FuncDecl, call *as
 	if fn, ok := obj.(*types.Func); ok && fn.Pkg() != nil {
 		key := fn.Pkg().Path() + "." + fn.Name()
 		// DB/RPC source calls: result value is store- or service-provided.
-		if isDBFunc(fn) {
+		if ix.isDBFunc(fn) {
 			return domain.OriginDatabase, fmt.Sprintf("result of %s", key)
 		}
-		if isServiceCall(fn) {
+		if ix.isServiceCall(fn) {
 			return domain.OriginInternalService, fmt.Sprintf("gRPC stub %s", key)
 		}
 		// Outbound HTTP calls: an internal/configured endpoint is a service
@@ -823,17 +796,17 @@ func (ix *Index) classifyCall(pkg *packages.Package, enc *ast.FuncDecl, call *as
 		if peerSourceCallee(fn) {
 			return domain.OriginExternalUntrusted, "peer channel " + key
 		}
-		if o, ok := knownSourceFuncs[key]; ok {
+		if o, ok := ix.kb().SourceFuncs[key]; ok {
 			return o, key
 		}
 		// Carrier constructors/accessors: the result derives from one
 		// input — io.ReadAll(r), NewDecoder(r), NewRequest(m,url,b), or
 		// accessor methods like scanner.Text()/b.String().
-		if idx, ok := passthroughFuncs[key]; ok && idx < len(call.Args) {
+		if idx, ok := ix.kb().PassthroughFuncs[key]; ok && idx < len(call.Args) {
 			o, why := ix.classify(pkg, enc, call.Args[idx], depth+1)
 			return o, fmt.Sprintf("%s(%s)", key, why)
 		}
-		if sel, ok := call.Fun.(*ast.SelectorExpr); ok && passthroughMethods[fn.Name()] {
+		if sel, ok := call.Fun.(*ast.SelectorExpr); ok && ix.kb().PassthroughMethods[fn.Name()] {
 			o, why := ix.classify(pkg, enc, sel.X, depth)
 			return o, fmt.Sprintf("%s() on %s", fn.Name(), why)
 		}
@@ -894,11 +867,11 @@ func (ix *Index) httpClientOrigin(pkg *packages.Package, enc *ast.FuncDecl, fn *
 	isClientMethod := false
 	if sig, ok := fn.Type().(*types.Signature); ok && sig.Recv() != nil {
 		if n := recvNamed(sig.Recv().Type()); n != nil && n.Obj() != nil &&
-			n.Obj().Pkg() != nil && n.Obj().Pkg().Path() == "net/http" {
+			n.Obj().Pkg() != nil && ix.kb().HTTPClientPkgs[n.Obj().Pkg().Path()] {
 			isClientMethod = true
 		}
 	}
-	isPkgFunc := pkgPath == "net/http" &&
+	isPkgFunc := ix.kb().HTTPClientPkgs[pkgPath] &&
 		(fn.Name() == "Get" || fn.Name() == "Post" || fn.Name() == "Head" ||
 			fn.Name() == "PostForm")
 	if !isPkgFunc && !(isClientMethod && (fn.Name() == "Get" || fn.Name() == "Post" ||
@@ -916,28 +889,19 @@ func (ix *Index) httpClientOrigin(pkg *packages.Package, enc *ast.FuncDecl, fn *
 				fmt.Sprintf("http %s to configured endpoint", fn.Name()), true
 		}
 	}
-	if hasAuthMarkers(enc) {
+	if ix.hasAuthMarkers(enc) {
 		return domain.OriginExternalAuthenticated,
 			fmt.Sprintf("http %s via authenticated client", fn.Name()), true
 	}
 	return domain.OriginExternalUntrusted, fmt.Sprintf("http %s response body", fn.Name()), true
 }
 
-// authCallNames are callee names that attach credentials to a request or
-// client — evidence that a peer is authenticated rather than a random
-// internet source.
-var authCallNames = map[string]bool{
-	"SetBasicAuth": true, "BasicAuth": true, "SetAuth": true,
-	"WithAuth": true, "WithCredentials": true, "WithPerRPCCredentials": true,
-	"NewOauthAccess": true, "NewStaticTokenSource": true,
-	"ReuseTokenSource": true, "SetToken": true,
-}
-
 // hasAuthMarkers reports whether the enclosing function attaches
 // credentials somewhere in its body: an "Authorization" header literal or
-// a call to a credential-attaching helper. Heuristic — it notes that a
-// peer is *probably* authenticated, never that input is safe.
-func hasAuthMarkers(enc *ast.FuncDecl) bool {
+// a call to a credential-attaching helper (kb().AuthCallNames).
+// Heuristic — it notes that a peer is *probably* authenticated, never
+// that input is safe.
+func (ix *Index) hasAuthMarkers(enc *ast.FuncDecl) bool {
 	if enc == nil || enc.Body == nil {
 		return false
 	}
@@ -953,7 +917,7 @@ func hasAuthMarkers(enc *ast.FuncDecl) bool {
 				found = true
 			}
 		case *ast.CallExpr:
-			if authCallNames[callName(x.Fun)] {
+			if ix.kb().AuthCallNames[callName(x.Fun)] {
 				found = true
 			}
 		}
@@ -998,7 +962,7 @@ func (ix *Index) traceCallee(fn *types.Func, call *ast.CallExpr, evalArg exprEva
 	if decl == nil || decl.Body == nil || dp == nil || dp.TypesInfo == nil {
 		return "", "", false
 	}
-	if bodyContaminated(dp, decl) {
+	if ix.bodyContaminated(dp, decl) {
 		return "", "", false
 	}
 	// map callee parameter name -> index into the call's argument list
@@ -1104,7 +1068,7 @@ func (ix *Index) evalCalleeExpr(dp *packages.Package, decl *ast.FuncDecl, e ast.
 		}
 		if fn2, ok := obj.(*types.Func); ok && fn2.Pkg() != nil {
 			key := fn2.Pkg().Path() + "." + fn2.Name()
-			if o, ok := knownSourceFuncs[key]; ok {
+			if o, ok := ix.kb().SourceFuncs[key]; ok {
 				return o, key
 			}
 			inner := func(a ast.Expr, d int) (domain.DataOrigin, string) {
@@ -1122,7 +1086,7 @@ func (ix *Index) evalCalleeExpr(dp *packages.Package, decl *ast.FuncDecl, e ast.
 // bodyContaminated reports whether the callee body reads any external data
 // source itself. If it does, we cannot prove the output is input-derived,
 // so the result must stay UNKNOWN.
-func bodyContaminated(dp *packages.Package, decl *ast.FuncDecl) bool {
+func (ix *Index) bodyContaminated(dp *packages.Package, decl *ast.FuncDecl) bool {
 	bad := false
 	ast.Inspect(decl.Body, func(n ast.Node) bool {
 		switch v := n.(type) {
@@ -1138,7 +1102,7 @@ func bodyContaminated(dp *packages.Package, decl *ast.FuncDecl) bool {
 			}
 		case *ast.CallExpr:
 			if fn, ok := calleeObject(dp.TypesInfo, v.Fun).(*types.Func); ok && fn.Pkg() != nil {
-				if o, ok := knownSourceFuncs[fn.Pkg().Path()+"."+fn.Name()]; ok &&
+				if o, ok := ix.kb().SourceFuncs[fn.Pkg().Path()+"."+fn.Name()]; ok &&
 					o != domain.OriginConstant {
 					bad = true
 				}
@@ -1340,50 +1304,6 @@ func inputScore(t string) int {
 		return -1
 	}
 	return 0
-}
-
-// knownSourceFuncs maps pkgpath.Func to a data origin. Extend as needed —
-// this is provenance, not pattern matching for verdicts.
-var knownSourceFuncs = map[string]domain.DataOrigin{
-	"os.Getenv":               domain.OriginConfiguration,
-	"os.ReadFile":             domain.OriginConfiguration,
-	"io/ioutil.ReadFile":      domain.OriginConfiguration,
-	"flag.String":             domain.OriginConfiguration,
-	"flag.Int":                domain.OriginConfiguration,
-	"flag.Bool":               domain.OriginConfiguration,
-	"flag.Parse":              domain.OriginConfiguration,
-	"fmt.Sscanf":              domain.OriginUnknown,
-	"os.Open":                 domain.OriginConfiguration,
-	"net/http.Get":            domain.OriginExternalUntrusted,
-	"net/http.Post":           domain.OriginExternalUntrusted,
-	"net/http.ReadRequest":    domain.OriginExternalUntrusted,
-	"encoding/json.Unmarshal": domain.OriginUnknown,
-}
-
-// passthroughFuncs maps pkgpath.Func to the argument index whose origin
-// the call result carries — readers, decoders, request builders.
-var passthroughFuncs = map[string]int{
-	"io.ReadAll":                     0,
-	"io/ioutil.ReadAll":              0,
-	"bufio.NewScanner":               0,
-	"bufio.NewReader":                0,
-	"bufio.NewReaderSize":            0,
-	"bytes.NewReader":                0,
-	"bytes.NewBuffer":                0,
-	"bytes.NewBufferString":          0,
-	"strings.NewReader":              0,
-	"encoding/json.NewDecoder":       0,
-	"encoding/xml.NewDecoder":        0,
-	"net/http.NewRequest":            1, // (method, url, body)
-	"net/http.NewRequestWithContext": 2, // (ctx, method, url, body)
-	"net/url.Parse":                  0,
-	"net/url.ParseQuery":             0,
-}
-
-// passthroughMethods: accessor methods whose result carries the receiver's
-// data origin — scanner.Text(), buffer.Bytes(), builder.String().
-var passthroughMethods = map[string]bool{
-	"Text": true, "Bytes": true, "String": true,
 }
 
 // traceParam resolves an argument bound to an enclosing function parameter by

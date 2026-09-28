@@ -13,23 +13,6 @@ import (
 	"example.com/vuln-analyzer/internal/domain"
 )
 
-// listenAddrArg indexes the address argument per listener primitive, or
-// -1 when the address lives outside the call (http.Server.Addr field,
-// grpc Server.Serve(listener)).
-var listenAddrArg = map[string]int{
-	"net.Listen":                              1,
-	"net.ListenTCP":                           1,
-	"net.ListenUDP":                           1,
-	"net/http.ListenAndServe":                 0,
-	"net/http.ListenAndServeTLS":              0,
-	"net/http.Server.ListenAndServe":          -1,
-	"net/http.Server.Serve":                   -1,
-	"google.golang.org/grpc.NewServer":        -1,
-	"google.golang.org/grpc.Server.Serve":     -1,
-	"google.golang.org/grpc.Server.ServeHTTP": -1,
-	"net.Listener.Accept":                     -1,
-}
-
 // dialNameRe matches API names that initiate outbound connections:
 // Dial*/DialContext/Connect/Open/NewClient-style callees inside the
 // vulnerable module.
@@ -66,7 +49,7 @@ func (ix *Index) ListenSites(ctx context.Context) ([]domain.ExposureFact, error)
 					if !ok {
 						return true
 					}
-					for _, prim := range listenerPrimitives {
+					for _, prim := range ix.kb().ListenerPrimitives {
 						key := prim.Package + "." + prim.Symbol
 						if !callIsSymbol(info, call.Fun, prim) {
 							continue
@@ -173,7 +156,7 @@ func (ix *Index) InboundAuthFacts(ctx context.Context) ([]domain.ExposureFact, e
 				if !ok || fn.Body == nil {
 					continue
 				}
-				if !fnWiresServer(info, fn.Body) {
+				if !ix.fnWiresServer(info, fn.Body) {
 					continue
 				}
 				ast.Inspect(fn.Body, func(n ast.Node) bool {
@@ -181,7 +164,7 @@ func (ix *Index) InboundAuthFacts(ctx context.Context) ([]domain.ExposureFact, e
 					if !ok {
 						return true
 					}
-					name, ok := middlewareAuthName(info, call)
+					name, ok := ix.middlewareAuthName(info, call)
 					if !ok {
 						return true
 					}
@@ -201,7 +184,7 @@ func (ix *Index) InboundAuthFacts(ctx context.Context) ([]domain.ExposureFact, e
 
 // fnWiresServer reports whether the function body contains a listener
 // primitive or constructs a server (grpc.NewServer).
-func fnWiresServer(info *types.Info, body *ast.BlockStmt) bool {
+func (ix *Index) fnWiresServer(info *types.Info, body *ast.BlockStmt) bool {
 	found := false
 	ast.Inspect(body, func(n ast.Node) bool {
 		if found {
@@ -211,16 +194,11 @@ func fnWiresServer(info *types.Info, body *ast.BlockStmt) bool {
 		if !ok {
 			return true
 		}
-		for _, prim := range listenerPrimitives {
+		for _, prim := range ix.kb().ListenerPrimitives {
 			if callIsSymbol(info, call.Fun, prim) {
 				found = true
 				return false
 			}
-		}
-		if callIsSymbol(info, call.Fun, domain.SymbolRef{
-			Package: "google.golang.org/grpc", Symbol: "NewServer"}) {
-			found = true
-			return false
 		}
 		return true
 	})
@@ -230,7 +208,7 @@ func fnWiresServer(info *types.Info, body *ast.BlockStmt) bool {
 // middlewareAuthName recognizes auth-marked names in middleware
 // positions: r.Use(mw)/r.With(mw) args, grpc interceptor options and
 // wrapped handlers passed to listeners. Returns the matched name.
-func middlewareAuthName(info *types.Info, call *ast.CallExpr) (string, bool) {
+func (ix *Index) middlewareAuthName(info *types.Info, call *ast.CallExpr) (string, bool) {
 	sel, ok := call.Fun.(*ast.SelectorExpr)
 	if !ok {
 		return "", false
@@ -256,7 +234,7 @@ func middlewareAuthName(info *types.Info, call *ast.CallExpr) (string, bool) {
 		return "", false
 	}
 	// http.ListenAndServe(addr, authWrap(h)) — wrapped handler arg.
-	for _, prim := range listenerPrimitives {
+	for _, prim := range ix.kb().ListenerPrimitives {
 		if !callIsSymbol(info, call.Fun, prim) {
 			continue
 		}
@@ -286,8 +264,11 @@ func exprName(info *types.Info, e ast.Expr) string {
 }
 
 // resolveListenAddr fills fact.Address/AddressSource for a listener call.
+// kb().ListenAddrArg gives the address argument index; -1 marks
+// primitives whose address lives outside the call (http.Server.Addr
+// field, grpc Server.Serve(listener)) and falls to server-shape tracing.
 func (ix *Index) resolveListenAddr(info *types.Info, pkg *packages.Package, fn *ast.FuncDecl, call *ast.CallExpr, key string, fact *domain.ExposureFact) {
-	idx, known := listenAddrArg[key]
+	idx, known := ix.kb().ListenAddrArg[key]
 	if known && idx >= 0 && idx < len(call.Args) {
 		fact.Address, fact.AddressSource = ix.exprStringValue(info, pkg, fn, call.Args[idx])
 		return
@@ -342,10 +323,10 @@ func (ix *Index) identAssignedAddr(info *types.Info, pkg *packages.Package, fn *
 		switch r := as.Rhs[0].(type) {
 		case *ast.CallExpr:
 			// listener primitive? resolve its addr arg
-			for _, prim := range listenerPrimitives {
+			for _, prim := range ix.kb().ListenerPrimitives {
 				key := prim.Package + "." + prim.Symbol
 				if callIsSymbol(info, r.Fun, prim) {
-					if idx := listenAddrArg[key]; idx >= 0 && idx < len(r.Args) {
+					if idx := ix.kb().ListenAddrArg[key]; idx >= 0 && idx < len(r.Args) {
 						val, src = ix.exprStringValue(info, pkg, fn, r.Args[idx])
 					}
 				}
