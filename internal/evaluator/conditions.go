@@ -107,7 +107,7 @@ func (SymbolReachable) Evaluate(cond domain.Condition, c *domain.AnalysisCase) d
 
 	claim.EvidenceIDs = nil
 	claim.Result = domain.ClaimFalse
-	claim.Falsifier = "govulncheck-silence"
+	claim.Falsifier = domain.FalsifierGovulncheckSilence
 	claim.Explanation = fmt.Sprintf("govulncheck found no call path to any of %d affected symbol(s)", len(symbols))
 	claim.Limitations = append(claim.Limitations,
 		"FALSE is a candidate: interfaces/reflection/plugins may bypass static reachability")
@@ -139,7 +139,7 @@ func libraryUsageVerdict(claim domain.Claim, c *domain.AnalysisCase, subjects []
 			return claim
 		}
 		claim.Result = domain.ClaimFalse
-		claim.Falsifier = "no-module-usage"
+		claim.Falsifier = domain.FalsifierNoModuleUsage
 		claim.Explanation = why + " and product makes no calls into the module(s) owning the subjects"
 		claim.Limitations = append(claim.Limitations,
 			"FALSE is a candidate: module API usage is measured from product call sites, not vendored internals")
@@ -192,7 +192,7 @@ func libraryUsageVerdict(claim domain.Claim, c *domain.AnalysisCase, subjects []
 		return claim
 	}
 	claim.Result = domain.ClaimFalse
-	claim.Falsifier = "unreached-exported-subject"
+	claim.Falsifier = domain.FalsifierUnreachedExportedSubject
 	claim.Explanation = fmt.Sprintf(
 		"%s; none of %d exported subject(s) is invoked by product code nor reachable through the module API it uses",
 		why, len(subjects))
@@ -254,7 +254,7 @@ func evalReadDirection(cond domain.Condition, c *domain.AnalysisCase) domain.Cla
 		return claim
 	}
 	claim.Result = domain.ClaimFalse
-	claim.Falsifier = "no-product-reader"
+	claim.Falsifier = domain.FalsifierNoProductReader
 	claim.Explanation = fmt.Sprintf(
 		"no product-code reference to any of %d subject(s); the sensitive data has no observed reader",
 		len(subjects))
@@ -317,7 +317,7 @@ func evalSequencePair(cond domain.Condition, c *domain.AnalysisCase) domain.Clai
 		return claim
 	}
 	claim.Result = domain.ClaimFalse
-	claim.Falsifier = "missing-pair-member"
+	claim.Falsifier = domain.FalsifierMissingPairMember
 	claim.Explanation = fmt.Sprintf(
 		"round-trip pair incomplete: product never invokes %s",
 		strings.Join(missing, ", "))

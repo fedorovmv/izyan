@@ -555,3 +555,16 @@ func TestVerifyInputFalseSecondModule(t *testing.T) {
 		t.Fatalf("nv=%+v — external input through a second-module dep caller must contradict FALSE", got)
 	}
 }
+
+func TestInputOriginVerificationUnknownValue(t *testing.T) {
+	for _, origin := range []domain.DataOrigin{"", domain.OriginUnknown, "FUTURE_ORIGIN"} {
+		if got := inputOriginVerification(origin); got != domain.NegativeInsufficientScope {
+			t.Errorf("origin %q: status = %s, want INSUFFICIENT_SCOPE", origin, got)
+		}
+	}
+	for _, origin := range []domain.DataOrigin{domain.OriginConstant, domain.OriginGenerated} {
+		if got := inputOriginVerification(origin); got != domain.NegativeVerified {
+			t.Errorf("origin %q: status = %s, want VERIFIED", origin, got)
+		}
+	}
+}

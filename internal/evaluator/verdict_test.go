@@ -66,7 +66,7 @@ func TestVerdictNoExploitPathFoundRequiresVerification(t *testing.T) {
 	if got.Verdict != domain.VerdictInconclusive {
 		t.Fatalf("verified FALSE without falsifier: got %s, want INCONCLUSIVE", got.Verdict)
 	}
-	verified[0].Falsifier = "constant-input"
+	verified[0].Falsifier = domain.FalsifierConstantOrGeneratedInput
 	got = VerdictEvaluator{}.Evaluate(affectedAllTrue(), model, verified)
 	if got.Verdict != domain.VerdictNoExploitPathFound {
 		t.Fatalf("verified FALSE: got %s, want NO_EXPLOIT_PATH_FOUND", got.Verdict)

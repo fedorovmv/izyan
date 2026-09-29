@@ -95,7 +95,7 @@ func evalConfigFlag(cond domain.Condition, c *domain.AnalysisCase, claim domain.
 	}
 	if len(safeSites) > 0 {
 		claim.Result = domain.ClaimFalse
-		claim.Falsifier = "safe-config-assignment"
+		claim.Falsifier = domain.FalsifierSafeConfigAssignment
 		claim.Explanation = fmt.Sprintf("knob %s assigned only safe value(s) at %d site(s)", sym, len(safeSites))
 		return claim
 	}
@@ -106,7 +106,7 @@ func evalConfigFlag(cond domain.Condition, c *domain.AnalysisCase, claim domain.
 	if zero, ok := c.EvidenceGraph.SymbolFieldKind(key); ok && zero == "bool" &&
 		(insecure == "true" || insecure == "1") {
 		claim.Result = domain.ClaimFalse
-		claim.Falsifier = "zero-value-config"
+		claim.Falsifier = domain.FalsifierZeroValueConfig
 		claim.Explanation = fmt.Sprintf("knob %s never assigned in product code — Go zero value false is not %q", sym, insecure)
 		claim.Limitations = append(claim.Limitations,
 			"zero-value reasoning assumes no runtime default override (struct defaults, env layering)")
@@ -149,7 +149,7 @@ func evalConfigKey(cond domain.Condition, c *domain.AnalysisCase, claim domain.C
 		return claim
 	}
 	claim.Result = domain.ClaimFalse
-	claim.Falsifier = "safe-config-key"
+	claim.Falsifier = domain.FalsifierSafeConfigKey
 	claim.Explanation = fmt.Sprintf("config key %q present with safe value(s)", key)
 	return claim
 }

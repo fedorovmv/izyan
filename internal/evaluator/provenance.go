@@ -111,7 +111,7 @@ func (ArgumentOrigin) Evaluate(cond domain.Condition, c *domain.AnalysisCase) do
 		}
 		if covered {
 			claim.Result = domain.ClaimFalse
-			claim.Falsifier = "guards"
+			claim.Falsifier = domain.FalsifierGuards
 			claim.Explanation = fmt.Sprintf(
 				"all %d traced sink site(s) are covered by bound guards in the product: the values reaching the sink "+
 					"are provably outside the violating range, so this exploit condition cannot be satisfied "+
@@ -144,9 +144,7 @@ func (ArgumentOrigin) Evaluate(cond domain.Condition, c *domain.AnalysisCase) do
 			fmt.Sprintf("%d call site(s) receive config/service-provided input; attacker control depends on deployment trust boundary — cannot prove non-external", deployDependent))
 	default:
 		claim.Result = domain.ClaimFalse
-		if safe == len(flows) {
-			claim.Falsifier = "constant-or-generated-input"
-		}
+		claim.Falsifier = domain.FalsifierConstantOrGeneratedInput
 		claim.Explanation = fmt.Sprintf("all %d traced call site(s) receive non-external input", safe)
 		claim.Limitations = append(claim.Limitations,
 			"FALSE is a candidate: provenance coverage is limited to direct call sites")

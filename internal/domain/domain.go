@@ -396,6 +396,21 @@ type Claim struct {
 	Falsifier string `json:"falsifier,omitempty"`
 }
 
+const (
+	FalsifierGovulncheckSilence       = "govulncheck-silence"
+	FalsifierNoModuleUsage            = "no-module-usage"
+	FalsifierUnreachedExportedSubject = "unreached-exported-subject"
+	FalsifierNoProductReader          = "no-product-reader"
+	FalsifierMissingPairMember        = "missing-pair-member"
+	FalsifierSnapshotFactMismatch     = "snapshot-fact-mismatch"
+	FalsifierMissingSourceSymbol      = "missing-source-symbol"
+	FalsifierSafeConfigAssignment     = "safe-config-assignment"
+	FalsifierZeroValueConfig          = "zero-value-config"
+	FalsifierSafeConfigKey            = "safe-config-key"
+	FalsifierGuards                   = "guards"
+	FalsifierConstantOrGeneratedInput = "constant-or-generated-input"
+)
+
 type EvidenceQuality string
 
 const (

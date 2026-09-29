@@ -37,11 +37,11 @@ Baseline-таблица govulncheck-vs-analyzer (последний прогон
 | real-dns-zone | EXPLOITABLE | reachable | нет |
 | real-getter-file | INCONCLUSIVE | reachable | нет — dispatch-key const `file`, eval-полнота не дожимает |
 | real-getter-fixed | NOT_AFFECTED | silent | **да — deterministic** |
-| real-yaml-const | INCONCLUSIVE | reachable | нет — const-input falsifier не реализован |
+| real-yaml-const | INCONCLUSIVE | reachable | нет — внутренние dep-call sites неразрешены; const payload не замыкает все пути к sink |
 | real-yaml3-http | EXPLOITABLE | reachable | нет |
 | real-yaml3-const | NO_EXPLOIT_PATH_FOUND | reachable | **да — единственный `Unmarshal` получает build-time constant; NV VERIFIED** |
 | real-protojson-http | EXPLOITABLE | reachable | нет |
-| real-protojson-const | INCONCLUSIVE | reachable | нет — const-input falsifier не реализован |
+| real-protojson-const | INCONCLUSIVE | reachable | нет — grouped sinks не позволяют изолировать input arg и замкнуть все пути к sink |
 | real-protojson-fixed | NOT_AFFECTED | silent | **да — deterministic** |
 | real-dns-fixed | NOT_AFFECTED | silent | **да — deterministic** |
 | real-dns-marshal | INCONCLUSIVE | package-level | нет — sinks частично unexported; та же vacuous-refs проблема |

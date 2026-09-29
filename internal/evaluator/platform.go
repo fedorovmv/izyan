@@ -115,7 +115,7 @@ func (Platform) Evaluate(cond domain.Condition, c *domain.AnalysisCase) domain.C
 	switch {
 	case len(violated) > 0:
 		claim.Result = domain.ClaimFalse
-		claim.Falsifier = "snapshot-fact-mismatch"
+		claim.Falsifier = domain.FalsifierSnapshotFactMismatch
 		claim.Explanation = "snapshot fact mismatch: " + strings.Join(violated, "; ")
 		claim.Limitations = append(claim.Limitations,
 			"FALSE is a snapshot fact verdict, not a code-scope claim")

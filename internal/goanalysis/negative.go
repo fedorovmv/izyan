@@ -125,7 +125,7 @@ func (v Verifier) VerifyFalse(ctx context.Context, c *domain.AnalysisCase, claim
 				// only reflect_write (Value.Set*) and unsafe_write
 				// (store through unsafe.Pointer deref) markers can.
 				if (m.Kind == "reflect" || m.Kind == "unsafe") &&
-					claim.Falsifier == "guards" {
+					claim.Falsifier == domain.FalsifierGuards {
 					continue
 				}
 				if anyExported && !dynSeen[m.Kind] {
@@ -138,7 +138,7 @@ func (v Verifier) VerifyFalse(ctx context.Context, c *domain.AnalysisCase, claim
 				// syntactic write-site scans — but reflect.Set works only on
 				// *exported* fields; when every covered field is unexported
 				// this marker cannot invalidate the coverage.
-				if claim.Falsifier == "guards" && !hasExportedCoveredField(c, claim) {
+				if claim.Falsifier == domain.FalsifierGuards && !hasExportedCoveredField(c, claim) {
 					continue
 				}
 				if !dynSeen[m.Kind] {
@@ -180,7 +180,7 @@ func (v Verifier) VerifyFalse(ctx context.Context, c *domain.AnalysisCase, claim
 		case domain.ConditionAttackerControl:
 			out = v.verifyInputFalse(ctx, c, claim, nv, subjects, cond.ArgIndex)
 		case domain.ConditionInputConstraint:
-			if claim.Falsifier == "guards" {
+			if claim.Falsifier == domain.FalsifierGuards {
 				out = v.verifyGuardFalse(ctx, c, claim, nv)
 			} else {
 				out = v.verifyInputFalse(ctx, c, claim, nv, subjects, cond.ArgIndex)
@@ -512,15 +512,13 @@ func (v Verifier) verifyInputFalse(ctx context.Context, c *domain.AnalysisCase, 
 				nv.EvidenceIDs = append(nv.EvidenceIDs, c.EvidenceGraph.AddEvidence(e))
 			}
 			for _, flow := range flows {
-				switch flow.Origin {
-				case domain.OriginExternalUntrusted, domain.OriginExternalAuthenticated,
-					domain.OriginConfiguration, domain.OriginDatabase,
-					domain.OriginInternalService:
+				switch inputOriginVerification(flow.Origin) {
+				case domain.NegativeContradicted:
 					nv.Status = domain.NegativeContradicted
 					nv.Notes = fmt.Sprintf("call site %s passes %s input (%s); FALSE contradicted",
 						site.Function, flow.Origin, flow.Summary)
 					return setNeg(claim, nv)
-				case domain.OriginUnknown, "":
+				case domain.NegativeInsufficientScope:
 					// Absence of evidence is not a contradiction: the
 					// verifier could not resolve this argument — scope
 					// insufficient to confirm the FALSE, not disproven.
@@ -540,6 +538,18 @@ func (v Verifier) verifyInputFalse(ctx context.Context, c *domain.AnalysisCase, 
 	nv.Notes = fmt.Sprintf("all %d call site(s) across %d subject(s) pass non-external input",
 		totalCallers, len(subjects))
 	return setNeg(claim, nv)
+}
+
+func inputOriginVerification(origin domain.DataOrigin) domain.NegativeVerificationStatus {
+	switch origin {
+	case domain.OriginExternalUntrusted, domain.OriginExternalAuthenticated,
+		domain.OriginConfiguration, domain.OriginDatabase, domain.OriginInternalService:
+		return domain.NegativeContradicted
+	case domain.OriginConstant, domain.OriginGenerated:
+		return domain.NegativeVerified
+	default:
+		return domain.NegativeInsufficientScope
+	}
 }
 
 // verifyGuardFalse verifies a VALIDATION FALSE ("every path to the sink is
