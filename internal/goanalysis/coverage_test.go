@@ -119,3 +119,44 @@ func TestVerifyFalseInterfaceDispatchDowngrades(t *testing.T) {
 		t.Fatalf("notes=%q", nv.Notes)
 	}
 }
+
+// A FALSE reachability claim cannot be verified by "no product references"
+// when the subject lives in an internal package or is unexported: the
+// product could never name it, so the observation is vacuous and dep-internal
+// dispatch (registries, callbacks) stays un-closed scope.
+func TestVerifyReachableFalseInternalSubjectNotVerified(t *testing.T) {
+	v := Verifier{}
+	nv := &domain.NegativeVerification{Status: domain.NegativeVerified}
+	claim := domain.Claim{ConditionID: "C-REACH", Result: domain.ClaimFalse}
+	subjects := []domain.SymbolRef{
+		{Package: "google.golang.org/grpc/internal/xds/httpfilter/rbac", Symbol: "builder.ParseFilterConfig"},
+		{Package: "google.golang.org/grpc/internal/xds/httpfilter/rbac", Symbol: "parseConfig"},
+	}
+	out := v.verifyReachableFalse(claim, nv, subjects, map[string][]domain.CallSite{})
+	got := out.NegativeVerification
+	if got == nil || got.Status != domain.NegativeInsufficientScope {
+		t.Fatalf("nv=%+v", got)
+	}
+	if !strings.Contains(got.Notes, "visibility") {
+		t.Fatalf("notes=%q", got.Notes)
+	}
+}
+
+func TestProductReferenceable(t *testing.T) {
+	cases := []struct {
+		ref  domain.SymbolRef
+		want bool
+	}{
+		{domain.SymbolRef{Package: "golang.org/x/crypto/ssh", Symbol: "NewServerConn"}, true},
+		{domain.SymbolRef{Package: "github.com/miekg/dns", Symbol: "ParseZone"}, true},
+		{domain.SymbolRef{Package: "google.golang.org/grpc/internal/xds/httpfilter/rbac", Symbol: "builder.ParseFilterConfig"}, false},
+		{domain.SymbolRef{Package: "google.golang.org/grpc/internal/xds/httpfilter/rbac", Symbol: "ParseFilterConfig"}, false},
+		{domain.SymbolRef{Package: "example.com/dep/vuln", Symbol: "builder.run"}, false},
+		{domain.SymbolRef{Package: "example.com/dep/vuln", Symbol: "URI.String"}, true},
+	}
+	for _, tc := range cases {
+		if got := productReferenceable(tc.ref); got != tc.want {
+			t.Fatalf("productReferenceable(%+v)=%v want %v", tc.ref, got, tc.want)
+		}
+	}
+}

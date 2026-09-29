@@ -259,6 +259,13 @@ func (v Verifier) verifyReadFalse(claim domain.Claim,
 	nv *domain.NegativeVerification, subjects []domain.SymbolRef,
 	allSites map[string][]domain.CallSite) domain.Claim {
 
+	if hidden := unreferenceable(subjects); len(hidden) > 0 {
+		nv.Status = domain.NegativeInsufficientScope
+		nv.Notes = fmt.Sprintf("subject(s) %s are internal/unexported — the product cannot reference "+
+			"them at all, so zero product references is forced by visibility, not by absent reads",
+			strings.Join(hidden, ", "))
+		return setNeg(claim, nv)
+	}
 	var total int
 	for _, s := range subjects {
 		total += len(allSites[s.Package+"."+s.Symbol])
@@ -300,8 +307,21 @@ func (v Verifier) verifySequenceFalse(c *domain.AnalysisCase, claim domain.Claim
 		}
 	}
 	refs := 0
+	var missingRefs []domain.SymbolRef
 	for _, m := range missing {
 		refs += len(allSites[m])
+		for _, s := range subjects {
+			if s.Package+"."+s.Symbol == m {
+				missingRefs = append(missingRefs, s)
+			}
+		}
+	}
+	if hidden := unreferenceable(missingRefs); len(hidden) > 0 {
+		nv.Status = domain.NegativeInsufficientScope
+		nv.Notes = fmt.Sprintf("never-invoked member(s) %s are internal/unexported — the product cannot "+
+			"reference them at all, so zero product references cannot exclude dep-internal invocation",
+			strings.Join(hidden, ", "))
+		return setNeg(claim, nv)
 	}
 	if refs == 0 {
 		nv.Notes = fmt.Sprintf("never-invoked member(s) %s have no product references",
@@ -317,10 +337,22 @@ func (v Verifier) verifySequenceFalse(c *domain.AnalysisCase, claim domain.Claim
 // verifyReachableFalse: govulncheck reported no call path. A FALSE survives
 // only when no subject has references at all; any static reference without
 // a call path could still execute via an un-modeled entrypoint or dispatch.
+// Subjects the product cannot legally name (internal packages, unexported
+// identifiers or receiver types) contribute nothing: zero references to
+// them is forced by Go visibility rules, and dep-internal dispatch paths
+// (filter registries, watcher callbacks) stay invisible to a product-ref
+// scan — treat them as un-closed scope, not as falsifier evidence.
 func (v Verifier) verifyReachableFalse(claim domain.Claim,
 	nv *domain.NegativeVerification, subjects []domain.SymbolRef,
 	allSites map[string][]domain.CallSite) domain.Claim {
 
+	if hidden := unreferenceable(subjects); len(hidden) > 0 {
+		nv.Status = domain.NegativeInsufficientScope
+		nv.Notes = fmt.Sprintf("subject(s) %s are internal/unexported — the product cannot reference "+
+			"them at all, so zero product references is forced by visibility and cannot exclude "+
+			"dep-internal dispatch", strings.Join(hidden, ", "))
+		return setNeg(claim, nv)
+	}
 	total := 0
 	for _, s := range subjects {
 		total += len(allSites[s.Package+"."+s.Symbol])
@@ -589,6 +621,37 @@ func symbolExported(s domain.SymbolRef) bool {
 		name = name[i+1:]
 	}
 	return name != "" && name[0] >= 'A' && name[0] <= 'Z'
+}
+
+// unreferenceable returns the subjects product code cannot legally name:
+// anything inside an `internal` package tree (unimportable outside the
+// module subtree) or whose identifier — or qualifying receiver type — is
+// unexported. For such subjects a "zero product references" observation is
+// vacuous, so reference-counting falsifiers must not rely on them.
+func unreferenceable(subjects []domain.SymbolRef) []string {
+	var out []string
+	for _, s := range subjects {
+		if !productReferenceable(s) {
+			out = append(out, s.Package+"."+s.Symbol)
+		}
+	}
+	return out
+}
+
+func productReferenceable(s domain.SymbolRef) bool {
+	for _, seg := range strings.Split(s.Package, "/") {
+		if seg == "internal" {
+			return false
+		}
+	}
+	for _, seg := range strings.Split(s.Symbol, ".") {
+		seg = strings.TrimLeft(seg, "(*")
+		seg = strings.TrimRight(seg, ")")
+		if seg == "" || seg[0] < 'A' || seg[0] > 'Z' {
+			return false
+		}
+	}
+	return true
 }
 
 // linknameNames reports whether a go:linkname pragma targets the subject.
