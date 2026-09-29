@@ -146,14 +146,22 @@ func runEval(args []string) error {
 		co.vulnID = c.Vuln
 		co.vulnFile = c.VulnFile
 		co.exploitModel = c.ExploitModel
+		// Platform overrides change the build shape — package selection,
+		// dep graph and source index all differ per GOOS/GOARCH/tags, so
+		// corpus-level caches computed under the default platform are
+		// invalid for this case even when the repo is unchanged.
+		platformOverride := false
 		if c.GOOS != "" {
 			co.goos = c.GOOS
+			platformOverride = true
 		}
 		if c.GOARCH != "" {
 			co.goarch = c.GOARCH
+			platformOverride = true
 		}
 		if len(c.BuildTags) > 0 {
 			co.tags = strings.Join(c.BuildTags, ",")
+			platformOverride = true
 		}
 		if c.GoVersion != "" {
 			// Per-case toolchain: shared tools/index carry the corpus-level
@@ -195,10 +203,11 @@ func runEval(args []string) error {
 			}
 			co.repo = absCase
 		}
-		if co.repo != o.repo {
-			// Per-repo tools cannot share corpus-level caches: a cached
-			// `go list`/govulncheck output names the first repo's module
-			// graph, which is wrong for any other product.
+		if co.repo != o.repo || platformOverride {
+			// Per-repo/per-platform tools cannot share corpus-level
+			// caches: a cached `go list`/govulncheck output names the
+			// first configuration's module graph and package selection,
+			// which is wrong for any other product or target platform.
 			co.srcIndex = nil
 			co.goTool = nil
 			co.gvRunner = nil
