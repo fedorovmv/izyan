@@ -87,36 +87,43 @@ func (ix *Index) dispatchImpls(pkg *packages.Package, enc *ast.FuncDecl, call *a
 	if !ok || pkg.TypesInfo == nil || enc == nil {
 		return nil
 	}
-	// Receiver must resolve to a map-indexed value: `g := m[k]` or
-	// `m[k].M()` directly.
-	var mapExpr, keyExpr ast.Expr
+	// Receiver must resolve to map-indexed value(s): `m[k].M()` directly,
+	// or `g := m[k]` bindings. Every assignment to the receiver var is a
+	// candidate binding — keeping only the last one would drop impls a
+	// reassignment can still produce (`r := m[a]; if f { r = m[b] }`).
+	var pairs [][2]ast.Expr
 	if idx, ok := sel.X.(*ast.IndexExpr); ok {
-		mapExpr, keyExpr = idx.X, idx.Index
+		pairs = append(pairs, [2]ast.Expr{idx.X, idx.Index})
 	} else if id, ok := sel.X.(*ast.Ident); ok {
 		obj := pkg.TypesInfo.ObjectOf(id)
-		for _, r := range assignRHS(pkg.TypesInfo, enc, obj) {
-			if ie, ok := r.expr.(*ast.IndexExpr); ok {
-				mapExpr, keyExpr = ie.X, ie.Index
-			}
-		}
-		if mapExpr == nil {
+		rhs := assignRHS(pkg.TypesInfo, enc, obj)
+		if len(rhs) == 0 {
 			return nil
+		}
+		for _, r := range rhs {
+			ie, ok := r.expr.(*ast.IndexExpr)
+			if !ok {
+				return nil // bound to a non-lookup — unrestricted
+			}
+			pairs = append(pairs, [2]ast.Expr{ie.X, ie.Index})
 		}
 	} else {
 		return nil
 	}
-	table, ok := ix.mapTable(pkg, enc, mapExpr)
-	if !ok {
-		return nil
-	}
-	vals, complete := ix.stringVals(pkg, enc, keyExpr, maxDispatchFuel)
-	if !complete || len(vals) == 0 {
-		return nil
-	}
 	impls := map[string]bool{}
-	for k := range vals {
-		for name := range table[k] {
-			impls[name] = true
+	for _, p := range pairs {
+		table, ok := ix.mapTable(pkg, enc, p[0])
+		if !ok {
+			return nil
+		}
+		vals, complete := ix.stringVals(pkg, enc, p[1], maxDispatchFuel)
+		if !complete || len(vals) == 0 {
+			return nil
+		}
+		for k := range vals {
+			for name := range table[k] {
+				impls[name] = true
+			}
 		}
 	}
 	return impls
@@ -161,6 +168,172 @@ func (ix *Index) mapTable(pkg *packages.Package, enc *ast.FuncDecl, mapExpr ast.
 	return table, complete
 }
 
+// exprIsAnyVar reports whether e names a tracked object — an object in
+// the alias set — directly (`m`), through a field selector (`c.M`), a
+// pointer dereference, or address-taken (`&m`). The set is keyed by
+// types.Object.Id so a dep var loaded in a separate packages.Load still
+// matches product-side references to it.
+func exprIsAnyVar(info *types.Info, e ast.Expr, set map[string]bool) bool {
+	switch ex := e.(type) {
+	case *ast.Ident:
+		if o := info.ObjectOf(ex); o != nil {
+			return set[o.Id()]
+		}
+	case *ast.SelectorExpr:
+		if o := info.ObjectOf(ex.Sel); o != nil {
+			return set[o.Id()]
+		}
+	case *ast.UnaryExpr:
+		return exprIsAnyVar(info, ex.X, set)
+	case *ast.ParenExpr:
+		return exprIsAnyVar(info, ex.X, set)
+	}
+	return false
+}
+
+// mapAliases collects every object bound to the map value in pkg:
+// `a := m` and `var a = m` share the table, so writes through aliases
+// are writes to it. Binding the map to a non-variable target (a struct
+// field, a slice slot, a pointer write) hands it to code whose writes
+// this scan cannot see — reported as escape. Keys are Object.Id, not
+// pointers: the same package-level var resolves to different objects in
+// product vs dependency loads.
+func mapAliases(info *types.Info, pkg *packages.Package, v types.Object) (set map[string]bool, escaped bool) {
+	set = map[string]bool{v.Id(): true}
+	for changed := true; changed && !escaped; {
+		changed = false
+		for _, f := range pkg.Syntax {
+			if escaped {
+				break
+			}
+			ast.Inspect(f, func(n ast.Node) bool {
+				if escaped {
+					return false
+				}
+				var lhs []ast.Expr
+				var rhs []ast.Expr
+				switch node := n.(type) {
+				case *ast.AssignStmt:
+					lhs, rhs = node.Lhs, node.Rhs
+				case *ast.ValueSpec:
+					lhs, rhs = nil, node.Values
+					for _, nm := range node.Names {
+						lhs = append(lhs, nm)
+					}
+				default:
+					return true
+				}
+				// Multi-valued RHS (f(), m[k]) collapses positions —
+				// only 1:1 pairs are alias binds.
+				if len(lhs) != len(rhs) {
+					for _, r := range rhs {
+						if exprIsAnyVar(info, r, set) {
+							escaped = true
+						}
+					}
+					return true
+				}
+				for i, r := range rhs {
+					if !exprIsAnyVar(info, r, set) {
+						continue
+					}
+					if lid, ok := lhs[i].(*ast.Ident); ok && lid.Name != "_" {
+						if o := info.ObjectOf(lid); o != nil && !set[o.Id()] {
+							set[o.Id()] = true
+							changed = true
+						}
+						continue
+					}
+					escaped = true // map bound into a field/slot/deref
+				}
+				return true
+			})
+		}
+	}
+	return set, escaped
+}
+
+// mapMutated reports whether the resolved map variable is written or
+// escapes anywhere the analyzer cannot read. `m[k] = v` adds entries the
+// literal never declared, `delete`/callee writes/remove equally break
+// the table's completeness, and passing the map to a non-builtin call,
+// a channel or a return hands it to code whose writes are invisible to
+// this scan — the same holds for every alias (`a := m; a[k] = v`).
+// A mutated map's literal content is not the full table — dispatch
+// narrowing on it would drop reachable implementations.
+func (ix *Index) mapMutated(v types.Object) bool {
+	if v == nil {
+		return true
+	}
+	for _, pkg := range append(ix.allExtras(), ix.pkgs...) {
+		info := pkg.TypesInfo
+		if info == nil {
+			continue
+		}
+		aliases, escaped := mapAliases(info, pkg, v)
+		if escaped {
+			return true
+		}
+		mut := false
+		for _, f := range pkg.Syntax {
+			ast.Inspect(f, func(n ast.Node) bool {
+				if mut {
+					return false
+				}
+				switch node := n.(type) {
+				case *ast.AssignStmt:
+					for _, l := range node.Lhs {
+						if idx, ok := l.(*ast.IndexExpr); ok && exprIsAnyVar(info, idx.X, aliases) {
+							mut = true
+						}
+					}
+				case *ast.SendStmt:
+					if exprIsAnyVar(info, node.Value, aliases) {
+						mut = true
+					}
+				case *ast.CompositeLit:
+					// The map embedded in an aggregate literal escapes:
+					// writes through the field/slot are invisible here.
+					for _, e := range node.Elts {
+						if kv, ok := e.(*ast.KeyValueExpr); ok {
+							e = kv.Value
+						}
+						if exprIsAnyVar(info, e, aliases) {
+							mut = true
+						}
+					}
+				case *ast.ReturnStmt:
+					for _, r := range node.Results {
+						if exprIsAnyVar(info, r, aliases) {
+							mut = true
+						}
+					}
+				case *ast.CallExpr:
+					if id, ok := node.Fun.(*ast.Ident); ok && id.Name == "delete" && len(node.Args) > 0 {
+						if exprIsAnyVar(info, node.Args[0], aliases) {
+							mut = true
+						}
+						break
+					}
+					if _, builtin := calleeObject(info, node.Fun).(*types.Builtin); builtin {
+						break
+					}
+					for _, a := range node.Args {
+						if exprIsAnyVar(info, a, aliases) {
+							mut = true
+						}
+					}
+				}
+				return true
+			})
+			if mut {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // mapLiterals resolves mapExpr to its initializing composite literals:
 // ident → assigns/var-spec → CompositeLit; field selector → cone-scoped
 // field writes → recurse on each RHS. nil means the map's contents are
@@ -180,6 +353,11 @@ func (ix *Index) mapLiteralsRec(pkg *packages.Package, enc *ast.FuncDecl, e ast.
 		obj := pkg.TypesInfo.ObjectOf(ex)
 		v, ok := obj.(*types.Var)
 		if !ok || seen[obj] {
+			return nil
+		}
+		if ix.mapMutated(v) {
+			// Entries may be added/removed where the scan cannot see —
+			// the literal set is not the complete table.
 			return nil
 		}
 		seen[obj] = true
@@ -237,6 +415,9 @@ func (ix *Index) mapLiteralsRec(pkg *packages.Package, enc *ast.FuncDecl, e ast.
 		}
 		if seen[fv] {
 			return []*ast.CompositeLit{}
+		}
+		if ix.mapMutated(fv) {
+			return nil
 		}
 		seen[fv] = true
 		defer delete(seen, fv)

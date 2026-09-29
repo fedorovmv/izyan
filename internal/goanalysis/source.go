@@ -71,7 +71,7 @@ type Index struct {
 	coneCache map[string]map[string]bool
 	// instSet/instDisabled memoize instantiatedNamed across loaded
 	// packages; instGen invalidates on extras flushes like callerCache.
-	instSet      map[*types.Named]bool
+	instSet      map[string]bool
 	instDisabled bool
 	instGen      int
 	// coneBusy marks modules whose depCone is currently being computed —
@@ -729,7 +729,7 @@ func (ix *Index) ifaceCallerRefs(ref domain.SymbolRef) []domain.SymbolRef {
 	// callers would merge provenance from frames that never run (mocks
 	// shipped in non-test files, dead registry alternatives). Skipped
 	// entirely when dynamic materialization is present.
-	if inst, narrow := ix.instantiated(); narrow && !inst[T] {
+	if inst, narrow := ix.instantiated(); narrow && !inst[namedKey(T)] {
 		return nil
 	}
 	var out []domain.SymbolRef
@@ -1313,11 +1313,20 @@ func (ix *Index) moduleEdges(pkgs []*packages.Package, module string) (map[strin
 					// Interface dispatch: the callee is the interface
 					// method — record the site so impl edges below can be
 					// narrowed by the dispatch key.
-					if named := ifaceNamed(rt); named != nil {
-						if ifaceSites[named] == nil {
-							ifaceSites[named] = map[string][]ifaceSite{}
+					switch rt.Underlying().(type) {
+					case *types.Interface:
+						if named := ifaceNamed(rt); named != nil {
+							if ifaceSites[named] == nil {
+								ifaceSites[named] = map[string][]ifaceSite{}
+							}
+							ifaceSites[named][fn.Name()] = append(ifaceSites[named][fn.Name()], ifaceSite{pkg, encDecl, call})
+						} else {
+							// Anonymous/interface-literal receiver: the
+							// call resolves to the interface method but
+							// no impl edges are enumerable — the graph
+							// is incomplete, not "no path".
+							opaque = true
 						}
-						ifaceSites[named][fn.Name()] = append(ifaceSites[named][fn.Name()], ifaceSite{pkg, encDecl, call})
 					}
 				}
 				addEdge(pkg.PkgPath+"."+caller, callee)
@@ -1354,6 +1363,7 @@ func (ix *Index) moduleEdges(pkgs []*packages.Package, module string) (map[strin
 					allowed[name] = true
 				}
 			}
+			linked := 0
 			for _, pkg := range pkgs {
 				if pkg.Types == nil {
 					continue
@@ -1368,7 +1378,7 @@ func (ix *Index) moduleEdges(pkgs []*packages.Package, module string) (map[strin
 					}
 					t := tn.Type()
 					implNamed, _ := t.(*types.Named)
-					if narrowing && implNamed != nil && !inst[implNamed] {
+					if narrowing && implNamed != nil && !inst[namedKey(implNamed)] {
 						continue
 					}
 					iface, _ := named.Underlying().(*types.Interface)
@@ -1384,12 +1394,32 @@ func (ix *Index) moduleEdges(pkgs []*packages.Package, module string) (map[strin
 						ifaceKey := named.Obj().Pkg().Path() + "." + named.Obj().Name() + "." + method
 						implKey := m.Pkg().Path() + "." + name + "." + method
 						addEdge(ifaceKey, implKey)
+						linked++
 					}
 				}
+			}
+			if linked == 0 {
+				// A live interface call whose impls are invisible to the
+				// loaded graph (invisible instantiation, unloaded impl
+				// package) leaves the callee unreached — that is unknown
+				// reachability, not disproven.
+				opaque = true
 			}
 		}
 	}
 	return edges, opaque
+}
+
+// namedKey canonicalizes a named type across load instances — the same
+// dependency type materializes once through the product's import data
+// and once through the source-loaded dep package; pointer identity does
+// not survive that split, so the key is the declaring package path and
+// name.
+func namedKey(n *types.Named) string {
+	if n == nil || n.Obj() == nil || n.Obj().Pkg() == nil {
+		return ""
+	}
+	return n.Obj().Pkg().Path() + "." + n.Obj().Name()
 }
 
 // instantiatedNamed collects named types concretely created by the
@@ -1399,8 +1429,8 @@ func (ix *Index) moduleEdges(pkgs []*packages.Package, module string) (map[strin
 // its field values. disabled is true when syntax can materialize values
 // invisibly (reflect.New/NewAt, unsafe, plugin, go:linkname): then the
 // set is incomplete and must not narrow dispatch.
-func instantiatedNamed(pkgs []*packages.Package) (set map[*types.Named]bool, disabled bool) {
-	set = map[*types.Named]bool{}
+func instantiatedNamed(pkgs []*packages.Package) (set map[string]bool, disabled bool) {
+	set = map[string]bool{}
 	var add func(t types.Type)
 	add = func(t types.Type) {
 		for {
@@ -1417,10 +1447,11 @@ func instantiatedNamed(pkgs []*packages.Package) (set map[*types.Named]bool, dis
 		if _, ok := n.Underlying().(*types.Interface); ok {
 			return
 		}
-		if set[n] {
+		key := namedKey(n)
+		if key == "" || set[key] {
 			return
 		}
-		set[n] = true
+		set[key] = true
 		// Instantiating a named type creates its contained values too:
 		// struct fields (incl. embedded), slice/array/map/channel elems.
 		switch u := n.Underlying().(type) {
@@ -1498,7 +1529,7 @@ func instantiatedNamed(pkgs []*packages.Package) (set map[*types.Named]bool, dis
 // instantiated returns the memoized instantiation set over all loaded
 // packages (product + extras); narrow=false when dynamic materialization
 // was seen and the set must not restrict dispatch.
-func (ix *Index) instantiated() (map[*types.Named]bool, bool) {
+func (ix *Index) instantiated() (map[string]bool, bool) {
 	if ix.instSet != nil && ix.instGen == ix.extrasGen {
 		return ix.instSet, !ix.instDisabled
 	}
@@ -1533,7 +1564,17 @@ func (ix *Index) depCone(module string) map[string]bool {
 	if err != nil {
 		return nil
 	}
-	edges, _ := ix.moduleEdges(pkgs, module)
+	edges, opaque := ix.moduleEdges(pkgs, module)
+	if opaque {
+		// Func values and unresolved dynamic calls make the edge set
+		// incomplete: dropping off-cone sites could fabricate absence for
+		// negative verification — the cone must not restrict anything.
+		if ix.coneCache == nil {
+			ix.coneCache = map[string]map[string]bool{}
+		}
+		ix.coneCache[module] = nil
+		return nil
+	}
 	// Seed with every product call site whose callee lands in the module —
 	// the same callee-key format moduleEdges produces.
 	entries := map[string]bool{}
