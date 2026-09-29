@@ -70,7 +70,7 @@ func (VerdictEvaluator) Evaluate(affected domain.AffectedResult, model domain.Ex
 		}
 		if claim.Result == domain.ClaimFalse {
 			allTrue = false
-			if claim.NegativeVerification != nil && claim.NegativeVerification.Status == domain.NegativeVerified {
+			if claim.Falsifier != "" && claim.NegativeVerification != nil && claim.NegativeVerification.Status == domain.NegativeVerified {
 				return domain.VerdictResult{
 					Verdict:      domain.VerdictNoExploitPathFound,
 					Reason:       "mandatory exploit condition is proven false",

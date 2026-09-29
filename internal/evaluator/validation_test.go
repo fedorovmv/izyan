@@ -79,3 +79,30 @@ func TestInputConstraintUnknownWithUnresolvedOrigin(t *testing.T) {
 		t.Fatalf("result=%s want UNKNOWN (one origin unresolved)", cl.Result)
 	}
 }
+
+func TestAttackerControlConstantInputHasFalsifier(t *testing.T) {
+	c := &domain.AnalysisCase{}
+	c.EvidenceGraph.DataFlows = []domain.DataFlow{{
+		ConditionID: "C-INPUT", Origin: domain.OriginConstant,
+		Sink: domain.CallSite{File: "a.go", Line: 10}, Arg: 0,
+	}}
+	claim := ArgumentOrigin{}.Evaluate(domain.Condition{
+		ID: "C-INPUT", Kind: domain.ConditionAttackerControl, ArgIndex: 0,
+	}, c)
+	if claim.Result != domain.ClaimFalse || claim.Falsifier == "" {
+		t.Fatalf("constant input claim=%+v; want FALSE with falsifier", claim)
+	}
+}
+
+func TestAttackerControlEmptyOriginCannotFalsify(t *testing.T) {
+	c := &domain.AnalysisCase{}
+	c.EvidenceGraph.DataFlows = []domain.DataFlow{{
+		ConditionID: "C-INPUT", Sink: domain.CallSite{File: "a.go", Line: 10}, Arg: 0,
+	}}
+	claim := ArgumentOrigin{}.Evaluate(domain.Condition{
+		ID: "C-INPUT", Kind: domain.ConditionAttackerControl, ArgIndex: 0,
+	}, c)
+	if claim.Result != domain.ClaimUnknown {
+		t.Fatalf("missing origin claim=%+v; want UNKNOWN", claim)
+	}
+}

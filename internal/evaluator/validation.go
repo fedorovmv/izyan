@@ -52,6 +52,7 @@ func (Validation) Evaluate(cond domain.Condition, c *domain.AnalysisCase) domain
 	switch {
 	case guarded == total:
 		claim.Result = domain.ClaimFalse
+		claim.Falsifier = "guards"
 		claim.Explanation = fmt.Sprintf("all %d traced sink call site(s) are preceded by validation guards", total)
 		claim.Limitations = append(claim.Limitations,
 			"FALSE is a candidate: guard effectiveness is not proven by presence alone")

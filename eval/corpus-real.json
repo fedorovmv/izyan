@@ -76,9 +76,8 @@
    "deps": {
     "github.com/hashicorp/go-getter": "v1.7.0"
    },
-   "_note": "URL is a build-time constant — attacker never controls it; negative via C-INPUT falsifier or unknown",
+   "_note": "outer URL is constant, but HTTP response may switch protocol through X-Terraform-Get; safe verdict is not justified",
    "expect": [
-    "NO_EXPLOIT_PATH_FOUND",
     "INCONCLUSIVE"
    ]
   },

@@ -229,11 +229,11 @@ func runEval(args []string) error {
 		if productDir != "" {
 			// Baseline: what standalone govulncheck says about this
 			// advisory on this product — differentiation evidence.
-			rep.Results[len(rep.Results)-1].Baseline = eval.Baseline(ctx,
+			rep.RecordBaseline(eval.Baseline(ctx,
 				goanalysis.ExecRunner{Env: co.toolchain.Env}, productDir,
 				baselineVuln(ctx, c, cs), domain.ProductSnapshot{
 					GOOS: co.goos, GOARCH: co.goarch, BuildTags: splitCSV(co.tags),
-				})
+				}))
 		}
 		res := rep.Results[len(rep.Results)-1]
 		mark := "  "
@@ -254,6 +254,11 @@ func runEval(args []string) error {
 	m := rep.Metrics
 	fmt.Printf("\ncases=%d errors=%d expect pass=%d fail=%d claims-fail=%d false-safe=%d inconclusive=%d\n",
 		m.Total, m.Errors, m.ExpectPass, m.ExpectFail, m.ClaimsFail, m.FalseSafe, m.Inconclusive)
+	if m.GovulncheckSignals > 0 {
+		fmt.Printf("signal-cleared=%d/%d\n", m.SignalCleared, m.GovulncheckSignals)
+		fmt.Printf("reachable-cleared=%d/%d package-level-cleared=%d/%d\n",
+			m.ReachableCleared, m.ReachableSignals, m.PackageLevelCleared, m.PackageLevelSignals)
+	}
 	if *outMD != "" {
 		if err := os.WriteFile(*outMD, []byte(rep.Markdown()), 0o644); err != nil {
 			return err

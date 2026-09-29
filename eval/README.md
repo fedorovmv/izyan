@@ -28,7 +28,7 @@ Baseline-таблица govulncheck-vs-analyzer (последний прогон
 | real-yaml-http-fixed | NOT_AFFECTED | silent | **да — deterministic** |
 | real-md-render | EXPLOITABLE | reachable | нет |
 | real-getter-fetch | INCONCLUSIVE | reachable | нет |
-| real-getter-const | INCONCLUSIVE | reachable | нет — protocol-switch через X-Terraform-Get держит GitGetter reachable |
+| real-getter-const | INCONCLUSIVE | reachable | нет — protocol-switch через X-Terraform-Get держит GitGetter reachable; прежняя negative ground truth исправлена |
 | real-ssh-server | EXPLOITABLE | reachable | нет |
 | real-ssh-keyparse | INCONCLUSIVE | package-level | нет — sinks unexported; «zero product refs» вакуумен, dep-internal graph opaque |
 | real-jose-decrypt | EXPLOITABLE | reachable | нет |
@@ -50,7 +50,7 @@ Baseline-таблица govulncheck-vs-analyzer (последний прогон
 | real-ssh-callback | EXPLOITABLE | reachable | нет |
 | real-micro-xds | INCONCLUSIVE | package-level | нет — dep-internal registry (`httpfilter.Register`) + watcher callbacks (B24) |
 | real-micro-xds-fixed | NOT_AFFECTED | silent | **да — deterministic** |
-| real-micro-plain | NOT_AFFECTED | silent | **да — rbac-пакет не в build graph** |
+| real-micro-plain | NOT_AFFECTED | package-level | **да — rbac-пакет не в build graph** |
 | real-unix-access | INCONCLUSIVE | reachable | нет — Faccessat вызван, harm-условие deploy-зависимо |
 | real-unix-stat | NO_EXPLOIT_PATH_FOUND | package-level | **да — zero-refs + dep-internal caller `unix.Access` транзитивно мёртв (нет product refs, нет caller'ов в модуле, сторонних импортеров пакета нет)** |
 | real-unix-fixed | NOT_AFFECTED | silent | **да — deterministic** |
@@ -61,8 +61,9 @@ Baseline-таблица govulncheck-vs-analyzer (последний прогон
 `NOT_AFFECTED` (deterministic affected-chain) или `NO_EXPLOIT_PATH_FOUND`
 (VERIFIED falsifier на mandatory-условии). `EXPLOITABLE`, `INCONCLUSIVE` и
 `UNKNOWN` оставляют кейс на человеке — для triage «reachable» и
-«не доказали безопасность» эквивалентны. Текущий прогон: **12/32 cleared**
-(11×NOT_AFFECTED deterministic + `real-unix-stat` NEPF — sound
+«не доказали безопасность» эквивалентны. Текущий прогон: **12/32 cleared**:
+11×NOT_AFFECTED deterministic (в том числе `real-micro-plain` при
+package-level сигнале govulncheck) и `real-unix-stat` NEPF — sound
 verified-негатив на real-кейсе: продукт не трогает `unix.Faccessat`,
 а единственный dep-internal caller `unix.Access` доказанно мёртв —
 нет product refs, нет caller'ов внутри `x/sys`, сторонних модулей,
@@ -72,6 +73,24 @@ verified-негатив на real-кейсе: продукт не трогает
 INCONCLUSIVE — их прежний NEPF стоял на vacuous «zero product refs»;
 jwt-auth — missing-call гейт. Цель B23 — поднять долю честных cleared
 за счёт falsifier-доказательств, не объявляя недоказанное безопасным.
+
+Для сравнения со standalone govulncheck важен более узкий показатель:
+**signal-cleared rate = 2/22** на этом прогоне. Знаменатель — кейсы,
+где govulncheck сообщил `reachable` или `package-level`; числитель —
+доказанный негатив анализатора при таком сигнале (`real-micro-plain`,
+`real-unix-stat`). Разбивка: **0/16** при `reachable`, **2/6** при
+`package-level`. Остальные 10 cleared имеют `govulncheck: silent` и не
+сокращают ручной triage относительно baseline. Значение описывает этот
+корпус, а не ожидаемую долю на произвольных CVE.
+
+Негативный exploit-claim теперь несёт именованный falsifier; финальный
+`NO_EXPLOIT_PATH_FOUND` требует и его, и `VERIFIED` negative verification.
+Неполное происхождение аргумента (включая пустой origin) остаётся
+`UNKNOWN`. Это закрывает обход инварианта, но пока не меняет два
+constant-input кейса: у `real-protojson-const` input arg не выделен
+из группового набора sink'ов, а у `real-yaml-const` внутренние dep-call
+sites остаются неразрешёнными. Их покрытие — отдельная работа по
+замыканию всех product→dependency входов на уязвимый путь.
 
 Дифференциация относительно standalone govulncheck:
 

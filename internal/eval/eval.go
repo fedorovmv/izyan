@@ -125,8 +125,14 @@ type Metrics struct {
 	// FalseSafe — cases reported NOT_AFFECTED or NO_EXPLOIT_PATH_FOUND
 	// while their expectation did not allow a safe verdict. The stop
 	// criterion: this must stay zero.
-	FalseSafe    int `json:"false_safe"`
-	Inconclusive int `json:"inconclusive"`
+	FalseSafe           int `json:"false_safe"`
+	Inconclusive        int `json:"inconclusive"`
+	GovulncheckSignals  int `json:"govulncheck_signals,omitempty"`
+	SignalCleared       int `json:"signal_cleared,omitempty"`
+	ReachableSignals    int `json:"reachable_signals,omitempty"`
+	ReachableCleared    int `json:"reachable_cleared,omitempty"`
+	PackageLevelSignals int `json:"package_level_signals,omitempty"`
+	PackageLevelCleared int `json:"package_level_cleared,omitempty"`
 	// ClaimsFail counts cases whose per-condition claim assertions did not
 	// hold — a finer regression signal than verdicts alone.
 	ClaimsFail int `json:"claims_fail"`
@@ -196,6 +202,34 @@ func (r *Report) Record(c Case, verdict domain.Verdict, reason string, claims ma
 	r.Results = append(r.Results, res)
 }
 
+// RecordBaseline attaches the standalone result to the most recently
+// recorded case and counts a verified safe verdict against a finding.
+func (r *Report) RecordBaseline(baseline string) {
+	if len(r.Results) == 0 {
+		return
+	}
+	res := &r.Results[len(r.Results)-1]
+	res.Baseline = baseline
+	if baseline != BaselineReachable && baseline != BaselinePackageLevel {
+		return
+	}
+	r.Metrics.GovulncheckSignals++
+	if baseline == BaselineReachable {
+		r.Metrics.ReachableSignals++
+	} else {
+		r.Metrics.PackageLevelSignals++
+	}
+	if !res.FalseSafe && res.Err == "" &&
+		(res.Verdict == string(domain.VerdictNotAffected) || res.Verdict == string(domain.VerdictNoExploitPathFound)) {
+		r.Metrics.SignalCleared++
+		if baseline == BaselineReachable {
+			r.Metrics.ReachableCleared++
+		} else {
+			r.Metrics.PackageLevelCleared++
+		}
+	}
+}
+
 // Markdown renders the report as a reviewable table.
 func (r Report) Markdown() string {
 	var b strings.Builder
@@ -203,6 +237,12 @@ func (r Report) Markdown() string {
 	fmt.Fprintf(&b, "cases: %d | errors: %d | expect pass: %d | expect fail: %d | **false-safe: %d** | inconclusive: %d\n\n",
 		r.Metrics.Total, r.Metrics.Errors, r.Metrics.ExpectPass, r.Metrics.ExpectFail,
 		r.Metrics.FalseSafe, r.Metrics.Inconclusive)
+	if r.Metrics.GovulncheckSignals > 0 {
+		fmt.Fprintf(&b, "signal cleared: %d/%d\n\n", r.Metrics.SignalCleared, r.Metrics.GovulncheckSignals)
+		fmt.Fprintf(&b, "reachable cleared: %d/%d | package-level cleared: %d/%d\n\n",
+			r.Metrics.ReachableCleared, r.Metrics.ReachableSignals,
+			r.Metrics.PackageLevelCleared, r.Metrics.PackageLevelSignals)
+	}
 	if r.Metrics.ClaimsFail > 0 {
 		fmt.Fprintf(&b, "claim mismatches: %d\n\n", r.Metrics.ClaimsFail)
 	}

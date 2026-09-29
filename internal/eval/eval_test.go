@@ -55,6 +55,31 @@ func TestReportInconclusiveCounted(t *testing.T) {
 	}
 }
 
+func TestReportSignalClearedCountsOnlySafeVerdictsAgainstGovulncheckSignals(t *testing.T) {
+	var r eval.Report
+	for _, tc := range []struct {
+		id       string
+		verdict  domain.Verdict
+		baseline string
+		expect   []string
+	}{
+		{"negative", domain.VerdictNoExploitPathFound, eval.BaselinePackageLevel, []string{"NO_EXPLOIT_PATH_FOUND"}},
+		{"positive", domain.VerdictExploitable, eval.BaselineReachable, []string{"EXPLOITABLE"}},
+		{"silent", domain.VerdictNotAffected, eval.BaselineSilent, []string{"NOT_AFFECTED"}},
+		{"unsafe", domain.VerdictNoExploitPathFound, eval.BaselineReachable, []string{"EXPLOITABLE"}},
+	} {
+		r.Record(eval.Case{ID: tc.id, Expect: tc.expect}, tc.verdict, "", nil, nil)
+		r.RecordBaseline(tc.baseline)
+	}
+	if r.Metrics.GovulncheckSignals != 3 || r.Metrics.SignalCleared != 1 {
+		t.Fatalf("signal metrics=%+v; want 1/3", r.Metrics)
+	}
+	if r.Metrics.ReachableSignals != 2 || r.Metrics.ReachableCleared != 0 ||
+		r.Metrics.PackageLevelSignals != 1 || r.Metrics.PackageLevelCleared != 1 {
+		t.Fatalf("signal breakdown=%+v; want reachable 0/2 and package-level 1/1", r.Metrics)
+	}
+}
+
 func TestReportClaimsAssert(t *testing.T) {
 	var r eval.Report
 	r.Record(eval.Case{

@@ -45,10 +45,12 @@ func (ArgumentOrigin) Evaluate(cond domain.Condition, c *domain.AnalysisCase) do
 			// Deployment-controlled sources: trust boundary is a deployment
 			// property — we cannot prove the value is not attacker-influenced.
 			deployDependent++
-		case domain.OriginUnknown:
+		case domain.OriginUnknown, "":
 			unknown++
-		default:
+		case domain.OriginConstant, domain.OriginGenerated:
 			safe++
+		default:
+			unknown++
 		}
 	}
 	for _, e := range c.EvidenceGraph.Evidence {
@@ -142,6 +144,9 @@ func (ArgumentOrigin) Evaluate(cond domain.Condition, c *domain.AnalysisCase) do
 			fmt.Sprintf("%d call site(s) receive config/service-provided input; attacker control depends on deployment trust boundary — cannot prove non-external", deployDependent))
 	default:
 		claim.Result = domain.ClaimFalse
+		if safe == len(flows) {
+			claim.Falsifier = "constant-or-generated-input"
+		}
 		claim.Explanation = fmt.Sprintf("all %d traced call site(s) receive non-external input", safe)
 		claim.Limitations = append(claim.Limitations,
 			"FALSE is a candidate: provenance coverage is limited to direct call sites")

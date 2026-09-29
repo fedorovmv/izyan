@@ -65,6 +65,7 @@ func (Presence) Evaluate(cond domain.Condition, c *domain.AnalysisCase) domain.C
 			"presence lookup failed or never ran for: "+strings.Join(unchecked, ", "))
 	case len(missing) > 0:
 		claim.Result = domain.ClaimFalse
+		claim.Falsifier = "missing-source-symbol"
 		claim.Explanation = fmt.Sprintf(
 			"subject(s) absent from the resolved dependency source: %s", strings.Join(missing, ", "))
 		claim.Limitations = append(claim.Limitations,
