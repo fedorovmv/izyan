@@ -160,9 +160,9 @@ func (ix *Index) Knowledge() *Knowledge {
 // KnowledgeSchemaVersion is the schema level this build writes and the
 // newest it accepts: files without schema_version read as v1, files
 // above it fail to load rather than misparse a schema they predate.
-// Bump it when the format changes (e.g. per-language sections for
-// non-Go analyzers).
-const KnowledgeSchemaVersion = 1
+// Bump it when the format changes (e.g. new top-level sections like
+// v2's string_semantics, per-language sections for non-Go analyzers).
+const KnowledgeSchemaVersion = 2
 
 // knowledgeLanguage tags files for this analyzer family — a file
 // declaring another language is rejected instead of merging keys the
