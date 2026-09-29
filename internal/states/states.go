@@ -543,7 +543,7 @@ func (h CollectEvidence) runModuleUsage(ctx context.Context, c *domain.AnalysisC
 	if len(subjects) == 0 || len(entryList) == 0 {
 		return
 	}
-	reach, err := h.Source.ModuleInternalReach(ctx, module, entryList, subjects)
+	reach, opaque, err := h.Source.ModuleInternalReach(ctx, module, entryList, subjects)
 	if err != nil {
 		c.EvidenceGraph.AddToolLimitation(fmt.Sprintf("module internal reach scan failed: %v", err))
 		return
@@ -562,6 +562,17 @@ func (h CollectEvidence) runModuleUsage(ctx context.Context, c *domain.AnalysisC
 		Content: fmt.Sprintf("checked %d subject(s) against %d product-used API entr(ies): %s",
 			len(subjects), len(entryList), strings.Join(checked, ", ")),
 	})
+	// Opaque dispatch (func values, non-interface map calls) makes the call
+	// graph incomplete: an unreached subject is UNKNOWN, not disproven.
+	if opaque {
+		c.EvidenceGraph.AddEvidence(domain.Evidence{
+			Kind:    domain.EvidenceSourceSnippet,
+			Quality: domain.QualityDeterministic,
+			Source:  "source index: module-internal opaque dispatch",
+			Tool:    "goanalysis.Index.ModuleInternalReach",
+			Content: "module contains calls whose callee cannot be resolved (func values/dynamic dispatch); unreached subjects are not disproven",
+		})
+	}
 	for key, chain := range reach {
 		c.EvidenceGraph.AddModuleReachable(key, chain)
 		c.EvidenceGraph.AddEvidence(domain.Evidence{

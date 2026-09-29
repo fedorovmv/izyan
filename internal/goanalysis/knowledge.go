@@ -75,6 +75,15 @@ type Knowledge struct {
 	// ("pkg.Symbol" → arg index); -1 when the address lives outside the
 	// call (http.Server.Addr field, Serve(listener)).
 	ListenAddrArg map[string]int
+	// StringSemantics maps "pkgpath.Func" to a string-transform semantic
+	// the dispatch-key evaluator computes deterministically:
+	//   "identity_if_schemed" — result is arg0 verbatim when arg0 parses
+	//     as a URL with a non-empty scheme (an `x::` forced prefix is
+	//     allowed and preserved); otherwise the result is unknowable.
+	//   "forced_split" — returns (forcedPrefix-or-"", rest) splitting
+	//     arg0 on an `x::rest` marker.
+	//   "subdir_split" — returns (base, subdir); base keeps the scheme.
+	StringSemantics map[string]string
 	// Sources records which files built this base ("name@data_version"),
 	// in merge order — populated by Merge, not part of the JSON schema.
 	Sources []string
@@ -126,6 +135,7 @@ func (k *Knowledge) AsFile() KnowledgeFile {
 		HTTPClientPkgs:      k.HTTPClientPkgs,
 		ListenerPrimitives:  k.ListenerPrimitives,
 		ListenAddrArg:       k.ListenAddrArg,
+		StringSemantics:     k.StringSemantics,
 	}
 }
 
@@ -193,6 +203,7 @@ type KnowledgeFile struct {
 	HTTPClientPkgs      map[string]bool    `json:"http_client_pkgs"`
 	ListenerPrimitives  []domain.SymbolRef `json:"listener_primitives"`
 	ListenAddrArg       map[string]int     `json:"listen_addr_arg"`
+	StringSemantics     map[string]string  `json:"string_semantics"`
 }
 
 // LoadKnowledgeFile reads and validates a knowledge-extension JSON file.
@@ -266,6 +277,13 @@ func (f KnowledgeFile) validate() error {
 			return fmt.Errorf("listen_addr_arg[%q]: arg index %d below -1", k, v)
 		}
 	}
+	for k, v := range f.StringSemantics {
+		switch v {
+		case "identity_if_schemed", "forced_split", "subdir_split":
+		default:
+			return fmt.Errorf("string_semantics[%q]: unknown semantic %q", k, v)
+		}
+	}
 	for field, m := range map[string]map[string]bool{
 		"passthrough_methods": f.PassthroughMethods,
 		"read_into_methods":   f.ReadIntoMethods,
@@ -325,6 +343,9 @@ func (k *Knowledge) Merge(f KnowledgeFile) error {
 		return err
 	}
 	if err := join("listen_addr_arg", mergeMap(k.ListenAddrArg, f.ListenAddrArg)); err != nil {
+		return err
+	}
+	if err := join("string_semantics", mergeMap(k.StringSemantics, f.StringSemantics)); err != nil {
 		return err
 	}
 	for field, pair := range map[string][2]map[string]bool{
@@ -402,6 +423,9 @@ func (k *Knowledge) init() {
 	}
 	if k.ListenAddrArg == nil {
 		k.ListenAddrArg = map[string]int{}
+	}
+	if k.StringSemantics == nil {
+		k.StringSemantics = map[string]string{}
 	}
 	for _, m := range []*map[string]bool{
 		&k.PassthroughMethods, &k.ReadIntoMethods, &k.RecvMutateMethods,

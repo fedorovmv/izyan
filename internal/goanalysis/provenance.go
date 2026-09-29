@@ -21,6 +21,25 @@ import (
 // callers. Deeper chains resolve to UNKNOWN (a limitation), not a guess.
 const maxTraceHops = 2
 
+// maxExprDepth bounds structural recursion through a single expression —
+// binary/selector/paren chains and composite literals. Real expressions
+// stay under ~50; generated dep code and adversarial input can nest far
+// deeper, where recursion would exhaust the stack before any check fires.
+const maxExprDepth = 400
+
+// enterExpr budgets one expression-nesting level; false past
+// maxExprDepth, where the caller must stop recursing and yield UNKNOWN.
+// Pair with leaveExpr via defer.
+func (ix *Index) enterExpr() bool {
+	if ix.exprDepth >= maxExprDepth {
+		return false
+	}
+	ix.exprDepth++
+	return true
+}
+
+func (ix *Index) leaveExpr() { ix.exprDepth-- }
+
 // hops is the effective caller-climb bound: TraceArgumentBound may raise
 // it for a single trace during gap analysis.
 func (ix *Index) hops() int {
@@ -72,9 +91,11 @@ func (ix *Index) TraceArgument(ctx context.Context, site domain.CallSite, argInd
 	var tx []domain.CallSite
 	ix.txBuf = &tx
 	ix.traceSeen = map[types.Object]bool{}
+	ix.classifyCache = map[classifyKey]classifyResult{}
 	origin, why := ix.classify(pkg, enc, call.Args[argIndex], 0)
 	ix.txBuf = nil
 	ix.traceSeen = nil
+	ix.classifyCache = nil
 	flow.Origin = origin
 	flow.Summary = why
 	if v, ok := exprIntValue(pkg.TypesInfo, call.Args[argIndex]); ok {
@@ -129,7 +150,45 @@ func (ix *Index) callAt(site domain.CallSite) (*ast.CallExpr, *ast.FuncDecl, *pa
 
 // classify resolves the origin of an expression within a function.
 // depth limits parameter-hopping into callers.
+// classify memoizes per (expr, enc, depth) for the lifetime of one trace:
+// the caller fan-out reaches the same subtrees along exponentially many
+// paths. Cached UNKNOWNs may carry a guard cut from a sibling path —
+// an honest under-approximation toward INCONCLUSIVE, never a safe claim.
 func (ix *Index) classify(pkg *packages.Package, enc *ast.FuncDecl, expr ast.Expr, depth int) (domain.DataOrigin, string) {
+	key := classifyKey{pkg: pkg, enc: enc, expr: expr, depth: depth}
+	if ix.classifyCache != nil {
+		if r, ok := ix.classifyCache[key]; ok {
+			return r.origin, r.why
+		}
+	}
+	if !ix.enterExpr() {
+		return domain.OriginUnknown, "expression depth exceeded"
+	}
+	o, w := ix.classifyExpr(pkg, enc, expr, depth)
+	ix.leaveExpr()
+	// Why-strings compose upward — an uncapped trace embeds every child's
+	// explanation and grows exponentially (multi-MB strings per memoized
+	// entry is what blew the memory budget on md-render). Cap at every
+	// return so each join inputs bounded pieces.
+	w = capWhy(w)
+	if ix.classifyCache != nil && len(ix.classifyCache) < maxClassifyCache {
+		ix.classifyCache[key] = classifyResult{origin: o, why: w}
+	}
+	return o, w
+}
+
+// maxWhyLen bounds a single trace explanation. The cap applies at every
+// classify return, so composed whys stay bounded by fan-out, not depth.
+const maxWhyLen = 512
+
+func capWhy(s string) string {
+	if len(s) <= maxWhyLen {
+		return s
+	}
+	return s[:maxWhyLen] + "…"
+}
+
+func (ix *Index) classifyExpr(pkg *packages.Package, enc *ast.FuncDecl, expr ast.Expr, depth int) (domain.DataOrigin, string) {
 	switch e := expr.(type) {
 	case *ast.BasicLit:
 		return domain.OriginConstant, "literal constant"
@@ -210,7 +269,7 @@ func (ix *Index) classifyIdent(pkg *packages.Package, enc *ast.FuncDecl, id *ast
 	// local var: merge every assignment inside the function — branch and
 	// case writes all reach the read, so origins join (worst wins). A
 	// var already being resolved on this trace is a cycle (x = f(x)).
-	if rhsList := localAssigns(enc, obj); len(rhsList) > 0 {
+	if rhsList := ix.assigns(enc, obj); len(rhsList) > 0 {
 		if ix.traceSeen != nil && ix.traceSeen[obj] {
 			return domain.OriginUnknown, fmt.Sprintf("local %s: recursive assignment cycle", id.Name)
 		}
@@ -255,13 +314,7 @@ func (ix *Index) populatedByCall(pkg *packages.Package, enc *ast.FuncDecl, obj t
 	if enc == nil || enc.Body == nil || depth >= ix.hops() {
 		return "", "", false
 	}
-	var calls []*ast.CallExpr
-	ast.Inspect(enc.Body, func(n ast.Node) bool {
-		if call, ok := n.(*ast.CallExpr); ok {
-			calls = append(calls, call)
-		}
-		return true
-	})
+	calls := ix.callsIn(enc)
 	isObj := func(e ast.Expr) bool {
 		if u, ok := e.(*ast.UnaryExpr); ok && u.Op == token.AND {
 			e = u.X
@@ -316,11 +369,15 @@ func (ix *Index) populatedByCall(pkg *packages.Package, enc *ast.FuncDecl, obj t
 			}
 		}
 		// slice/writer destination at a known position: f(src, ..., v, ...)
-		if idx, ok := ix.kb().SlicePopulateFuncs[fn.Pkg().Path()+"."+fn.Name()]; ok &&
-			idx[0] < len(call.Args) && idx[1] < len(call.Args) && isObj(call.Args[idx[0]]) {
-			o, w := eval(call.Args[idx[1]], depth+1)
-			merge(o, fmt.Sprintf("%s into %s: %s", fn.Name(), obj.Name(), w))
-			continue
+		// Builtins (append, copy, new) carry no package — they cannot be
+		// knowledge-base populate entries, and fn.Pkg() is nil for them.
+		if pkgOf := fn.Pkg(); pkgOf != nil {
+			if idx, ok := ix.kb().SlicePopulateFuncs[pkgOf.Path()+"."+fn.Name()]; ok &&
+				idx[0] < len(call.Args) && idx[1] < len(call.Args) && isObj(call.Args[idx[0]]) {
+				o, w := eval(call.Args[idx[1]], depth+1)
+				merge(o, fmt.Sprintf("%s into %s: %s", fn.Name(), obj.Name(), w))
+				continue
+			}
 		}
 		sel, isSel := call.Fun.(*ast.SelectorExpr)
 		if !isSel {
@@ -528,6 +585,47 @@ func localAssigns(enc *ast.FuncDecl, obj types.Object) []ast.Expr {
 	return out
 }
 
+// assigns memoizes localAssigns — the body walk repeats for every traced
+// identifier of a function, and the result is immutable for the index.
+func (ix *Index) assigns(enc *ast.FuncDecl, obj types.Object) []ast.Expr {
+	if ix.assignCache == nil {
+		ix.assignCache = map[assignKey][]ast.Expr{}
+	}
+	k := assignKey{enc: enc, obj: obj}
+	if rhs, ok := ix.assignCache[k]; ok {
+		return rhs
+	}
+	rhs := localAssigns(enc, obj)
+	if len(ix.assignCache) < maxAuxCache {
+		ix.assignCache[k] = rhs
+	}
+	return rhs
+}
+
+// callsIn memoizes the call-expression list of a function body —
+// populatedByCall walks it for every populated variable.
+func (ix *Index) callsIn(enc *ast.FuncDecl) []*ast.CallExpr {
+	if ix.callListCache == nil {
+		ix.callListCache = map[*ast.FuncDecl][]*ast.CallExpr{}
+	}
+	if calls, ok := ix.callListCache[enc]; ok {
+		return calls
+	}
+	var calls []*ast.CallExpr
+	if enc != nil && enc.Body != nil {
+		ast.Inspect(enc.Body, func(n ast.Node) bool {
+			if call, ok := n.(*ast.CallExpr); ok {
+				calls = append(calls, call)
+			}
+			return true
+		})
+	}
+	if len(ix.callListCache) < maxAuxCache {
+		ix.callListCache[enc] = calls
+	}
+	return calls
+}
+
 func (ix *Index) classifySelector(pkg *packages.Package, enc *ast.FuncDecl, e *ast.SelectorExpr, depth int) (domain.DataOrigin, string) {
 	sel, ok := pkg.TypesInfo.Selections[e]
 	if ok {
@@ -620,10 +718,11 @@ func (ix *Index) fieldConfigTagged(field *types.Var) bool {
 // aliases are invisible — recorded as a limitation-shaped why.
 // fieldWrite is one product-source assignment into a struct field.
 type fieldWrite struct {
-	pkg *packages.Package
-	enc *ast.FuncDecl // nil for package-level writes
-	rhs ast.Expr
-	pos token.Pos
+	pkg  *packages.Package
+	enc  *ast.FuncDecl // nil for package-level writes
+	rhs  ast.Expr
+	base ast.Expr // LHS base expr (x in x.F=v); nil for literal inits
+	pos  token.Pos
 }
 
 // fieldWriteSites scans the field's owner scope for writes to it:
@@ -662,12 +761,16 @@ func (ix *Index) fieldWriteSites(field *types.Var) []fieldWrite {
 							rhs = n.Rhs[0]
 						}
 						if rhs != nil {
-							sites = append(sites, fieldWrite{pkg, enc, rhs, n.Pos()})
+							var base ast.Expr
+							if sel, ok := lhs.(*ast.SelectorExpr); ok {
+								base = sel.X
+							}
+							sites = append(sites, fieldWrite{pkg, enc, rhs, base, n.Pos()})
 						}
 					}
 				case *ast.KeyValueExpr:
 					if id, ok := n.Key.(*ast.Ident); ok && sameObject(info.ObjectOf(id), field) {
-						sites = append(sites, fieldWrite{pkg, enc, n.Value, n.Pos()})
+						sites = append(sites, fieldWrite{pkg, enc, n.Value, nil, n.Pos()})
 					}
 				}
 				return true
@@ -688,6 +791,13 @@ func (ix *Index) fieldOrigin(field *types.Var, depth int) (domain.DataOrigin, st
 	var merged domain.DataOrigin
 	var whys []string
 	for _, s := range sites {
+		// Writes in dep functions outside the product-driven cone belong
+		// to alternative module flows (e.g. a shipped cmd/ wiring
+		// os.Args) — merging them would over-approximate the product's
+		// data toward EXTERNAL_UNTRUSTED.
+		if !ix.siteOnPath(s.pkg, s.enc) {
+			continue
+		}
 		o, w := ix.classify(s.pkg, s.enc, s.rhs, depth+1)
 		whys = append(whys, w)
 		merged = mergeOrigin(merged, o)
@@ -1008,6 +1118,10 @@ func (ix *Index) traceCallee(fn *types.Func, call *ast.CallExpr, evalArg exprEva
 // dominating assignment, everything else conservatively UNKNOWN.
 func (ix *Index) evalCalleeExpr(dp *packages.Package, decl *ast.FuncDecl, e ast.Expr,
 	argAt func(string) (ast.Expr, bool), evalArg exprEval, depth int) (domain.DataOrigin, string) {
+	if !ix.enterExpr() {
+		return domain.OriginUnknown, "expression depth exceeded"
+	}
+	defer ix.leaveExpr()
 
 	switch v := e.(type) {
 	case *ast.BasicLit:
@@ -1031,7 +1145,21 @@ func (ix *Index) evalCalleeExpr(dp *packages.Package, decl *ast.FuncDecl, e ast.
 			o, w := evalArg(arg, depth+1)
 			return o, "param " + v.Name + " <- " + w
 		}
-		if rhsList := localAssigns(decl, dp.TypesInfo.ObjectOf(v)); len(rhsList) > 0 {
+		obj := dp.TypesInfo.ObjectOf(v)
+		if rhsList := ix.assigns(decl, obj); len(rhsList) > 0 {
+			// Same cycle guard as classifyIdent: x = x + t re-enters the
+			// same var's assignments — the accumulated value keeps the
+			// origins already merged, the self-reference adds nothing.
+			// calleeEvalSeen is lazily owned by this frame so the guard
+			// holds on any entry path, not only inside Trace*.
+			if ix.calleeEvalSeen == nil {
+				ix.calleeEvalSeen = map[types.Object]bool{}
+			}
+			if ix.calleeEvalSeen[obj] {
+				return domain.OriginUnknown, "recursive assignment cycle"
+			}
+			ix.calleeEvalSeen[obj] = true
+			defer delete(ix.calleeEvalSeen, obj)
 			var merged domain.DataOrigin
 			for _, rhs := range rhsList {
 				o, _ := ix.evalCalleeExpr(dp, decl, rhs, argAt, evalArg, depth)
@@ -1047,7 +1175,7 @@ func (ix *Index) evalCalleeExpr(dp *packages.Package, decl *ast.FuncDecl, e ast.
 		inner := func(e ast.Expr, d int) (domain.DataOrigin, string) {
 			return ix.evalCalleeExpr(dp, decl, e, argAt, evalArg, d)
 		}
-		if o, w, ok := ix.populatedByCall(dp, decl, dp.TypesInfo.ObjectOf(v), depth, inner); ok {
+		if o, w, ok := ix.populatedByCall(dp, decl, obj, depth, inner); ok {
 			return o, "local " + v.Name + " <- " + w
 		}
 		return domain.OriginUnknown, "unresolvable ident " + v.Name
@@ -1153,7 +1281,7 @@ func (ix *Index) funcDecl(fn *types.Func) (*ast.FuncDecl, *packages.Package) {
 			}
 		}
 	}
-	extra, err := ix.loadExtra(context.Background(), fn.Pkg().Path())
+	extra, err := ix.loadExtra(ix.ctxOr(nil), fn.Pkg().Path())
 	if err != nil {
 		return nil, nil
 	}
@@ -1205,9 +1333,11 @@ func (ix *Index) TraceAllArguments(ctx context.Context, site domain.CallSite) ([
 		var tx []domain.CallSite
 		ix.txBuf = &tx
 		ix.traceSeen = map[types.Object]bool{}
+		ix.classifyCache = map[classifyKey]classifyResult{}
 		origin, why := ix.classify(pkg, enc, call.Args[i], 0)
 		ix.txBuf = nil
 		ix.traceSeen = nil
+		ix.classifyCache = nil
 		flows = append(flows, domain.DataFlow{
 			Arg:             i,
 			Sink:            site,
@@ -1227,7 +1357,7 @@ func (ix *Index) TraceAllArguments(ctx context.Context, site domain.CallSite) ([
 func (ix *Index) InputParamIndex(ref domain.SymbolRef) (int, error) {
 	ix.mu.Lock()
 	defer ix.mu.Unlock()
-	cs, err := ix.findSymbol(context.Background(), ref)
+	cs, err := ix.findSymbol(ix.ctxOr(nil), ref)
 	if err != nil {
 		return -1, err
 	}
@@ -1258,7 +1388,7 @@ func (ix *Index) InputParamIndex(ref domain.SymbolRef) (int, error) {
 // position when available.
 func (ix *Index) funcDeclAt(cs *domain.CallSite, ref domain.SymbolRef) (*ast.FuncDecl, *packages.Package, error) {
 	pkgs := ix.pkgs
-	extra, err := ix.loadExtra(context.Background(), ref.Package)
+	extra, err := ix.loadExtra(ix.ctxOr(nil), ref.Package)
 	if err == nil {
 		pkgs = append(append([]*packages.Package{}, ix.pkgs...), extra...)
 	}
@@ -1324,16 +1454,18 @@ func (ix *Index) traceParam(pkg *packages.Package, enc *ast.FuncDecl, v *types.V
 	if pkg.Types != nil {
 		encRef = funcSymbolRef(pkg, enc)
 	}
-	refs := ix.findCallSitesIn(ix.callerScope(pkg), encRef)
+	refs := ix.callersOf(pkg, encRef)
 	if len(refs) == 0 {
 		return domain.OriginUnknown, fmt.Sprintf("no static callers of %s found", enc.Name.Name)
 	}
 	var merged domain.DataOrigin
 	var whys []string
+	onPath := 0
 	for _, r := range refs {
-		if paramIdx >= len(r.call.Args) {
+		if paramIdx >= len(r.call.Args) || !ix.callerOnPath(r) {
 			continue
 		}
+		onPath++
 		o, w := ix.classify(r.pkg, r.enclosing, r.call.Args[paramIdx], depth+1)
 		whys = append(whys, fmt.Sprintf("%s:%d %s", r.Site.File, r.Site.Line, w))
 		merged = mergeOrigin(merged, o)
@@ -1341,7 +1473,7 @@ func (ix *Index) traceParam(pkg *packages.Package, enc *ast.FuncDecl, v *types.V
 	if merged == "" {
 		return domain.OriginUnknown, "no caller arguments resolvable"
 	}
-	return merged, fmt.Sprintf("param %s via %d caller(s): %s", v.Name(), len(refs), strings.Join(whys, "; "))
+	return merged, fmt.Sprintf("param %s via %d caller(s): %s", v.Name(), onPath, strings.Join(whys, "; "))
 }
 
 // paramIndexOf returns the positional index of the parameter named `name`

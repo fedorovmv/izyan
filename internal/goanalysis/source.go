@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -44,12 +45,56 @@ type Index struct {
 	// assignment merge is in progress — breaks self-referential cycles
 	// (x = x + n re-entering x's assignments).
 	traceSeen map[types.Object]bool
+	// calleeEvalSeen marks vars whose assignment merge is in progress
+	// inside evalCalleeExpr — the callee-frame counterpart of traceSeen,
+	// owned by the callee evaluator so the cycle guard holds on every
+	// entry path.
+	calleeEvalSeen map[types.Object]bool
+	// activeCtx is the context of the currently executing public query —
+	// internal helpers (loadExtra, findSymbol, dep-package loads) pick it
+	// up so cancellation reaches subprocess loads without threading ctx
+	// through every helper signature. Set by load() on every entry.
+	activeCtx context.Context
+	// classifyCache memoizes classify results for the duration of one
+	// trace (reset at each trace entry — traceSeen/txBuf make results
+	// trace-scoped). Without it the caller fan-out re-walks the same
+	// (expr, enc, depth) subtrees exponentially.
+	classifyCache map[classifyKey]classifyResult
+	// assignCache memoizes localAssigns scans per (function, object);
+	// callListCache memoizes the call-list walk in populatedByCall per
+	// function. Both hold AST pointers — bounded like the other caches.
+	assignCache   map[assignKey][]ast.Expr
+	callListCache map[*ast.FuncDecl][]*ast.CallExpr
+	// coneCache memoizes depCone per module path: the set of module
+	// functions reachable from the product's calls into it — used to
+	// restrict dep-internal caller merges to product-driven paths.
+	coneCache map[string]map[string]bool
+	// instSet/instDisabled memoize instantiatedNamed across loaded
+	// packages; instGen invalidates on extras flushes like callerCache.
+	instSet      map[*types.Named]bool
+	instDisabled bool
+	instGen      int
+	// coneBusy marks modules whose depCone is currently being computed —
+	// cone checks inside the computation (dispatch narrowing looks at
+	// field writes, which consult the cone) degrade to permissive instead
+	// of recursing forever.
+	coneBusy map[string]bool
+	// exprDepth bounds structural recursion into expression trees (binary
+	// chains, nested indices, giant composite literals in generated dep
+	// code). hops() bounds caller climbs; this bounds AST nesting —
+	// beyond it the origin is UNKNOWN, not a stack overflow.
+	exprDepth int
 	mu        sync.Mutex // serializes queries; shared across cases in scan mode
 	pkgs      []*packages.Package
 	// extraPkgs caches dependency packages loaded on demand via loadExtra
 	// (keyed by package path), so dep-internal scans (call sites, provenance)
 	// can reuse their syntax without re-running packages.Load.
-	extraPkgs    map[string][]*packages.Package
+	extraPkgs map[string][]*packages.Package
+	// callerCache memoizes caller scans by (symbol, scope). Dependency
+	// scopes grow as loadExtra pulls more packages in, so dep entries are
+	// tagged with the extras generation and refreshed on a miss.
+	callerCache  map[callerKey]cachedCallers
+	extrasGen    int
 	fset         *token.FileSet
 	loaded       bool
 	loadErr      error
@@ -70,21 +115,31 @@ func buildEnv(build domain.ProductSnapshot) []string {
 	return env
 }
 
+// loadMode deliberately excludes NeedDeps: with it, every load pulls the
+// full AST+types tree of the transitive dependency graph — that is what
+// OOM-killed the host on large modules (go-getter → aws-sdk-scale trees).
+// Without it, roots still get syntax+types and dependencies resolve
+// through export data, which is all the analysis needs: dependency
+// syntax is loaded only for packages named by a loadExtra pattern.
 const loadMode = packages.NeedName | packages.NeedFiles | packages.NeedSyntax |
 	packages.NeedTypes | packages.NeedTypesInfo | packages.NeedImports |
-	packages.NeedDeps | packages.NeedModule
+	packages.NeedModule
 
 func (ix *Index) load(ctx context.Context) error {
+	if ctx != nil {
+		ix.activeCtx = ctx
+	}
 	if ix.loaded {
 		return ix.loadErr
 	}
 	ix.loaded = true
 	ix.fset = token.NewFileSet()
 	cfg := &packages.Config{
-		Mode: loadMode,
-		Dir:  ix.Dir,
-		Fset: ix.fset,
-		Env:  append(os.Environ(), append(buildEnv(ix.Build), ix.Env...)...),
+		Mode:    loadMode,
+		Dir:     ix.Dir,
+		Fset:    ix.fset,
+		Env:     append(os.Environ(), append(buildEnv(ix.Build), ix.Env...)...),
+		Context: ctx,
 	}
 	if len(ix.Build.BuildTags) > 0 {
 		cfg.BuildFlags = []string{"-tags", strings.Join(ix.Build.BuildTags, ",")}
@@ -96,11 +151,25 @@ func (ix *Index) load(ctx context.Context) error {
 	return ix.loadErr
 }
 
+// ctxOr prefers the caller's context; a bare Background (internal helpers
+// that do not receive one) falls back to the active query context so the
+// memory watchdog's cancellation still reaches subprocess loads.
+func (ix *Index) ctxOr(ctx context.Context) context.Context {
+	if ctx != nil && ctx != context.Background() && ctx != context.TODO() {
+		return ctx
+	}
+	if ix.activeCtx != nil {
+		return ix.activeCtx
+	}
+	return ctx
+}
+
 // loadExtra loads additional root patterns (e.g. the vulnerable dependency
 // package) into the same fileset so its syntax is available for reading.
 // Results are cached per pattern: dep packages are reused by dep-internal
 // call-site and provenance scans.
 func (ix *Index) loadExtra(ctx context.Context, patterns ...string) ([]*packages.Package, error) {
+	ctx = ix.ctxOr(ctx)
 	if err := ix.load(ctx); err != nil {
 		return nil, err
 	}
@@ -109,10 +178,11 @@ func (ix *Index) loadExtra(ctx context.Context, patterns ...string) ([]*packages
 		return pkgs, nil
 	}
 	cfg := &packages.Config{
-		Mode: loadMode,
-		Dir:  ix.Dir,
-		Fset: ix.fset,
-		Env:  append(os.Environ(), append(buildEnv(ix.Build), ix.Env...)...),
+		Mode:    loadMode,
+		Dir:     ix.Dir,
+		Fset:    ix.fset,
+		Env:     append(os.Environ(), append(buildEnv(ix.Build), ix.Env...)...),
+		Context: ctx,
 	}
 	if len(ix.Build.BuildTags) > 0 {
 		cfg.BuildFlags = []string{"-tags", strings.Join(ix.Build.BuildTags, ",")}
@@ -124,7 +194,21 @@ func (ix *Index) loadExtra(ctx context.Context, patterns ...string) ([]*packages
 	if ix.extraPkgs == nil {
 		ix.extraPkgs = map[string][]*packages.Package{}
 	}
+	// Bound retained dependency graphs: each entry holds a full AST+types
+	// tree, so accumulating patterns is what blew the host's memory on
+	// large modules. Extras are reloadable — flush all and let callers
+	// re-load the ones they still need.
+	if len(ix.extraPkgs) >= maxExtraLoads {
+		ix.extraPkgs = map[string][]*packages.Package{}
+		ix.extrasGen++
+		for k := range ix.callerCache {
+			if k.dep {
+				delete(ix.callerCache, k) // entries point at evicted ASTs
+			}
+		}
+	}
 	ix.extraPkgs[key] = pkgs
+	ix.extrasGen++
 	return pkgs, nil
 }
 
@@ -406,31 +490,80 @@ func (ix *Index) findCallSites(ctx context.Context, ref domain.SymbolRef) ([]Cal
 	return ix.findCallSitesIn(ix.pkgs, ref), nil
 }
 
+// findCallSitesIn scans every file of pkgs for calls to ref. Files are
+// scanned in parallel — the trace loop calls this repeatedly, and AST
+// scans are the hot path on real dependency trees. Results concatenate in
+// the original (pkg, file) order, so the output is identical to a
+// sequential scan.
 func (ix *Index) findCallSitesIn(pkgs []*packages.Package, ref domain.SymbolRef) []CallSiteRef {
-	var out []CallSiteRef
+	type fileJob struct {
+		pkg  *packages.Package
+		file *ast.File
+	}
+	var jobs []fileJob
 	for _, pkg := range pkgs {
-		info := pkg.TypesInfo
-		if info == nil {
+		if pkg.TypesInfo == nil {
 			continue
 		}
 		for _, f := range pkg.Syntax {
-			var enc *ast.FuncDecl
-			ast.Inspect(f, func(n ast.Node) bool {
-				if fn, ok := n.(*ast.FuncDecl); ok {
-					enc = fn
-				}
-				call, ok := n.(*ast.CallExpr)
-				if !ok {
-					return true
-				}
-				if callIsSymbol(info, call.Fun, ref) {
-					site := ix.siteOf(pkg, enc, call)
-					out = append(out, CallSiteRef{Site: site, call: call, enclosing: enc, pkg: pkg})
-				}
-				return true
-			})
+			jobs = append(jobs, fileJob{pkg, f})
 		}
 	}
+	perFile := make([][]CallSiteRef, len(jobs))
+	workers := runtime.GOMAXPROCS(0)
+	if workers > len(jobs) {
+		workers = len(jobs)
+	}
+	if workers > 1 {
+		var wg sync.WaitGroup
+		next := make(chan int, workers)
+		for w := 0; w < workers; w++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for i := range next {
+					j := jobs[i]
+					perFile[i] = ix.scanFileForCalls(j.pkg, j.file, ref)
+				}
+			}()
+		}
+		for i := range jobs {
+			next <- i
+		}
+		close(next)
+		wg.Wait()
+	} else {
+		for i, j := range jobs {
+			perFile[i] = ix.scanFileForCalls(j.pkg, j.file, ref)
+		}
+	}
+	var out []CallSiteRef
+	for _, refs := range perFile {
+		out = append(out, refs...)
+	}
+	return out
+}
+
+// scanFileForCalls finds call sites of ref within one syntax file —
+// read-only, safe for concurrent use across files.
+func (ix *Index) scanFileForCalls(pkg *packages.Package, f *ast.File, ref domain.SymbolRef) []CallSiteRef {
+	var out []CallSiteRef
+	info := pkg.TypesInfo
+	var enc *ast.FuncDecl
+	ast.Inspect(f, func(n ast.Node) bool {
+		if fn, ok := n.(*ast.FuncDecl); ok {
+			enc = fn
+		}
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if callIsSymbol(info, call.Fun, ref) {
+			site := ix.siteOf(pkg, enc, call)
+			out = append(out, CallSiteRef{Site: site, call: call, enclosing: enc, pkg: pkg})
+		}
+		return true
+	})
 	return out
 }
 
@@ -468,6 +601,164 @@ func (ix *Index) callerScope(pkg *packages.Package) []*packages.Package {
 		return ix.pkgs
 	}
 	return append(append([]*packages.Package{}, ix.allExtras()...), ix.pkgs...)
+}
+
+// maxExtraLoads bounds how many dependency-load patterns the index
+// retains at once; maxCallerCache bounds memoized caller scans.
+const (
+	maxExtraLoads    = 64
+	maxCallerCache   = 8192
+	maxClassifyCache = 65536
+	maxAuxCache      = 16384
+)
+
+// callerKey identifies one caller scan: the symbol looked up and which
+// scope callerScope picked (product roots only, or the dep+product union).
+type callerKey struct {
+	ref domain.SymbolRef
+	dep bool
+}
+
+// classifyKey addresses one classify evaluation: the expression node in
+// its enclosing function, the package that type-checked it, and the
+// remaining caller-hop depth.
+type classifyKey struct {
+	pkg   *packages.Package
+	enc   *ast.FuncDecl
+	expr  ast.Expr
+	depth int
+}
+
+type classifyResult struct {
+	origin domain.DataOrigin
+	why    string
+}
+
+type assignKey struct {
+	enc *ast.FuncDecl
+	obj types.Object
+}
+
+// cachedCallers records a caller scan. Dep-scope entries expire when the
+// extras generation advances — a freshly loaded dep package may hold
+// additional callers of the same symbol.
+type cachedCallers struct {
+	gen  int
+	refs []CallSiteRef
+}
+
+// callersOf scans for call sites of ref across pkg's caller scope,
+// memoized. Deep traces revisit the same enclosing functions repeatedly;
+// without this every hop re-walked every loaded package's syntax.
+func (ix *Index) callersOf(pkg *packages.Package, ref domain.SymbolRef) []CallSiteRef {
+	dep := !ix.isProductPkg(pkg)
+	key := callerKey{ref: ref, dep: dep}
+	if c, ok := ix.callerCache[key]; ok && (!dep || c.gen == ix.extrasGen) {
+		return c.refs
+	}
+	scope := ix.callerScope(pkg)
+	refs := ix.findCallSitesIn(scope, ref)
+	// A caller of an interface method is a caller of every implementation:
+	// `g.GetFile(...)` where g is a Getter invokes GitGetter.GetFile even
+	// though no call site names it. Dispatch through registries
+	// (go-getter's getters map, amqp's reader iface) is invisible to a
+	// concrete-method-only scan.
+	for _, iref := range ix.ifaceCallerRefs(ref) {
+		for _, r := range ix.findCallSitesIn(scope, iref) {
+			// An interface-dispatch site counts only when it can actually
+			// dispatch to ref's impl: `g := registry[key]` with an
+			// evaluable key reaches just the registered impls at the key's
+			// values. Unevaluable keys keep the site (unknown-biased).
+			if t, _ := splitSymbol(ref.Symbol); t != "" {
+				if set := ix.dispatchImpls(r.pkg, r.enclosing, r.call); set != nil && !set[t] {
+					continue
+				}
+			}
+			if !dupCallSite(refs, r) {
+				refs = append(refs, r)
+			}
+		}
+	}
+	if ix.callerCache == nil {
+		ix.callerCache = map[callerKey]cachedCallers{}
+	}
+	if len(ix.callerCache) >= maxCallerCache {
+		// Entries are recomputable — a full map is a memory leak shape,
+		// not an optimization.
+		ix.callerCache = map[callerKey]cachedCallers{}
+	}
+	ix.callerCache[key] = cachedCallers{gen: ix.extrasGen, refs: refs}
+	return refs
+}
+
+// dupCallSite reports whether refs already contains a CallSiteRef for the
+// same AST call node.
+func dupCallSite(refs []CallSiteRef, r CallSiteRef) bool {
+	for _, x := range refs {
+		if x.call == r.call {
+			return true
+		}
+	}
+	return false
+}
+
+// ifaceCallerRefs returns SymbolRefs of interface methods that ref (a
+// concrete method pkg.T.M) implements — call sites of those interface
+// methods dispatch into T.M. Both the concrete type and the interfaces
+// are looked up in the loaded packages; nothing found means no extra
+// callers, not no callers.
+func (ix *Index) ifaceCallerRefs(ref domain.SymbolRef) []domain.SymbolRef {
+	typeName, method := splitSymbol(ref.Symbol)
+	if typeName == "" {
+		return nil
+	}
+	var T *types.Named
+	for _, p := range append(ix.allExtras(), ix.pkgs...) {
+		if p.PkgPath != ref.Package || p.Types == nil {
+			continue
+		}
+		if tn, ok := p.Types.Scope().Lookup(typeName).(*types.TypeName); ok {
+			T, _ = tn.Type().(*types.Named)
+		}
+	}
+	if T == nil {
+		return nil
+	}
+	// A concrete type that is never instantiated anywhere in loaded code
+	// cannot be the dynamic target of an interface call — its interface
+	// callers would merge provenance from frames that never run (mocks
+	// shipped in non-test files, dead registry alternatives). Skipped
+	// entirely when dynamic materialization is present.
+	if inst, narrow := ix.instantiated(); narrow && !inst[T] {
+		return nil
+	}
+	var out []domain.SymbolRef
+	for _, p := range append(ix.allExtras(), ix.pkgs...) {
+		if p.Types == nil {
+			continue
+		}
+		for _, name := range p.Types.Scope().Names() {
+			tn, ok := p.Types.Scope().Lookup(name).(*types.TypeName)
+			if !ok {
+				continue
+			}
+			named, ok := tn.Type().(*types.Named)
+			if !ok {
+				continue
+			}
+			iface, ok := named.Underlying().(*types.Interface)
+			if !ok || !types.Implements(types.NewPointer(T), iface) {
+				continue
+			}
+			for i := 0; i < iface.NumMethods(); i++ {
+				if iface.Method(i).Name() == method {
+					out = append(out, domain.SymbolRef{
+						Package: p.PkgPath, Symbol: name + "." + method})
+				}
+			}
+		}
+	}
+	return out
 }
 
 // isProductPath reports whether pkgPath is one of the product roots.
@@ -916,21 +1207,65 @@ func (ix *Index) ModuleUsage(ctx context.Context, module string) ([]domain.CallS
 // edges inside the vendored module source. Returns subject key ("pkg.Symbol")
 // to the discovered call chain (entry → ... → subject). Type-resolved: method
 // calls match the subject only when the receiver type is the subject's.
-func (ix *Index) ModuleInternalReach(ctx context.Context, module string, entries []string, subjects []domain.SymbolRef) (map[string][]string, error) {
+//
+// Dispatch inside the module is handled explicitly: calls through interface
+// values (plugin/getter registries like go-getter's `getters[scheme].Get`)
+// resolve to the interface method, and every concrete implementation in the
+// module is linked interface-method → impl, so BFS can pass through.
+// Calls that resolve to no function at all (func values, map-indexed
+// non-interface calls) set opaque: an unreached subject then proves
+// nothing — callers must treat absence as UNKNOWN, never FALSE.
+func (ix *Index) ModuleInternalReach(ctx context.Context, module string, entries []string, subjects []domain.SymbolRef) (map[string][]string, bool, error) {
 	fset := token.NewFileSet()
 	cfg := &packages.Config{
-		Mode: loadMode,
-		Dir:  ix.Dir,
-		Fset: fset,
-		Env:  append(os.Environ(), append(buildEnv(ix.Build), ix.Env...)...),
+		Mode:    loadMode,
+		Dir:     ix.Dir,
+		Fset:    fset,
+		Env:     append(os.Environ(), append(buildEnv(ix.Build), ix.Env...)...),
+		Context: ix.ctxOr(ctx),
 	}
 	pkgs, err := packages.Load(cfg, module+"/...")
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
+	edges, opaque := ix.moduleEdges(pkgs, module)
 
-	// caller-qualified-name -> set of callee-qualified-names within the module.
+	out := map[string][]string{}
+	for _, subj := range subjects {
+		target := subj.Package + "." + subj.Symbol
+		for _, e := range entries {
+			if chain := bfsChain(edges, e, target); chain != nil {
+				out[target] = chain
+				break
+			}
+		}
+	}
+	return out, opaque, nil
+}
+
+// moduleEdges builds the intra-module call graph: caller-qualified-name ->
+// set of callee-qualified-names, plus interface-method -> implementation
+// edges for every module-local impl of invoked interface methods. The
+// bool reports opaque dispatch — calls resolving to no function at all
+// (func values), which make the graph incomplete.
+func (ix *Index) moduleEdges(pkgs []*packages.Package, module string) (map[string]map[string]bool, bool) {
 	edges := map[string]map[string]bool{}
+	// Interface dispatch call sites, recorded for per-site impl narrowing:
+	// a site `g.M()` where g = registry[key] with an evaluable key reaches
+	// only the impls registered at the key's values, not every impl.
+	type ifaceSite struct {
+		pkg  *packages.Package
+		enc  *ast.FuncDecl
+		call *ast.CallExpr
+	}
+	ifaceSites := map[*types.Named]map[string][]ifaceSite{}
+	opaque := false
+	addEdge := func(key, callee string) {
+		if edges[key] == nil {
+			edges[key] = map[string]bool{}
+		}
+		edges[key][callee] = true
+	}
 	for _, pkg := range pkgs {
 		info := pkg.TypesInfo
 		if info == nil {
@@ -938,9 +1273,11 @@ func (ix *Index) ModuleInternalReach(ctx context.Context, module string, entries
 		}
 		for _, f := range pkg.Syntax {
 			var caller string
+			var encDecl *ast.FuncDecl
 			ast.Inspect(f, func(n ast.Node) bool {
 				if fn, ok := n.(*ast.FuncDecl); ok && fn.Name != nil {
 					caller = fn.Name.Name
+					encDecl = fn
 					if fn.Recv != nil && len(fn.Recv.List) > 0 {
 						caller = recvDeclName(fn.Recv.List[0].Type) + "." + fn.Name.Name
 					}
@@ -953,6 +1290,16 @@ func (ix *Index) ModuleInternalReach(ctx context.Context, module string, entries
 				obj := calleeObject(info, call.Fun)
 				fn, ok := obj.(*types.Func)
 				if !ok || fn.Pkg() == nil {
+					// Func values and map-indexed calls hide their target
+					// from the chain — absence of a found chain is then
+					// not evidence of absence. Builtins and type
+					// conversions resolve to no *types.Func either, but
+					// call nothing user-defined.
+					switch obj.(type) {
+					case *types.Builtin, *types.TypeName:
+					default:
+						opaque = true
+					}
 					return true
 				}
 				p := fn.Pkg().Path()
@@ -961,29 +1308,343 @@ func (ix *Index) ModuleInternalReach(ctx context.Context, module string, entries
 				}
 				callee := p + "." + fn.Name()
 				if sig, ok := fn.Type().(*types.Signature); ok && sig.Recv() != nil {
-					callee = p + "." + recvTypeName(sig.Recv().Type()) + "." + fn.Name()
+					rt := sig.Recv().Type()
+					callee = p + "." + recvTypeName(rt) + "." + fn.Name()
+					// Interface dispatch: the callee is the interface
+					// method — record the site so impl edges below can be
+					// narrowed by the dispatch key.
+					if named := ifaceNamed(rt); named != nil {
+						if ifaceSites[named] == nil {
+							ifaceSites[named] = map[string][]ifaceSite{}
+						}
+						ifaceSites[named][fn.Name()] = append(ifaceSites[named][fn.Name()], ifaceSite{pkg, encDecl, call})
+					}
 				}
-				key := pkg.PkgPath + "." + caller
-				if edges[key] == nil {
-					edges[key] = map[string]bool{}
-				}
-				edges[key][callee] = true
+				addEdge(pkg.PkgPath+"."+caller, callee)
 				return true
 			})
 		}
 	}
-
-	out := map[string][]string{}
-	for _, subj := range subjects {
-		target := subj.Package + "." + subj.Symbol
-		for _, e := range entries {
-			if chain := bfsChain(edges, e, target); chain != nil {
-				out[target] = chain
-				break
+	// Link interface methods to their concrete implementations declared in
+	// the module — a registry call "Getter.Get" reaches every Getter impl.
+	// Two narrowing layers keep the fan-out honest:
+	//   - instantiation: a type never created in loaded code cannot be a
+	//     dispatch target (test mocks, dead alternatives); skipped entirely
+	//     under reflect.New/unsafe/plugin/linkname;
+	//   - dispatch key: a site `g.M()` where g = registry[key] and key
+	//     evaluates to constants reaches only the registered impls at
+	//     those keys; an unevaluable site stays unrestricted — then all
+	//     impls of that (iface,method) are linked.
+	inst, narrowing := ix.instantiated()
+	for named, methods := range ifaceSites {
+		for method, sites := range methods {
+			// Union of per-site allowed impls; any unrestricted site
+			// widens the pair back to every impl.
+			var allowed map[string]bool
+			for _, s := range sites {
+				set := ix.dispatchImpls(s.pkg, s.enc, s.call)
+				if set == nil {
+					allowed = nil
+					break
+				}
+				if allowed == nil {
+					allowed = map[string]bool{}
+				}
+				for name := range set {
+					allowed[name] = true
+				}
+			}
+			for _, pkg := range pkgs {
+				if pkg.Types == nil {
+					continue
+				}
+				for _, name := range pkg.Types.Scope().Names() {
+					if allowed != nil && !allowed[name] {
+						continue
+					}
+					tn, ok := pkg.Types.Scope().Lookup(name).(*types.TypeName)
+					if !ok {
+						continue
+					}
+					t := tn.Type()
+					implNamed, _ := t.(*types.Named)
+					if narrowing && implNamed != nil && !inst[implNamed] {
+						continue
+					}
+					iface, _ := named.Underlying().(*types.Interface)
+					if iface == nil || !types.Implements(types.NewPointer(t), iface) {
+						continue
+					}
+					ms := types.NewMethodSet(types.NewPointer(t))
+					for i := 0; i < ms.Len(); i++ {
+						m := ms.At(i).Obj()
+						if m.Name() != method {
+							continue
+						}
+						ifaceKey := named.Obj().Pkg().Path() + "." + named.Obj().Name() + "." + method
+						implKey := m.Pkg().Path() + "." + name + "." + method
+						addEdge(ifaceKey, implKey)
+					}
+				}
 			}
 		}
 	}
-	return out, nil
+	return edges, opaque
+}
+
+// instantiatedNamed collects named types concretely created by the
+// packages' syntax: composite literals, new(T), var declarations with an
+// explicit type, make() and type conversions. The set is expanded over
+// struct fields and container element types — `&Wrapper{}` also creates
+// its field values. disabled is true when syntax can materialize values
+// invisibly (reflect.New/NewAt, unsafe, plugin, go:linkname): then the
+// set is incomplete and must not narrow dispatch.
+func instantiatedNamed(pkgs []*packages.Package) (set map[*types.Named]bool, disabled bool) {
+	set = map[*types.Named]bool{}
+	var add func(t types.Type)
+	add = func(t types.Type) {
+		for {
+			if p, ok := t.(*types.Pointer); ok {
+				t = p.Elem()
+				continue
+			}
+			break
+		}
+		n, ok := t.(*types.Named)
+		if !ok || n.Underlying() == nil {
+			return
+		}
+		if _, ok := n.Underlying().(*types.Interface); ok {
+			return
+		}
+		if set[n] {
+			return
+		}
+		set[n] = true
+		// Instantiating a named type creates its contained values too:
+		// struct fields (incl. embedded), slice/array/map/channel elems.
+		switch u := n.Underlying().(type) {
+		case *types.Struct:
+			for i := 0; i < u.NumFields(); i++ {
+				add(u.Field(i).Type())
+			}
+		case *types.Slice:
+			add(u.Elem())
+		case *types.Array:
+			add(u.Elem())
+		case *types.Map:
+			add(u.Elem())
+			add(u.Key())
+		case *types.Chan:
+			add(u.Elem())
+		}
+	}
+	for _, pkg := range pkgs {
+		info := pkg.TypesInfo
+		for _, f := range pkg.Syntax {
+			for _, imp := range f.Imports {
+				switch strings.Trim(imp.Path.Value, `"`) {
+				case "unsafe", "plugin":
+					disabled = true
+				}
+			}
+			ast.Inspect(f, func(n ast.Node) bool {
+				switch e := n.(type) {
+				case *ast.CompositeLit:
+					if info != nil {
+						add(info.TypeOf(e.Type))
+					}
+				case *ast.ValueSpec:
+					if info != nil && e.Type != nil {
+						add(info.TypeOf(e.Type))
+					}
+				case *ast.CallExpr:
+					obj := calleeObject(info, e.Fun)
+					switch o := obj.(type) {
+					case *types.Builtin:
+						if o.Name() == "new" && len(e.Args) == 1 && info != nil {
+							add(info.TypeOf(e.Args[0]))
+						}
+						if o.Name() == "make" && len(e.Args) >= 1 && info != nil {
+							add(info.TypeOf(e.Args[0]))
+						}
+					case *types.TypeName:
+						// T(x) conversion — counts as instantiation; a
+						// rare T(nil) over-marks, which is the safe side.
+						if nt, ok := o.Type().(*types.Named); ok {
+							add(nt)
+						}
+					case *types.Func:
+						if o.Pkg() != nil && o.Pkg().Path() == "reflect" &&
+							(o.Name() == "New" || o.Name() == "NewAt") {
+							disabled = true
+						}
+					}
+				}
+				return true
+			})
+			for _, cg := range f.Comments {
+				for _, cm := range cg.List {
+					if strings.HasPrefix(cm.Text, "//go:linkname") {
+						disabled = true
+					}
+				}
+			}
+		}
+	}
+	return set, disabled
+}
+
+// instantiated returns the memoized instantiation set over all loaded
+// packages (product + extras); narrow=false when dynamic materialization
+// was seen and the set must not restrict dispatch.
+func (ix *Index) instantiated() (map[*types.Named]bool, bool) {
+	if ix.instSet != nil && ix.instGen == ix.extrasGen {
+		return ix.instSet, !ix.instDisabled
+	}
+	pkgs := append(append([]*packages.Package{}, ix.allExtras()...), ix.pkgs...)
+	set, disabled := instantiatedNamed(pkgs)
+	ix.instSet, ix.instDisabled, ix.instGen = set, disabled, ix.extrasGen
+	return set, !disabled
+}
+
+// depCone returns the set of module functions reachable from the product's
+// call sites into the module — the entry cone. Dep-internal callers inside
+// this cone can carry product-supplied data; callers outside it are
+// alternative module flows (mocks, other getters, meta machinery) that the
+// product never drives — merging their origins over-approximates toward
+// EXTERNAL_UNTRUSTED and can never disprove exploitability.
+func (ix *Index) depCone(module string) map[string]bool {
+	if c, ok := ix.coneCache[module]; ok {
+		return c
+	}
+	if ix.coneBusy == nil {
+		ix.coneBusy = map[string]bool{}
+	}
+	if ix.coneBusy[module] {
+		// Cone under construction — dispatch narrowing inside edge
+		// building asks back through siteOnPath; answer permissively
+		// so the graph stays over-approximate rather than recursive.
+		return nil
+	}
+	ix.coneBusy[module] = true
+	defer delete(ix.coneBusy, module)
+	pkgs, err := ix.loadExtra(ix.ctxOr(nil), module+"/...")
+	if err != nil {
+		return nil
+	}
+	edges, _ := ix.moduleEdges(pkgs, module)
+	// Seed with every product call site whose callee lands in the module —
+	// the same callee-key format moduleEdges produces.
+	entries := map[string]bool{}
+	for _, p := range ix.pkgs {
+		info := p.TypesInfo
+		if info == nil {
+			continue
+		}
+		for _, f := range p.Syntax {
+			ast.Inspect(f, func(n ast.Node) bool {
+				call, ok := n.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				fn, ok := calleeObject(info, call.Fun).(*types.Func)
+				if !ok || fn.Pkg() == nil {
+					return true
+				}
+				fp := fn.Pkg().Path()
+				if fp != module && !strings.HasPrefix(fp, module+"/") {
+					return true
+				}
+				callee := fp + "." + fn.Name()
+				if sig, ok := fn.Type().(*types.Signature); ok && sig.Recv() != nil {
+					callee = fp + "." + recvTypeName(sig.Recv().Type()) + "." + fn.Name()
+				}
+				entries[callee] = true
+				return true
+			})
+		}
+	}
+	cone := map[string]bool{}
+	var stack []string
+	for e := range entries {
+		if !cone[e] {
+			cone[e] = true
+			stack = append(stack, e)
+		}
+	}
+	for len(stack) > 0 {
+		k := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		for next := range edges[k] {
+			if !cone[next] {
+				cone[next] = true
+				stack = append(stack, next)
+			}
+		}
+	}
+	if ix.coneCache == nil {
+		ix.coneCache = map[string]map[string]bool{}
+	}
+	ix.coneCache[module] = cone
+	return cone
+}
+
+// callerOnPath reports whether a caller site can carry product-supplied
+// data: product callers always qualify; dep-internal callers qualify only
+// when their enclosing function lies in the module's entry cone. Data
+// needed to decide stays unknown-biased: when the module or cone cannot
+// be computed the caller is kept.
+func (ix *Index) callerOnPath(r CallSiteRef) bool {
+	return ix.siteOnPath(r.pkg, r.enclosing)
+}
+
+// siteOnPath is the shared product-driven-cone check: product code and
+// package-level declarations always qualify; a dep-internal site qualifies
+// only when its enclosing function lies in the module's entry cone. When
+// module/cone cannot be computed the site is kept — unknown-biased.
+func (ix *Index) siteOnPath(pkg *packages.Package, enc *ast.FuncDecl) bool {
+	if pkg == nil || enc == nil || ix.isProductPath(pkg.PkgPath) {
+		return true
+	}
+	mod := ""
+	if pkg.Module != nil {
+		mod = pkg.Module.Path
+	}
+	if mod == "" {
+		return true
+	}
+	cone := ix.depCone(mod)
+	if cone == nil {
+		return true
+	}
+	caller := enc.Name.Name
+	if enc.Recv != nil && len(enc.Recv.List) > 0 {
+		caller = recvDeclName(enc.Recv.List[0].Type) + "." + caller
+	}
+	// init runs unconditionally at package load — it is on every path
+	// even though no caller ever names it.
+	if caller == "init" {
+		return true
+	}
+	return cone[pkg.PkgPath+"."+caller]
+}
+
+// ifaceNamed returns the named interface type of a receiver, or nil when
+// the receiver is a concrete type (methods on concrete receivers are
+// ordinary direct calls for reachability purposes).
+func ifaceNamed(t types.Type) *types.Named {
+	if p, ok := t.(*types.Pointer); ok {
+		t = p.Elem()
+	}
+	named, ok := t.(*types.Named)
+	if !ok {
+		return nil
+	}
+	if _, isIface := named.Underlying().(*types.Interface); !isIface {
+		return nil
+	}
+	return named
 }
 
 func recvDeclName(expr ast.Expr) string {

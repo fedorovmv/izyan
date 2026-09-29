@@ -175,6 +175,11 @@ func libraryUsageVerdict(claim domain.Claim, c *domain.AnalysisCase, subjects []
 			why+"; module is used but exported sinks were not reachability-checked")
 		return claim
 	}
+	if moduleReachOpaque(c) {
+		claim.Limitations = append(claim.Limitations,
+			why+"; module dispatch is opaque (func values/dynamic dispatch) — unreached subjects are not disproven")
+		return claim
+	}
 	claim.Result = domain.ClaimFalse
 	claim.Explanation = fmt.Sprintf(
 		"%s; none of %d exported subject(s) is invoked by product code nor reachable through the module API it uses",
@@ -290,6 +295,14 @@ func evalSequencePair(cond domain.Condition, c *domain.AnalysisCase) domain.Clai
 			"pair presence is proven; call order/dataflow between members is not verified")
 		return claim
 	}
+	// Missing members disprove the pair only when the module-internal
+	// graph is complete — opaque dispatch hides invocations.
+	if moduleReachOpaque(c) {
+		claim.Limitations = append(claim.Limitations, fmt.Sprintf(
+			"pair member(s) %s not statically reached; module dispatch is opaque (func values/dynamic dispatch), so absence is unknown, not disproven",
+			strings.Join(missing, ", ")))
+		return claim
+	}
 	claim.Result = domain.ClaimFalse
 	claim.Explanation = fmt.Sprintf(
 		"round-trip pair incomplete: product never invokes %s",
@@ -347,6 +360,19 @@ func condSubjects(cond domain.Condition) []domain.SymbolRef {
 func moduleReachChecked(c *domain.AnalysisCase) bool {
 	for _, e := range c.EvidenceGraph.Evidence {
 		if e.Tool == "goanalysis.Index.ModuleInternalReach" && strings.Contains(e.Source, "reachability check") {
+			return true
+		}
+	}
+	return false
+}
+
+// moduleReachOpaque reports whether the intra-module reach scan found
+// calls whose callee cannot be resolved statically (func values, dynamic
+// dispatch). An unreached subject is then UNKNOWN — absence cannot
+// falsify reachability.
+func moduleReachOpaque(c *domain.AnalysisCase) bool {
+	for _, e := range c.EvidenceGraph.Evidence {
+		if e.Tool == "goanalysis.Index.ModuleInternalReach" && strings.Contains(e.Source, "opaque dispatch") {
 			return true
 		}
 	}

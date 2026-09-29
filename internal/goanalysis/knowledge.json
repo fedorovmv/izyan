@@ -58,6 +58,11 @@
     "WriteRune": true,
     "ReadFrom": true
   },
+  "string_semantics": {
+    "github.com/hashicorp/go-getter.Detect": "identity_if_schemed",
+    "github.com/hashicorp/go-getter.getForcedGetter": "forced_split",
+    "github.com/hashicorp/go-getter.SourceDirSubdir": "subdir_split"
+  },
   "populate_names": {
     "Unmarshal": true,
     "Decode": true,

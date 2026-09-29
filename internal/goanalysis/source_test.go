@@ -381,6 +381,62 @@ func TestTraceDepInternalPeerOrigin(t *testing.T) {
 	}
 }
 
+// Instantiation narrowing: an interface impl that is never created in
+// non-test code cannot be a dispatch target — depCone must not contain
+// it, and its methods must not inherit the interface's call sites.
+func TestInstantiatedNarrowing(t *testing.T) {
+	ix := fixture(t, "regprod")
+	if err := ix.load(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	cone := ix.depCone("example.com/dep")
+	if cone == nil {
+		t.Fatal("depCone nil — module load failed")
+	}
+	if !cone["example.com/dep/vuln.RealRunner.Run"] {
+		t.Fatal("RealRunner.Run missing from cone — registered impl dropped")
+	}
+	if cone["example.com/dep/vuln.NeverRunner.Run"] {
+		t.Fatal("NeverRunner.Run in cone — uninstantiated impl dispatched")
+	}
+	dead := domain.SymbolRef{Package: "example.com/dep/vuln", Symbol: "NeverRunner.Run"}
+	if got := ix.ifaceCallerRefs(dead); len(got) != 0 {
+		t.Fatalf("NeverRunner.Run inherited iface callers: %+v", got)
+	}
+	live := domain.SymbolRef{Package: "example.com/dep/vuln", Symbol: "RealRunner.Run"}
+	if got := ix.ifaceCallerRefs(live); len(got) == 0 {
+		t.Fatal("RealRunner.Run lost its iface callers — narrowing over-fired")
+	}
+}
+
+// Dispatch-key narrowing: an impl registered under a key the product
+// never passes cannot be a target of the `runners[name].Run` site —
+// even though it is instantiated (the registry literal counts).
+func TestDispatchKeyNarrowing(t *testing.T) {
+	ix := fixture(t, "regprod")
+	if err := ix.load(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	cone := ix.depCone("example.com/dep")
+	if cone == nil {
+		t.Fatal("depCone nil — module load failed")
+	}
+	if !cone["example.com/dep/vuln.RealRunner.Run"] {
+		t.Fatal("RealRunner.Run missing — key 'real' must dispatch to it")
+	}
+	if cone["example.com/dep/vuln.OtherRunner.Run"] {
+		t.Fatal("OtherRunner.Run in cone — unreachable key 'other' dispatched")
+	}
+	off := domain.SymbolRef{Package: "example.com/dep/vuln", Symbol: "OtherRunner.Run"}
+	depPkg := ix.pkgByPath(context.Background(), "example.com/dep/vuln")
+	if depPkg == nil {
+		t.Fatal("dep pkg not loaded")
+	}
+	if got := ix.callersOf(depPkg, off); len(got) != 0 {
+		t.Fatalf("OtherRunner.Run inherited iface callers past key narrowing: %+v", got)
+	}
+}
+
 // Same dep scope, opposite origin: a subject only invoked with constants
 // inside the dep resolves a non-external origin — traced evidence that
 // contradicts the unexported+peer heuristic.
