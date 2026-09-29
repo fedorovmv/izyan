@@ -2,7 +2,7 @@
 
 ## Real corpus — generated-manifest продукты (B13)
 
-`eval/corpus-real.json` — 32 кейса против реальных зависимостей через
+`eval/corpus-real.json` — 33 кейса против реальных зависимостей через
 generated-manifest продукты `eval/products/`: исходники коммитятся без
 манифестов, `go.mod`/`go.sum` генерируются в `eval/.gen/<case-id>` из
 полей `module`/`deps` кейса; кейс может задавать `goos`/`goarch`/
@@ -39,6 +39,7 @@ Baseline-таблица govulncheck-vs-analyzer (последний прогон
 | real-getter-fixed | NOT_AFFECTED | silent | **да — deterministic** |
 | real-yaml-const | INCONCLUSIVE | reachable | нет — const-input falsifier не реализован |
 | real-yaml3-http | EXPLOITABLE | reachable | нет |
+| real-yaml3-const | NO_EXPLOIT_PATH_FOUND | reachable | **да — единственный `Unmarshal` получает build-time constant; NV VERIFIED** |
 | real-protojson-http | EXPLOITABLE | reachable | нет |
 | real-protojson-const | INCONCLUSIVE | reachable | нет — const-input falsifier не реализован |
 | real-protojson-fixed | NOT_AFFECTED | silent | **да — deterministic** |
@@ -61,9 +62,10 @@ Baseline-таблица govulncheck-vs-analyzer (последний прогон
 `NOT_AFFECTED` (deterministic affected-chain) или `NO_EXPLOIT_PATH_FOUND`
 (VERIFIED falsifier на mandatory-условии). `EXPLOITABLE`, `INCONCLUSIVE` и
 `UNKNOWN` оставляют кейс на человеке — для triage «reachable» и
-«не доказали безопасность» эквивалентны. Текущий прогон: **12/32 cleared**:
+«не доказали безопасность» эквивалентны. Текущий прогон: **13/33 cleared**:
 11×NOT_AFFECTED deterministic (в том числе `real-micro-plain` при
-package-level сигнале govulncheck) и `real-unix-stat` NEPF — sound
+package-level сигнале govulncheck) и два NEPF: `real-yaml3-const`
+(constant input) и `real-unix-stat` — sound
 verified-негатив на real-кейсе: продукт не трогает `unix.Faccessat`,
 а единственный dep-internal caller `unix.Access` доказанно мёртв —
 нет product refs, нет caller'ов внутри `x/sys`, сторонних модулей,
@@ -75,10 +77,10 @@ jwt-auth — missing-call гейт. Цель B23 — поднять долю ч�
 за счёт falsifier-доказательств, не объявляя недоказанное безопасным.
 
 Для сравнения со standalone govulncheck важен более узкий показатель:
-**signal-cleared rate = 2/22** на этом прогоне. Знаменатель — кейсы,
+**signal-cleared rate = 3/23** на этом прогоне. Знаменатель — кейсы,
 где govulncheck сообщил `reachable` или `package-level`; числитель —
-доказанный негатив анализатора при таком сигнале (`real-micro-plain`,
-`real-unix-stat`). Разбивка: **0/16** при `reachable`, **2/6** при
+доказанный негатив анализатора при таком сигнале (`real-yaml3-const`,
+`real-micro-plain`, `real-unix-stat`). Разбивка: **1/17** при `reachable`, **2/6** при
 `package-level`. Остальные 10 cleared имеют `govulncheck: silent` и не
 сокращают ручной triage относительно baseline. Значение описывает этот
 корпус, а не ожидаемую долю на произвольных CVE.

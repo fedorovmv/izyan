@@ -217,6 +217,19 @@
    ]
   },
   {
+   "id": "real-yaml3-const",
+   "vuln": "GO-2022-0603",
+   "vuln_file": "advisories/real/GO-2022-0603.json",
+   "product": "products/yaml3-const",
+   "module": "example.com/yaml3-const",
+   "deps": {
+    "gopkg.in/yaml.v3": "v3.0.0-20210107192922-496545a6307b"
+   },
+   "expect": [
+    "NO_EXPLOIT_PATH_FOUND"
+   ]
+  },
+  {
    "id": "real-protojson-http",
    "vuln": "GO-2024-2611",
    "vuln_file": "advisories/real/GO-2024-2611.json",
