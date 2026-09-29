@@ -125,7 +125,12 @@ func runEval(args []string) error {
 	fmt.Fprintf(os.Stderr, "corpus=%s cases=%d repo=%s case-dir=%s\n",
 		*corpusPath, len(corpus.Cases), absRepo, o.caseDir)
 
-	ctx := context.Background()
+	budget, err := parseMemLimit(o.memLimit)
+	if err != nil {
+		return err
+	}
+	ctx, stop := applyMemoryLimit(context.Background(), budget)
+	defer stop()
 	var rep eval.Report
 	for _, c := range corpus.Cases {
 		co := o

@@ -100,6 +100,7 @@ type analyzeOpts struct {
 	knowledge     string
 	detOnly       bool
 	allowExec     bool
+	memLimit      string
 	rootCauseArgs []string
 	// manualRC carries already-parsed root causes (eval corpus entries
 	// support the object form, which rootCauseArgs strings cannot express).
@@ -131,6 +132,7 @@ func commonFlags(fs *flag.FlagSet, o *analyzeOpts) {
 	fs.BoolVar(&o.allowExec, "allow-exec", false, "permit executing repository code for build/test evidence (run_build/run_tests)")
 	fs.StringVar(&o.llmEnv, "llm-env", "", "path to LLM .env file (default: .env in cwd or repo)")
 	fs.StringVar(&o.knowledge, "knowledge", "", "extend the ecosystem knowledge base with a JSON file (see internal/goanalysis/knowledge.go)")
+	fs.StringVar(&o.memLimit, "mem-limit", "4GiB", "analyzer memory ceiling (e.g. 4GiB, 512MiB; 0 disables) — real products can pull very large dependency graphs into the index")
 }
 
 // loadKnowledgeBase resolves the --knowledge extension: built-in
@@ -205,7 +207,13 @@ func runAnalyze(args []string) error {
 	if o.kb, err = loadKnowledgeBase(o.knowledge); err != nil {
 		return err
 	}
-	c, err := analyzeCase(context.Background(), o)
+	budget, err := parseMemLimit(o.memLimit)
+	if err != nil {
+		return err
+	}
+	ctx, stop := applyMemoryLimit(context.Background(), budget)
+	defer stop()
+	c, err := analyzeCase(ctx, o)
 	if err != nil {
 		return err
 	}
@@ -534,7 +542,12 @@ func runScan(args []string) error {
 	if err != nil {
 		return err
 	}
-	ctx := context.Background()
+	budget, err := parseMemLimit(o.memLimit)
+	if err != nil {
+		return err
+	}
+	ctx, stop := applyMemoryLimit(context.Background(), budget)
+	defer stop()
 
 	// Resolve the target toolchain once — shared tools run under it.
 	o.toolchain, o.tcLims = resolveToolchain(ctx, o)
