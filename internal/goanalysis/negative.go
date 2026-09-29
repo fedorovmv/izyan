@@ -176,7 +176,7 @@ func (v Verifier) VerifyFalse(ctx context.Context, c *domain.AnalysisCase, claim
 	default:
 		switch cond.Kind {
 		case domain.ConditionSymbolReachable:
-			out = v.verifyReachableFalse(claim, nv, subjects, allSites)
+			out = v.verifyReachableFalse(ctx, c, claim, nv, subjects, allSites)
 		case domain.ConditionAttackerControl:
 			out = v.verifyInputFalse(ctx, c, claim, nv, subjects, cond.ArgIndex)
 		case domain.ConditionInputConstraint:
@@ -342,7 +342,7 @@ func (v Verifier) verifySequenceFalse(c *domain.AnalysisCase, claim domain.Claim
 // them is forced by Go visibility rules, and dep-internal dispatch paths
 // (filter registries, watcher callbacks) stay invisible to a product-ref
 // scan — treat them as un-closed scope, not as falsifier evidence.
-func (v Verifier) verifyReachableFalse(claim domain.Claim,
+func (v Verifier) verifyReachableFalse(ctx context.Context, c *domain.AnalysisCase, claim domain.Claim,
 	nv *domain.NegativeVerification, subjects []domain.SymbolRef,
 	allSites map[string][]domain.CallSite) domain.Claim {
 
@@ -358,6 +358,16 @@ func (v Verifier) verifyReachableFalse(claim domain.Claim,
 		total += len(allSites[s.Package+"."+s.Symbol])
 	}
 	if total == 0 {
+		// Zero product references proves only that the product never
+		// names the subject — not that it is unreached. Dep-internal
+		// call sites are outside that scope; a member dead in the whole
+		// build while its receiver pipeline runs is a missing-call
+		// shape, where the absent call IS the vulnerable behavior.
+		if weak := v.checkDepInvocation(ctx, c, subjects); weak != "" {
+			nv.Status = domain.NegativeInsufficientScope
+			nv.Notes = weak
+			return setNeg(claim, nv)
+		}
 		nv.Notes = fmt.Sprintf("none of %d affected symbol(s) is referenced in product code",
 			len(subjects))
 		return setNeg(claim, nv)
@@ -368,6 +378,86 @@ func (v Verifier) verifyReachableFalse(claim domain.Claim,
 	return setNeg(claim, nv)
 }
 
+// checkDepInvocation widens a zero-product-references result to the
+// dependency's own call graph. Two findings weaken the falsifier:
+// dep-internal call sites of the subject exist — invocation is live,
+// just not product-driven — or the subject is a method dead in the whole
+// build while sibling methods on the same receiver type run inside the
+// dep. The second is the missing-call shape: the check member never
+// executes while the validation pipeline around it does, which is
+// precisely the vulnerable behavior for missing-validation advisories —
+// so deadness cannot ground a negative verdict.
+func (v Verifier) checkDepInvocation(ctx context.Context, c *domain.AnalysisCase, subjects []domain.SymbolRef) string {
+	mods := caseModules(c)
+	if len(mods) == 0 {
+		return ""
+	}
+	for _, subj := range subjects {
+		inScope := false
+		for _, m := range mods {
+			if subj.Package == m || strings.HasPrefix(subj.Package, m+"/") {
+				inScope = true
+				break
+			}
+		}
+		if !inScope {
+			continue
+		}
+		callers, siblingLive, unbounded, err := v.Source.DepInvocationState(ctx, subj)
+		if err != nil {
+			return fmt.Sprintf("dep invocation scan failed for %s.%s: %v", subj.Package, subj.Symbol, err)
+		}
+		if unbounded {
+			return fmt.Sprintf("subject %s.%s is exported and other dependency modules import "+
+				"its package — dep-internal callers are not enumerable, so zero product "+
+				"references cannot exclude invocation", subj.Package, subj.Symbol)
+		}
+		if callers > 0 {
+			return fmt.Sprintf("subject %s.%s has %d call site(s) inside the dependency — "+
+				"zero product references cannot exclude dep-internal invocation",
+				subj.Package, subj.Symbol, callers)
+		}
+		if siblingLive {
+			return fmt.Sprintf("subject %s.%s is never invoked anywhere in the build, but sibling "+
+				"methods on the same receiver type are invoked inside the dependency — a missing-call "+
+				"shape: absence of the check is itself the vulnerable behavior, so a dead member "+
+				"cannot ground a negative verdict", subj.Package, subj.Symbol)
+		}
+	}
+	return ""
+}
+
+// caseModules returns every dependency module the case resolved against:
+// Affected.SelectedModules carries each linked affected entry of a
+// multi-module advisory; for single-module intakes (and unit tests that
+// set only the flat field) it falls back to Vulnerability.Module. A
+// subject's module membership decides whether its dep-internal callers
+// are in scope for the negative check — a symbol unioned from a second
+// linked module must not be skipped.
+func caseModules(c *domain.AnalysisCase) []string {
+	if c == nil {
+		return nil
+	}
+	if c.Affected != nil && len(c.Affected.SelectedModules) > 0 {
+		return c.Affected.SelectedModules
+	}
+	if c.Vulnerability.Module != "" {
+		return []string{c.Vulnerability.Module}
+	}
+	return nil
+}
+
+// inCaseModules reports whether pkgPath belongs to any of the modules —
+// the module root package itself or any subpackage.
+func inCaseModules(pkgPath string, mods []string) bool {
+	for _, m := range mods {
+		if domain.PackageInModule(pkgPath, m) {
+			return true
+		}
+	}
+	return false
+}
+
 // verifyInputFalse verifies the FALSE candidate for ATTACKER_CONTROL /
 // INPUT_CONSTRAINT: every call site of every subject must pass arguments
 // whose provenance resolves to a non-external origin (argIndex < 0 covers
@@ -376,6 +466,7 @@ func (v Verifier) verifyInputFalse(ctx context.Context, c *domain.AnalysisCase, 
 	nv *domain.NegativeVerification, subjects []domain.SymbolRef, argIndex int) domain.Claim {
 
 	totalCallers := 0
+	mods := caseModules(c)
 	for _, subj := range subjects {
 		callers, err := v.Source.FindCallers(ctx, subj)
 		if err != nil {
@@ -383,12 +474,12 @@ func (v Verifier) verifyInputFalse(ctx context.Context, c *domain.AnalysisCase, 
 			nv.Notes = "caller search failed: " + err.Error()
 			return setNeg(claim, nv)
 		}
-		if len(callers) == 0 && c.Vulnerability.Module != "" &&
-			(subj.Package == c.Vulnerability.Module ||
-				strings.HasPrefix(subj.Package, c.Vulnerability.Module+"/")) {
+		if len(callers) == 0 && inCaseModules(subj.Package, mods) {
 			// Unexported dependency subjects have no product callers — the
 			// FALSE under verification may have been produced by dep-internal
-			// provenance; re-trace the same dep scope.
+			// provenance; re-trace the same dep scope. Membership is checked
+			// against every linked module — a second-module subject must not
+			// be skipped by a single-module prefix test.
 			depCallers, derr := v.Source.FindDepCallers(ctx, subj)
 			if derr != nil {
 				nv.Status = domain.NegativeInsufficientScope

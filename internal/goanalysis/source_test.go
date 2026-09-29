@@ -437,6 +437,59 @@ func TestDispatchKeyNarrowing(t *testing.T) {
 	}
 }
 
+// The dep-internal caller may live in a sibling package of the same
+// module — a package-scoped scan would miss it and keep a false VERIFIED.
+func TestDepCallerSiblingPackage(t *testing.T) {
+	ix := fixture(t, "xmodprod")
+	v := Verifier{Source: ix}
+	c := &domain.AnalysisCase{}
+	c.Vulnerability.Module = "example.com/dep5"
+
+	subj := domain.SymbolRef{Package: "example.com/dep5/deep", Symbol: "Sink"}
+	callers, _, unbounded, err := ix.DepInvocationState(context.Background(), subj)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if callers == 0 {
+		t.Fatal("dep caller in sibling package dep5/driver not found — scan stayed package-scoped")
+	}
+	if unbounded {
+		t.Fatal("dep5/deep is imported only inside its own module — caller set is bounded")
+	}
+	nv := &domain.NegativeVerification{Status: domain.NegativeVerified}
+	claim := domain.Claim{ConditionID: "C-REACH", Result: domain.ClaimFalse}
+	out := v.verifyReachableFalse(context.Background(), c, claim, nv,
+		[]domain.SymbolRef{subj}, map[string][]domain.CallSite{})
+	got := out.NegativeVerification
+	if got == nil || got.Status != domain.NegativeInsufficientScope {
+		t.Fatalf("nv=%+v — sibling-package dep caller must demote the falsifier", got)
+	}
+}
+
+// With a multi-module advisory whose entries are BOTH linked, the dep
+// invocation gate must cover subjects of every selected module — a
+// second module's live dep caller is not excused by Vulnerability.Module
+// naming only the first.
+func TestDepCallerMultiModuleUnion(t *testing.T) {
+	ix := fixture(t, "xmodprod")
+	v := Verifier{Source: ix}
+	c := &domain.AnalysisCase{}
+	c.Vulnerability.Module = "example.com/dep" // first module — not the
+	// one owning the subject
+	c.Affected = &domain.AffectedResult{
+		SelectedModules: []string{"example.com/dep", "example.com/dep5"},
+	}
+	subj := domain.SymbolRef{Package: "example.com/dep5/deep", Symbol: "Sink"}
+	nv := &domain.NegativeVerification{Status: domain.NegativeVerified}
+	claim := domain.Claim{ConditionID: "C-REACH", Result: domain.ClaimFalse}
+	out := v.verifyReachableFalse(context.Background(), c, claim, nv,
+		[]domain.SymbolRef{subj}, map[string][]domain.CallSite{})
+	got := out.NegativeVerification
+	if got == nil || got.Status != domain.NegativeInsufficientScope {
+		t.Fatalf("nv=%+v — second-module subject's dep caller must demote the falsifier", got)
+	}
+}
+
 // Same dep scope, opposite origin: a subject only invoked with constants
 // inside the dep resolves a non-external origin — traced evidence that
 // contradicts the unexported+peer heuristic.
@@ -456,5 +509,31 @@ func TestTraceDepInternalConstantOrigin(t *testing.T) {
 	}
 	if flow.Origin != domain.OriginConstant {
 		t.Fatalf("origin=%s want CONSTANT (%s)", flow.Origin, flow.Summary)
+	}
+}
+
+// Input-verification FALSE must trace dep-internal callers for subjects
+// of EVERY selected module: subject one has only a safe product call,
+// subject two lives in the second module and is invoked solely inside
+// the dependency with external input — a single-module membership check
+// would skip it and keep VERIFIED-FALSE.
+func TestVerifyInputFalseSecondModule(t *testing.T) {
+	ix := fixture(t, "duomod")
+	v := Verifier{Source: ix}
+	c := &domain.AnalysisCase{}
+	c.Vulnerability.Module = "example.com/dep"
+	c.Affected = &domain.AffectedResult{
+		SelectedModules: []string{"example.com/dep", "example.com/dep5"},
+	}
+	subjects := []domain.SymbolRef{
+		{Package: "example.com/dep/vuln", Symbol: "Parse"},
+		{Package: "example.com/dep5/deep", Symbol: "Sink"},
+	}
+	nv := &domain.NegativeVerification{Status: domain.NegativeVerified}
+	claim := domain.Claim{ConditionID: "C-INPUT", Result: domain.ClaimFalse}
+	out := v.verifyInputFalse(context.Background(), c, claim, nv, subjects, 0)
+	got := out.NegativeVerification
+	if got == nil || got.Status != domain.NegativeContradicted {
+		t.Fatalf("nv=%+v — external input through a second-module dep caller must contradict FALSE", got)
 	}
 }

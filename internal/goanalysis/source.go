@@ -100,6 +100,10 @@ type Index struct {
 	loadErr      error
 	modCacheOnce sync.Once
 	modCache     string
+	// importers caches the reverse import index of the full dependency
+	// closure for depSiteLive's cross-module-caller bound (lazily built,
+	// no syntax — import edges only).
+	importers map[string][]depImporter
 }
 
 // buildEnv derives GOOS/GOARCH/CGO env for tool invocations.
@@ -398,6 +402,13 @@ func (ix *Index) SearchSymbol(ctx context.Context, ref domain.SymbolRef) ([]doma
 	if err := ix.load(ctx); err != nil {
 		return nil, err
 	}
+	return ix.productRefsTo(ref), nil
+}
+
+// productRefsTo scans product packages for references to ref — calls,
+// value reads/writes and address-takes included, since a ref bound into a
+// func value is an invocation the static call scan cannot see.
+func (ix *Index) productRefsTo(ref domain.SymbolRef) []domain.CallSite {
 	var out []domain.CallSite
 	for _, pkg := range ix.pkgs {
 		info := pkg.TypesInfo
@@ -456,7 +467,7 @@ func (ix *Index) SearchSymbol(ctx context.Context, ref domain.SymbolRef) ([]doma
 			})
 		}
 	}
-	return out, nil
+	return out
 }
 
 // CallSiteRef pairs the exported CallSite with its internal AST handle.
@@ -586,10 +597,262 @@ func (ix *Index) FindDepCallers(ctx context.Context, ref domain.SymbolRef) ([]do
 }
 
 func (ix *Index) findDepCallSites(ctx context.Context, ref domain.SymbolRef) ([]CallSiteRef, error) {
-	if _, err := ix.loadExtra(ctx, ref.Package); err != nil {
+	pkgs, err := ix.loadExtra(ctx, ref.Package)
+	if err != nil {
 		return nil, err
 	}
-	return ix.findCallSitesIn(ix.extrasFor(ref.Package), ref), nil
+	// Widen to the subject's whole module when it is known — a caller in
+	// a sibling package is as much a dep caller as one in the subject's
+	// own package. depModuleCallSites falls back to this function when
+	// the module is unknown.
+	mod := ""
+	for _, p := range pkgs {
+		if p.PkgPath == ref.Package && p.Module != nil {
+			mod = p.Module.Path
+			break
+		}
+	}
+	if mod == "" {
+		return ix.findCallSitesIn(ix.extrasFor(ref.Package), ref), nil
+	}
+	return ix.depModuleCallSites(ctx, ref, mod)
+}
+
+// DepInvocationState reports how the subject's own module uses it:
+// dep-internal call sites of the subject that a live caller chain can
+// reach (a dead caller cannot resurrect the subject — deadness is
+// decided transitively, see depSiteLive), and — when the subject is a
+// method never invoked there — whether sibling methods on the same
+// receiver type ARE invoked inside the dependency. A live receiver
+// pipeline whose check member is never called is a missing-call shape
+// (the validation does not run), not dead code: deadness of that member
+// cannot prove the absence of the vulnerable behavior.
+//
+// Callers are enumerated across the subject's whole module; when the
+// subject is exported and other dep modules import its package, the
+// caller set is unbounded (unbounded=true) — absence of callers within
+// the module then cannot ground a negative either.
+func (ix *Index) DepInvocationState(ctx context.Context, ref domain.SymbolRef) (callers int, siblingLive, unbounded bool, err error) {
+	ix.mu.Lock()
+	defer ix.mu.Unlock()
+	if _, err := ix.loadExtra(ctx, ref.Package); err != nil {
+		return 0, false, false, err
+	}
+	subjPkgs := ix.extrasFor(ref.Package)
+	mod := ""
+	for _, p := range subjPkgs {
+		if p.Module != nil {
+			mod = p.Module.Path
+			break
+		}
+	}
+	_, name := splitSymbol(ref.Symbol)
+	if ast.IsExported(name) && ix.importedByOtherModule(ctx, ref.Package, mod) {
+		unbounded = true
+	}
+	sites, err := ix.depModuleCallSites(ctx, ref, mod)
+	if err != nil {
+		return 0, false, unbounded, err
+	}
+	for _, s := range sites {
+		if ix.depSiteLive(ctx, s, depLiveFuel, map[string]bool{}) {
+			callers++
+		}
+	}
+	if callers > 0 || unbounded {
+		return callers, false, unbounded, nil
+	}
+	typeName, _ := splitSymbol(ref.Symbol)
+	if typeName == "" {
+		return 0, false, false, nil
+	}
+	pkgs := ix.extrasFor(ref.Package)
+	if mod != "" {
+		pkgs = ix.modulePkgs(mod)
+	}
+	for _, dep := range pkgs {
+		if dep.Types == nil || dep.TypesInfo == nil {
+			continue
+		}
+		tn, ok := dep.Types.Scope().Lookup(typeName).(*types.TypeName)
+		if !ok {
+			continue
+		}
+		named := mustNamed(tn)
+		if named == nil {
+			continue
+		}
+		ms := types.NewMethodSet(types.NewPointer(named))
+		for i := 0; i < ms.Len(); i++ {
+			m := ms.At(i).Obj()
+			if m.Name() == name {
+				continue
+			}
+			mref := domain.SymbolRef{Package: ref.Package, Symbol: typeName + "." + m.Name()}
+			for _, s := range ix.findCallSitesIn(pkgs, mref) {
+				if ix.depSiteLive(ctx, s, depLiveFuel, map[string]bool{}) {
+					return 0, true, false, nil
+				}
+			}
+		}
+	}
+	return 0, false, false, nil
+}
+
+// modulePkgs returns the extras of one module — sibling-method scans
+// must see call sites in every package of the subject's module, not only
+// its own.
+func (ix *Index) modulePkgs(mod string) []*packages.Package {
+	var out []*packages.Package
+	for _, p := range ix.allExtras() {
+		if p.Module != nil && p.Module.Path == mod {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// depLiveFuel bounds the transitive deadness walk in depSiteLive: a
+// deeper caller chain left unexplored answers live rather than guessed
+// dead.
+const depLiveFuel = 6
+
+// depSiteLive reports whether the dependency call site sits on a chain
+// some live code can reach. The falsifier "no product references" is
+// only a valid negative when the subject is dead in the effective
+// build, and a dep call site is dead only if its own caller chain dies:
+// the enclosing function must have no product references, no callers
+// left inside the module (recursively), and — when exported — no
+// importer outside the module it could be invoked from.
+func (ix *Index) depSiteLive(ctx context.Context, s CallSiteRef, fuel int, seen map[string]bool) bool {
+	if s.pkg == nil || s.enclosing == nil || s.enclosing.Name == nil {
+		return true // package-level/init context runs by construction
+	}
+	name := s.enclosing.Name.Name
+	if name == "init" || (s.enclosing.Recv != nil && len(s.enclosing.Recv.List) > 0) {
+		// Methods may ride interface dispatch whose callers are not
+		// enumerable by name matching; init runs unconditionally.
+		return true
+	}
+	key := s.pkg.PkgPath + "." + name
+	if seen[key] {
+		return false // cycle cut — this path contributes nothing new
+	}
+	if fuel <= 0 {
+		return true // unexplored remainder — conservative
+	}
+	fref := domain.SymbolRef{Package: s.pkg.PkgPath, Symbol: name}
+	if len(ix.productRefsTo(fref)) > 0 {
+		return true // the product itself can invoke the caller
+	}
+	mod := ""
+	if s.pkg.Module != nil {
+		mod = s.pkg.Module.Path
+	}
+	if ast.IsExported(name) && ix.importedByOtherModule(ctx, s.pkg.PkgPath, mod) {
+		return true // callers may hide in dep packages outside the module
+	}
+	seen[key] = true
+	defer delete(seen, key)
+	inner, err := ix.depModuleCallSites(ctx, fref, mod)
+	if err != nil {
+		return true
+	}
+	for _, is := range inner {
+		if is.enclosing == s.enclosing && is.pkg == s.pkg {
+			continue // the site's own function cannot be its own caller
+		}
+		if ix.depSiteLive(ctx, is, fuel-1, seen) {
+			return true
+		}
+	}
+	return false
+}
+
+// depModuleCallSites finds call sites of ref across the subject's whole
+// module, not only its own package — a caller may live in a sibling dep
+// package. Without module info the scan falls back to the package.
+func (ix *Index) depModuleCallSites(ctx context.Context, ref domain.SymbolRef, mod string) ([]CallSiteRef, error) {
+	if mod == "" {
+		return ix.findDepCallSites(ctx, ref)
+	}
+	pkgs, err := ix.loadExtra(ctx, mod+"/...")
+	if err != nil {
+		return nil, err
+	}
+	var scoped []*packages.Package
+	for _, p := range pkgs {
+		if p.PkgPath == mod || strings.HasPrefix(p.PkgPath, mod+"/") {
+			scoped = append(scoped, p)
+		}
+	}
+	return ix.findCallSitesIn(scoped, ref), nil
+}
+
+// depImporter records a package in the product's dependency graph that
+// imports a given package, with the module it belongs to.
+type depImporter struct {
+	path   string
+	module string
+}
+
+// depImporters builds the reverse import index of the whole dependency
+// closure (product + deps, no syntax) so deadness checks can tell
+// whether an exported dep function could be invoked from another
+// module. Loaded once per index — the import graph does not change
+// while extras come and go.
+func (ix *Index) depImporters(ctx context.Context) (map[string][]depImporter, error) {
+	if ix.importers != nil {
+		return ix.importers, nil
+	}
+	ctx = ix.ctxOr(ctx)
+	if err := ix.load(ctx); err != nil {
+		return nil, err
+	}
+	cfg := &packages.Config{
+		Mode:    packages.NeedName | packages.NeedImports | packages.NeedModule,
+		Dir:     ix.Dir,
+		Env:     append(os.Environ(), append(buildEnv(ix.Build), ix.Env...)...),
+		Context: ctx,
+	}
+	if len(ix.Build.BuildTags) > 0 {
+		cfg.BuildFlags = []string{"-tags", strings.Join(ix.Build.BuildTags, ",")}
+	}
+	pkgs, err := packages.Load(cfg, "all")
+	if err != nil {
+		return nil, err
+	}
+	m := map[string][]depImporter{}
+	for _, p := range pkgs {
+		mod := ""
+		if p.Module != nil {
+			mod = p.Module.Path
+		}
+		for imp := range p.Imports {
+			m[imp] = append(m[imp], depImporter{path: p.PkgPath, module: mod})
+		}
+	}
+	ix.importers = m
+	return m, nil
+}
+
+// importedByOtherModule reports whether pkgPath is imported by a
+// dependency package outside its own module — a caller chain member
+// there is not enumerable by the module-internal scans. Product-side
+// importers do not count: product references are checked directly.
+// Any doubt (load failure, missing importer data) answers true.
+func (ix *Index) importedByOtherModule(ctx context.Context, pkgPath, mod string) bool {
+	m, err := ix.depImporters(ctx)
+	if err != nil {
+		return true
+	}
+	for _, im := range m[pkgPath] {
+		if ix.isProductPath(im.path) || im.module == mod {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 // callerScope returns the packages to search for callers of a function

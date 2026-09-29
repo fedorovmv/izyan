@@ -131,7 +131,7 @@
    "deps": {
     "github.com/dgrijalva/jwt-go": "v3.2.0+incompatible"
    },
-   "_note": "missing-call advisory — Valid() never calls VerifyAudience, so the declared sink is unreachable by design; truth EXPLOITABLE. NEPF here is a counted false-safe (model gap tracked as B21); INCONCLUSIVE accepted until then.",
+   "_note": "missing-call advisory — Valid() never calls VerifyAudience, so the declared sink is unreachable by design; truth EXPLOITABLE. The missing-call gate (sibling methods of the same receiver invoked in dep) blocks NEPF → INCONCLUSIVE required.",
    "expect": [
     "EXPLOITABLE",
     "INCONCLUSIVE"

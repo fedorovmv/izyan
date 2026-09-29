@@ -981,3 +981,23 @@ func IsSecurityTransform(callee string) bool {
 	}
 	return securityTransformRe.MatchString(base)
 }
+
+// PackageInModule reports whether pkgPath belongs to module mod — the
+// module root package itself or a subpackage. A bare prefix match is
+// wrong: "example.com/dep" would swallow "example.com/dep5/...".
+func PackageInModule(pkgPath, mod string) bool {
+	return pkgPath == mod || strings.HasPrefix(pkgPath, mod+"/")
+}
+
+// OwnerModule returns the longest module path in mods containing pkgPath.
+// Nested modules ("example.com/dep" vs "example.com/dep/v2") otherwise
+// match several prefixes and the parent's evidence bleeds into the child.
+func OwnerModule(pkgPath string, mods []string) string {
+	best := ""
+	for _, m := range mods {
+		if PackageInModule(pkgPath, m) && len(m) > len(best) {
+			best = m
+		}
+	}
+	return best
+}

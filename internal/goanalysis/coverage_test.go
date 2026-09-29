@@ -132,12 +132,83 @@ func TestVerifyReachableFalseInternalSubjectNotVerified(t *testing.T) {
 		{Package: "google.golang.org/grpc/internal/xds/httpfilter/rbac", Symbol: "builder.ParseFilterConfig"},
 		{Package: "google.golang.org/grpc/internal/xds/httpfilter/rbac", Symbol: "parseConfig"},
 	}
-	out := v.verifyReachableFalse(claim, nv, subjects, map[string][]domain.CallSite{})
+	out := v.verifyReachableFalse(context.Background(), &domain.AnalysisCase{}, claim, nv, subjects, map[string][]domain.CallSite{})
 	got := out.NegativeVerification
 	if got == nil || got.Status != domain.NegativeInsufficientScope {
 		t.Fatalf("nv=%+v", got)
 	}
 	if !strings.Contains(got.Notes, "visibility") {
+		t.Fatalf("notes=%q", got.Notes)
+	}
+}
+
+// A subject never invoked anywhere but whose receiver pipeline runs
+// inside the dependency is a missing-call shape: deadness cannot prove
+// the absence of the vulnerable behavior (GO-2020-0017 shape —
+// MapClaims.VerifyAudience dead while Valid() calls sibling checkers).
+func TestVerifyReachableFalseMissingCallNotVerified(t *testing.T) {
+	ix := fixture(t, "missingcall")
+	v := Verifier{Source: ix}
+	subj := domain.SymbolRef{Package: "example.com/dep/vuln", Symbol: "Claims.VerifyAud"}
+	c := &domain.AnalysisCase{}
+	c.Vulnerability.Module = "example.com/dep"
+
+	callers, live, unbounded, err := ix.DepInvocationState(context.Background(), subj)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if callers != 0 || !live || unbounded {
+		t.Fatalf("DepInvocationState: callers=%d live=%v unbounded=%v", callers, live, unbounded)
+	}
+
+	nv := &domain.NegativeVerification{Status: domain.NegativeVerified}
+	claim := domain.Claim{ConditionID: "C-REACH", Result: domain.ClaimFalse}
+	out := v.verifyReachableFalse(context.Background(), c, claim, nv,
+		[]domain.SymbolRef{subj}, map[string][]domain.CallSite{})
+	got := out.NegativeVerification
+	if got == nil || got.Status != domain.NegativeInsufficientScope {
+		t.Fatalf("nv=%+v", got)
+	}
+	if !strings.Contains(got.Notes, "missing-call") {
+		t.Fatalf("notes=%q", got.Notes)
+	}
+}
+
+// A dead method on a receiver type no dep code exercises is genuinely
+// dead code — the falsifier stands; and a subject with dep-internal
+// callers cannot be proven unreachable by product refs either.
+func TestVerifyReachableFalseDepBoundaries(t *testing.T) {
+	ix := fixture(t, "ifaceprod")
+	v := Verifier{Source: ix}
+	c := &domain.AnalysisCase{}
+	c.Vulnerability.Module = "example.com/dep"
+
+	// Conn.Next is never called and no sibling method runs in the dep:
+	// zero references everywhere is a real absence.
+	nv := &domain.NegativeVerification{Status: domain.NegativeVerified}
+	claim := domain.Claim{ConditionID: "C-REACH", Result: domain.ClaimFalse}
+	out := v.verifyReachableFalse(context.Background(), c, claim, nv,
+		[]domain.SymbolRef{{Package: "example.com/dep/vuln", Symbol: "Conn.Next"}},
+		map[string][]domain.CallSite{})
+	if got := out.NegativeVerification; got == nil || got.Status != domain.NegativeVerified {
+		t.Fatalf("Conn.Next nv=%+v", got)
+	}
+
+	// Runner.Run has an on-path dep-internal call site in DispatchLate
+	// (the product drives it) — product-ref absence cannot exclude dep
+	// invocation. A dep caller no live path reaches would stay dead code.
+	ix = fixture(t, "lateprod")
+	v = Verifier{Source: ix}
+	c.Vulnerability.Module = "example.com/dep3"
+	nv = &domain.NegativeVerification{Status: domain.NegativeVerified}
+	out = v.verifyReachableFalse(context.Background(), c, claim, nv,
+		[]domain.SymbolRef{{Package: "example.com/dep3/vuln", Symbol: "Runner.Run"}},
+		map[string][]domain.CallSite{})
+	got := out.NegativeVerification
+	if got == nil || got.Status != domain.NegativeInsufficientScope {
+		t.Fatalf("Runner.Run nv=%+v", got)
+	}
+	if !strings.Contains(got.Notes, "dep-internal") {
 		t.Fatalf("notes=%q", got.Notes)
 	}
 }
