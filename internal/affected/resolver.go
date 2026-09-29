@@ -8,6 +8,7 @@ import (
 	"go/parser"
 	"go/token"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -75,9 +76,11 @@ func (r GoResolver) Resolve(ctx context.Context, vuln domain.Vulnerability, prod
 	for _, e := range entries {
 		res.CheckedModules = append(res.CheckedModules, e.Module)
 	}
-	var selected *domain.AffectedModule
+	var selected []*domain.AffectedModule
 	var selectedModules []string
 	verUnknown := false
+	var pending []*domain.AffectedModule
+	entryVer := map[*domain.AffectedModule]string{} // resolved version per entry
 	for i := range entries {
 		e := &entries[i]
 		if isStdlibModule(e.Module) {
@@ -87,16 +90,17 @@ func (r GoResolver) Resolve(ctx context.Context, vuln domain.Vulnerability, prod
 			res.ModulePresent = domain.ClaimTrue
 			ver, lims := toolchainVersion(product, res.Limitations)
 			res.Limitations = lims
+			entryVer[e] = ver
 			if normalizeVersion(ver) == "" {
 				res.Limitations = append(res.Limitations,
 					fmt.Sprintf("cannot apply version ranges to toolchain version %q", ver))
 				verUnknown = true
+				pending = append(pending, e)
 				continue
 			}
 			selectedModules = append(selectedModules, e.Module+"@"+ver)
-			if affectedByRanges(ver, e.AffectedVersions) && selected == nil {
-				selected = e
-				res.ResolvedVersion = ver
+			if affectedByRanges(ver, e.AffectedVersions) {
+				selected = append(selected, e)
 			}
 			continue
 		}
@@ -105,7 +109,7 @@ func (r GoResolver) Resolve(ctx context.Context, vuln domain.Vulnerability, prod
 			continue
 		}
 		res.ModulePresent = domain.ClaimTrue
-		res.ResolvedVersion = mod.EffectiveVersion()
+		entryVer[e] = mod.EffectiveVersion()
 		if mod.Replace != nil {
 			res.Limitations = append(res.Limitations,
 				fmt.Sprintf("module %s replaced by %s@%s", mod.Path, mod.Replace.Path, mod.Replace.Version))
@@ -115,10 +119,11 @@ func (r GoResolver) Resolve(ctx context.Context, vuln domain.Vulnerability, prod
 			res.Limitations = append(res.Limitations,
 				fmt.Sprintf("cannot apply version ranges to unresolved version %q", mod.EffectiveVersion()))
 			verUnknown = true
+			pending = append(pending, e)
 			continue
 		}
-		if affectedByRanges(mod.EffectiveVersion(), e.AffectedVersions) && selected == nil {
-			selected = e
+		if affectedByRanges(mod.EffectiveVersion(), e.AffectedVersions) {
+			selected = append(selected, e)
 		}
 	}
 
@@ -134,31 +139,59 @@ func (r GoResolver) Resolve(ctx context.Context, vuln domain.Vulnerability, prod
 		res.BuildRelevant = domain.ClaimFalse
 		return res, ev, nil
 	}
-	if selected == nil {
-		if verUnknown {
-			// A present entry's version could not be resolved — its
-			// applicability is undecided, not refuted.
-			res.VersionAffected = domain.ClaimUnknown
-			return res, ev, nil
-		}
+	if len(selected) == 0 && !verUnknown {
 		res.VersionAffected = domain.ClaimFalse
 		res.PackagePresent = domain.ClaimFalse
 		res.BuildRelevant = domain.ClaimFalse
+		// Report the resolved version of the evaluated module — here it
+		// is attributable: no pending entry exists on this path.
+		for i := range entries {
+			if v := entryVer[&entries[i]]; v != "" {
+				res.ResolvedVersion = v
+				break
+			}
+		}
 		if len(selectedModules) > 0 {
 			res.Limitations = append(res.Limitations,
 				"evaluated affected-module entries: "+strings.Join(selectedModules, ", "))
 		}
 		return res, ev, nil
 	}
-	res.SelectedModule = selected.Module
-	res.VersionAffected = domain.ClaimTrue
+	// Pending entries are module-present but version-undecidable: their
+	// packages still join the probe. A pending entry's package absent
+	// refutes it deterministically; present keeps the case open.
+	probe := append(append([]*domain.AffectedModule{}, selected...), pending...)
+	if len(selected) == 0 {
+		res.VersionAffected = domain.ClaimUnknown
+	} else {
+		// Every version-affected entry applies to the product — probe all
+		// of them: an unaffected first entry must not shield an affected
+		// second one (e.g. stdlib fixed but vendored module vulnerable
+		// AND imported).
+		res.SelectedModule = selected[0].Module
+		for _, s := range selected {
+			res.SelectedModules = append(res.SelectedModules, s.Module)
+		}
+		for _, p := range pending {
+			res.SelectedModules = append(res.SelectedModules, p.Module)
+		}
+		res.VersionAffected = domain.ClaimTrue
+	}
 	if len(entries) > 1 {
+		var names []string
+		for _, s := range selected {
+			names = append(names, s.Module)
+		}
 		res.Limitations = append(res.Limitations,
-			fmt.Sprintf("multi-module advisory: resolved against %s (entries evaluated: %s)",
-				selected.Module, strings.Join(selectedModules, ", ")))
+			fmt.Sprintf("multi-module advisory: %d affected entries (%s; entries evaluated: %s)",
+				len(probe), strings.Join(names, ", "), strings.Join(selectedModules, ", ")))
 	}
 
-	return resolvePackages(ctx, tool, selected.AffectedPackages, product, res, ev)
+	pendingSet := map[*domain.AffectedModule]bool{}
+	for _, p := range pending {
+		pendingSet[p] = true
+	}
+	return resolvePackages(ctx, tool, probe, pendingSet, entryVer, product, res, ev)
 }
 
 // withAudit stamps the evidence with the product identity and a content
@@ -182,19 +215,26 @@ func affectedModuleEntries(vuln domain.Vulnerability) []domain.AffectedModule {
 	if vuln.Module == "" {
 		return nil
 	}
+	pkgs := vuln.AffectedPackages
+	if len(pkgs) == 0 && vuln.Package != "" {
+		// Flat intake may name only the vulnerable package.
+		pkgs = []domain.AffectedPackage{{Path: vuln.Package}}
+	}
 	return []domain.AffectedModule{{
 		Module:           vuln.Module,
 		AffectedVersions: vuln.AffectedVersions,
 		FixedVersions:    vuln.FixedVersions,
-		AffectedPackages: vuln.AffectedPackages,
+		AffectedPackages: pkgs,
 		AffectedSymbols:  vuln.AffectedSymbols,
 	}}
 }
 
-// resolvePackages finishes the affected chain: affected package imported?
-// build relevant for the snapshot's platform? affected is the selected
-// entry's package set — multi-module advisories scope it per module.
-func resolvePackages(ctx context.Context, tool GoTool, affectedPkgs []domain.AffectedPackage,
+// resolvePackages finishes the affected chain: is any affected package
+// imported? build relevant for the snapshot's platform? affected is the
+// union of every version-affected entry's package set — a present
+// package in any of them grounds presence.
+func resolvePackages(ctx context.Context, tool GoTool, selected []*domain.AffectedModule,
+	pendingSet map[*domain.AffectedModule]bool, entryVer map[*domain.AffectedModule]string,
 	product domain.ProductSnapshot, res domain.AffectedResult,
 	ev []domain.Evidence) (domain.AffectedResult, []domain.Evidence, error) {
 	// Local add: res/ev here are copies — appending through the caller's
@@ -204,7 +244,18 @@ func resolvePackages(ctx context.Context, tool GoTool, affectedPkgs []domain.Aff
 		res.EvidenceIDs = append(res.EvidenceIDs, e.ID)
 		ev = append(ev, e)
 	}
-	affectedPaths := affectedPackagePaths(affectedPkgs)
+	// pathOwner maps each probed package path back to its advisory entry —
+	// a hit selects the module the downstream pipeline narrows to.
+	var affectedPaths []string
+	pathOwner := map[string]*domain.AffectedModule{}
+	var affectedPkgs []domain.AffectedPackage
+	for _, e := range selected {
+		for _, p := range e.AffectedPackages {
+			affectedPkgs = append(affectedPkgs, p)
+			affectedPaths = append(affectedPaths, p.Path)
+			pathOwner[p.Path] = e
+		}
+	}
 	res.CheckedPackages = affectedPaths
 	if len(affectedPaths) == 0 {
 		// The advisory names no affected package for the selected module —
@@ -240,15 +291,62 @@ func resolvePackages(ctx context.Context, tool GoTool, affectedPkgs []domain.Aff
 	}
 
 	present := false
+	confirmedLinked := false // a version-affected entry's package is linked
+	pendingLinked := false   // a version-undecidable entry's package is linked
+	var confirmedOwner *domain.AffectedModule
+	seenMod := map[string]bool{}
+	res.SelectedModules = nil
 	for _, want := range affectedPaths {
 		if packageImported(pkgs, want) {
 			present = true
-			break
+			owner := pathOwner[want]
+			if pendingSet[owner] {
+				pendingLinked = true
+			} else if owner != nil {
+				confirmedLinked = true
+				if confirmedOwner == nil {
+					confirmedOwner = owner
+				}
+			}
+			if owner != nil && pendingSet[owner] &&
+				!slices.Contains(res.PendingModules, owner.Module) {
+				res.PendingModules = append(res.PendingModules, owner.Module)
+			}
+			if owner != nil && !seenMod[owner.Module] {
+				seenMod[owner.Module] = true
+				res.SelectedModules = append(res.SelectedModules, owner.Module)
+			}
 		}
+	}
+	if len(res.SelectedModules) > 0 {
+		res.SelectedModule = res.SelectedModules[0]
 	}
 	if present {
 		res.PackagePresent = domain.ClaimTrue
+		switch {
+		case pendingLinked && !confirmedLinked:
+			// Only version-undecidable entries are linked: the affected
+			// version found on a DIFFERENT, unlinked module must not be
+			// presented as proof — re-scope the version fields to what
+			// was actually selected.
+			res.VersionAffected = domain.ClaimUnknown
+			res.ResolvedVersion = ""
+			res.Limitations = append(res.Limitations,
+				"linked affected package(s) belong to module(s) whose version could not be resolved; "+
+					"version applicability undecided for the linked code")
+		case confirmedLinked:
+			// VersionAffected/ResolvedVersion describe a confirmed entry —
+			// pin SelectedModule and ResolvedVersion to it so the pair
+			// cannot be read as facts about a co-linked pending module.
+			res.SelectedModule = confirmedOwner.Module
+			res.ResolvedVersion = entryVer[confirmedOwner]
+		}
 	} else {
+		// Package absent: keep the resolved version of the (pre-selected)
+		// affected entry for reporting — SelectedModule already names it.
+		if len(selected) > 0 {
+			res.ResolvedVersion = entryVer[selected[0]]
+		}
 		// A package absent from this build can still be imported by
 		// build-tag-excluded files — "not imported" then holds only for
 		// the analyzed configuration, which cannot ground NOT_AFFECTED.

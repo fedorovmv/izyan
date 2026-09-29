@@ -2242,3 +2242,57 @@ func TestE2EDepInternalFalseVerified(t *testing.T) {
 		t.Fatalf("verdict=%+v want NO_EXPLOIT_PATH_FOUND", c.Verdict)
 	}
 }
+
+// When two affected-module entries are both linked into the product,
+// narrowing must union their symbol/package sets — picking only the
+// first entry would drop the second module's vulnerable path from
+// downstream analysis.
+type multiResolver struct{ res domain.AffectedResult }
+
+func (m multiResolver) Resolve(context.Context, domain.Vulnerability, domain.ProductSnapshot) (domain.AffectedResult, []domain.Evidence, error) {
+	return m.res, nil, nil
+}
+
+func TestCheckAffectedUnionsSelectedModules(t *testing.T) {
+	c := &domain.AnalysisCase{}
+	c.Vulnerability.Module = "example.com/dep"
+	c.Vulnerability.AffectedModules = []domain.AffectedModule{
+		{
+			Module:           "example.com/dep",
+			AffectedVersions: []domain.VersionRange{{Introduced: "0", Fixed: "1.2.0"}},
+			AffectedPackages: []domain.AffectedPackage{{Path: "example.com/dep/vuln"}},
+			AffectedSymbols:  []domain.SymbolRef{{Package: "example.com/dep/vuln", Symbol: "Sink"}},
+		},
+		{
+			Module:           "example.com/other",
+			AffectedVersions: []domain.VersionRange{{Introduced: "0", Fixed: "2.0.0"}},
+			AffectedPackages: []domain.AffectedPackage{{Path: "example.com/other/vuln"}},
+			AffectedSymbols:  []domain.SymbolRef{{Package: "example.com/other/vuln", Symbol: "OtherSink"}},
+		},
+	}
+	res := domain.AffectedResult{
+		ModulePresent:   domain.ClaimTrue,
+		VersionAffected: domain.ClaimTrue,
+		PackagePresent:  domain.ClaimTrue,
+		BuildRelevant:   domain.ClaimTrue,
+		SelectedModule:  "example.com/dep",
+		SelectedModules: []string{"example.com/dep", "example.com/other"},
+	}
+	tr, err := states.CheckAffected{Resolver: multiResolver{res: res}}.Run(context.Background(), c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tr.Next != domain.StateResolveRootCause {
+		t.Fatalf("transition=%+v", tr)
+	}
+	found := map[string]bool{}
+	for _, s := range c.Vulnerability.AffectedSymbols {
+		found[s.Package+"."+s.Symbol] = true
+	}
+	if !found["example.com/dep/vuln.Sink"] || !found["example.com/other/vuln.OtherSink"] {
+		t.Fatalf("symbols must union across selected modules: %+v", c.Vulnerability.AffectedSymbols)
+	}
+	if len(c.Vulnerability.AffectedPackages) != 2 {
+		t.Fatalf("packages=%+v", c.Vulnerability.AffectedPackages)
+	}
+}

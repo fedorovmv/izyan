@@ -94,6 +94,162 @@ func TestVersionInRangePackageAbsent(t *testing.T) {
 	}
 }
 
+// Two version-affected entries are alternatives, not a sequence: the
+// package probe covers all of them, and a hit narrows to the owning
+// module. A first entry whose package is absent must not shield the
+// second one's imported package.
+func TestMultiAffectedEntriesUnionProbe(t *testing.T) {
+	v := domain.Vulnerability{
+		ID:     "GO-0000-0003",
+		Module: "example.com/dep",
+		AffectedModules: []domain.AffectedModule{
+			{
+				Module:           "example.com/dep",
+				AffectedVersions: []domain.VersionRange{{Introduced: "0", Fixed: "1.2.0"}},
+				AffectedPackages: []domain.AffectedPackage{{Path: "example.com/dep/vuln"}},
+			},
+			{
+				Module:           "example.com/other",
+				AffectedVersions: []domain.VersionRange{{Introduced: "0", Fixed: "2.0.0"}},
+				AffectedPackages: []domain.AffectedPackage{{Path: "example.com/other/vuln"}},
+			},
+		},
+	}
+	mods := `{"Path":"example.com/dep","Version":"v1.0.0"}
+{"Path":"example.com/other","Version":"v1.5.0"}`
+	pkgs := `{"ImportPath":"example.com/product"}
+{"ImportPath":"example.com/other/vuln"}`
+	res, _, err := GoResolver{Tool: fakeTool{modules: []byte(mods), packages: []byte(pkgs)}}.
+		Resolve(context.Background(), v, product())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.PackagePresent != domain.ClaimTrue {
+		t.Fatalf("second affected entry's package is imported: got PackagePresent=%s", res.PackagePresent)
+	}
+	if res.SelectedModule != "example.com/other" {
+		t.Fatalf("SelectedModule=%q, want the imported entry's module", res.SelectedModule)
+	}
+	if len(res.CheckedPackages) != 2 {
+		t.Fatalf("union probe expected, CheckedPackages=%v", res.CheckedPackages)
+	}
+}
+
+// When BOTH entries' packages are imported the vulnerable path exists in
+// each module — SelectedModules must carry both, so downstream narrowing
+// cannot drop the second entry's symbols.
+func TestMultiAffectedBothImported(t *testing.T) {
+	v := domain.Vulnerability{
+		ID:     "GO-0000-0003b",
+		Module: "example.com/dep",
+		AffectedModules: []domain.AffectedModule{
+			{
+				Module:           "example.com/dep",
+				AffectedVersions: []domain.VersionRange{{Introduced: "0", Fixed: "1.2.0"}},
+				AffectedPackages: []domain.AffectedPackage{{Path: "example.com/dep/vuln"}},
+			},
+			{
+				Module:           "example.com/other",
+				AffectedVersions: []domain.VersionRange{{Introduced: "0", Fixed: "2.0.0"}},
+				AffectedPackages: []domain.AffectedPackage{{Path: "example.com/other/vuln"}},
+			},
+		},
+	}
+	mods := `{"Path":"example.com/dep","Version":"v1.0.0"}
+{"Path":"example.com/other","Version":"v1.5.0"}`
+	pkgs := `{"ImportPath":"example.com/product"}
+{"ImportPath":"example.com/dep/vuln"}
+{"ImportPath":"example.com/other/vuln"}`
+	res, _, err := GoResolver{Tool: fakeTool{modules: []byte(mods), packages: []byte(pkgs)}}.
+		Resolve(context.Background(), v, product())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.PackagePresent != domain.ClaimTrue {
+		t.Fatalf("got PackagePresent=%s", res.PackagePresent)
+	}
+	if len(res.SelectedModules) != 2 {
+		t.Fatalf("both modules imported: SelectedModules=%v", res.SelectedModules)
+	}
+}
+
+// A version-undecidable module still gets its packages probed: when the
+// confirmed entry's package is absent but the pending entry's package is
+// linked, PackagePresent=FALSE would be a false NOT_AFFECTED.
+func TestPendingModulePackageProbe(t *testing.T) {
+	v := domain.Vulnerability{
+		ID:     "GO-0000-0003c",
+		Module: "example.com/dep",
+		AffectedModules: []domain.AffectedModule{
+			{
+				Module:           "example.com/dep",
+				AffectedVersions: []domain.VersionRange{{Introduced: "0", Fixed: "1.2.0"}},
+				AffectedPackages: []domain.AffectedPackage{{Path: "example.com/dep/vuln"}},
+			},
+			{
+				Module:           "example.com/other",
+				AffectedVersions: []domain.VersionRange{{Introduced: "0", Fixed: "2.0.0"}},
+				AffectedPackages: []domain.AffectedPackage{{Path: "example.com/other/vuln"}},
+			},
+		},
+	}
+	mods := `{"Path":"example.com/dep","Version":"v1.0.0"}
+{"Path":"example.com/other"}` // no Version — ranges unresolvable
+	pkgs := `{"ImportPath":"example.com/product"}
+{"ImportPath":"example.com/other/vuln"}`
+	res, _, err := GoResolver{Tool: fakeTool{modules: []byte(mods), packages: []byte(pkgs)}}.
+		Resolve(context.Background(), v, product())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.PackagePresent != domain.ClaimTrue {
+		t.Fatalf("pending entry's imported package must keep the case open, got PackagePresent=%s", res.PackagePresent)
+	}
+	found := false
+	for _, m := range res.SelectedModules {
+		if m == "example.com/other" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("pending module must land in SelectedModules: %v", res.SelectedModules)
+	}
+	// Only the pending module's code is linked — the confirmed version
+	// verdict belongs to the unlinked entry and must not carry over.
+	if res.VersionAffected != domain.ClaimUnknown {
+		t.Fatalf("VersionAffected=%s — undecidable, the linked module's version is unresolved", res.VersionAffected)
+	}
+	if res.ResolvedVersion != "" {
+		t.Fatalf("ResolvedVersion=%q still names the unlinked module's version", res.ResolvedVersion)
+	}
+}
+
+// Flat intake that names only Vulnerability.Package still probes that
+// package — the fallback must survive multi-module normalization.
+func TestFlatPackageFallback(t *testing.T) {
+	v := domain.Vulnerability{
+		ID:      "GO-0000-0004",
+		Module:  "example.com/dep",
+		Package: "example.com/dep/vuln",
+		AffectedVersions: []domain.VersionRange{
+			{Introduced: "0", Fixed: "1.2.0"},
+		},
+	}
+	mods := `{"Path":"example.com/dep","Version":"v1.0.0"}`
+	pkgs := `{"ImportPath":"example.com/product"}`
+	res, _, err := GoResolver{Tool: fakeTool{modules: []byte(mods), packages: []byte(pkgs)}}.
+		Resolve(context.Background(), v, product())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.CheckedPackages) != 1 || res.CheckedPackages[0] != "example.com/dep/vuln" {
+		t.Fatalf("Package fallback lost: CheckedPackages=%v", res.CheckedPackages)
+	}
+	if res.PackagePresent != domain.ClaimFalse {
+		t.Fatalf("got %s, want FALSE over the fallback probe", res.PackagePresent)
+	}
+}
+
 // An advisory that names no affected package leaves nothing to probe —
 // absence cannot be asserted from an empty check set.
 func TestNoAffectedPackagesIsUnknown(t *testing.T) {
@@ -216,5 +372,46 @@ func TestMultiModuleNoEntryAffected(t *testing.T) {
 	}
 	if res.VersionAffected != domain.ClaimFalse {
 		t.Fatalf("res=%+v", res)
+	}
+}
+
+// Both modules linked — confirmed AND pending: the version stays TRUE
+// (attributed to the confirmed module) and PendingModules names the
+// undecidable one so version facts cannot be consumed as its fact.
+func TestPendingModuleMixedLink(t *testing.T) {
+	v := domain.Vulnerability{
+		ID:     "GO-0000-0003d",
+		Module: "example.com/dep",
+		AffectedModules: []domain.AffectedModule{
+			{
+				Module:           "example.com/dep",
+				AffectedVersions: []domain.VersionRange{{Introduced: "0", Fixed: "1.2.0"}},
+				AffectedPackages: []domain.AffectedPackage{{Path: "example.com/dep/vuln"}},
+			},
+			{
+				Module:           "example.com/other",
+				AffectedVersions: []domain.VersionRange{{Introduced: "0", Fixed: "2.0.0"}},
+				AffectedPackages: []domain.AffectedPackage{{Path: "example.com/other/vuln"}},
+			},
+		},
+	}
+	mods := `{"Path":"example.com/dep","Version":"v1.0.0"}
+{"Path":"example.com/other"}` // no Version — pending
+	pkgs := `{"ImportPath":"example.com/product"}
+{"ImportPath":"example.com/dep/vuln"}
+{"ImportPath":"example.com/other/vuln"}`
+	res, _, err := GoResolver{Tool: fakeTool{modules: []byte(mods), packages: []byte(pkgs)}}.
+		Resolve(context.Background(), v, product())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.VersionAffected != domain.ClaimTrue {
+		t.Fatalf("confirmed module linked — VersionAffected=%s", res.VersionAffected)
+	}
+	if res.SelectedModule != "example.com/dep" || res.ResolvedVersion != "v1.0.0" {
+		t.Fatalf("version pair must pin to the confirmed module: %s@%s", res.SelectedModule, res.ResolvedVersion)
+	}
+	if len(res.PendingModules) != 1 || res.PendingModules[0] != "example.com/other" {
+		t.Fatalf("PendingModules=%v — linked pending module must be named", res.PendingModules)
 	}
 }

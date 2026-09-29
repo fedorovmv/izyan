@@ -136,6 +136,12 @@ type AffectedResult struct {
 	// e.g. stdlib + golang.org/x/sys — and only the entry matching the
 	// product's dependency graph is authoritative).
 	SelectedModule string `json:"selected_module,omitempty"`
+	// SelectedModules names every affected-entry module whose package set
+	// resolved as imported (or every version-affected module when no
+	// package probe ran). Two entries can both be linked into the
+	// product — downstream narrowing must cover all of them, not just
+	// SelectedModule.
+	SelectedModules []string `json:"selected_modules,omitempty"`
 	// CheckedModules names every advisory module entry probed against the
 	// product's module graph — ModulePresent=FALSE means none of these
 	// resolved to a product dependency.
@@ -146,6 +152,12 @@ type AffectedResult struct {
 	// means every listed path is absent — the code is not linked into
 	// the product — not "some package was missing".
 	CheckedPackages []string `json:"checked_packages,omitempty"`
+	// PendingModules names linked modules whose version could not be
+	// resolved (module present in go list -m, version undecidable). Their
+	// code is in scope for analysis, but VersionAffected/ResolvedVersion
+	// never describe them — a version fact must not be consumed as if it
+	// proved a pending module's range.
+	PendingModules []string `json:"pending_modules,omitempty"`
 }
 
 // AffectedModule is one OSV affected[] entry: a module path with its own

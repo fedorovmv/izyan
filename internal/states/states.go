@@ -109,21 +109,58 @@ func (h CheckAffected) Run(ctx context.Context, c *domain.AnalysisCase) (workflo
 		id := c.EvidenceGraph.AddEvidence(e)
 		_ = id
 	}
-	// Multi-module advisories: the resolver picked the entry the product
-	// actually depends on — narrow the vulnerability to that entry so
-	// downstream states (symbols, packages, ranges) see the matching view.
-	if res.SelectedModule != "" && res.SelectedModule != c.Vulnerability.Module {
-		for _, am := range c.Vulnerability.AffectedModules {
-			if am.Module == res.SelectedModule {
-				c.Vulnerability.Module = am.Module
-				c.Vulnerability.AffectedVersions = am.AffectedVersions
-				c.Vulnerability.FixedVersions = am.FixedVersions
-				c.Vulnerability.AffectedPackages = am.AffectedPackages
-				c.Vulnerability.AffectedSymbols = am.AffectedSymbols
-				if len(am.AffectedPackages) > 0 {
-					c.Vulnerability.Package = am.AffectedPackages[0].Path
+	// Multi-module advisories: narrow the vulnerability to the entries the
+	// product actually links. Symbols and packages union across EVERY
+	// selected module — a vulnerable path in a second imported entry must
+	// reach downstream analysis; version fields follow the first selected
+	// entry (the report's remediation view is per-module limited anyway).
+	if len(res.SelectedModules) > 0 {
+		byModule := map[string]*domain.AffectedModule{}
+		for i := range c.Vulnerability.AffectedModules {
+			am := &c.Vulnerability.AffectedModules[i]
+			byModule[am.Module] = am
+		}
+		var pkgs []domain.AffectedPackage
+		var syms []domain.SymbolRef
+		seenPkg := map[string]bool{}
+		seenSym := map[string]bool{}
+		var first *domain.AffectedModule
+		for _, m := range res.SelectedModules {
+			am := byModule[m]
+			if am == nil {
+				continue
+			}
+			if first == nil {
+				first = am
+			}
+			for _, p := range am.AffectedPackages {
+				if !seenPkg[p.Path] {
+					seenPkg[p.Path] = true
+					pkgs = append(pkgs, p)
 				}
-				break
+			}
+			for _, s := range am.AffectedSymbols {
+				k := s.Package + "." + s.Symbol
+				if !seenSym[k] {
+					seenSym[k] = true
+					syms = append(syms, s)
+				}
+			}
+		}
+		if first != nil && (len(res.SelectedModules) > 1 || first.Module != c.Vulnerability.Module) {
+			c.Vulnerability.Module = first.Module
+			c.Vulnerability.AffectedVersions = first.AffectedVersions
+			c.Vulnerability.FixedVersions = first.FixedVersions
+			c.Vulnerability.AffectedPackages = pkgs
+			c.Vulnerability.AffectedSymbols = syms
+			if len(pkgs) > 0 {
+				c.Vulnerability.Package = pkgs[0].Path
+			}
+			if len(res.SelectedModules) > 1 {
+				c.Affected.Limitations = append(c.Affected.Limitations,
+					fmt.Sprintf("multi-module advisory: %d affected modules linked (%s) — "+
+						"symbols unioned for analysis; version/remediation fields follow %s",
+						len(res.SelectedModules), strings.Join(res.SelectedModules, ", "), first.Module))
 			}
 		}
 	}
