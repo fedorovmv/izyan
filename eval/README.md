@@ -32,7 +32,7 @@ Baseline-таблица govulncheck-vs-analyzer (последний прогон
 | real-ssh-server | EXPLOITABLE | reachable | нет |
 | real-ssh-keyparse | INCONCLUSIVE | package-level | нет — sinks unexported; «zero product refs» вакуумен, dep-internal graph opaque |
 | real-jose-decrypt | EXPLOITABLE | reachable | нет |
-| real-jwt-auth | NO_EXPLOIT_PATH_FOUND **FALSE-SAFE** | package-level | нет — известный B21 |
+| real-jwt-auth | INCONCLUSIVE | package-level | нет — missing-call гейт: `VerifyAudience` мёртв, но sibling-пайплайн `MapClaims.Valid` жив → отсутствие вызова не доказывает безопасность |
 | real-http2-server | NOT_AFFECTED | silent | **да — deterministic** |
 | real-dns-zone | EXPLOITABLE | reachable | нет |
 | real-getter-file | INCONCLUSIVE | reachable | нет — dispatch-key const `file`, eval-полнота не дожимает |
@@ -52,7 +52,7 @@ Baseline-таблица govulncheck-vs-analyzer (последний прогон
 | real-micro-xds-fixed | NOT_AFFECTED | silent | **да — deterministic** |
 | real-micro-plain | NOT_AFFECTED | silent | **да — rbac-пакет не в build graph** |
 | real-unix-access | INCONCLUSIVE | reachable | нет — Faccessat вызван, harm-условие deploy-зависимо |
-| real-unix-stat | NO_EXPLOIT_PATH_FOUND | package-level | **да — zero-refs falsifier невакуумен (единственный exported sink)** |
+| real-unix-stat | NO_EXPLOIT_PATH_FOUND | package-level | **да — zero-refs + dep-internal caller `unix.Access` транзитивно мёртв (нет product refs, нет caller'ов в модуле, сторонних импортеров пакета нет)** |
 | real-unix-fixed | NOT_AFFECTED | silent | **да — deterministic** |
 | real-ssh-slowpesh | EXPLOITABLE | reachable | нет |
 
@@ -62,14 +62,16 @@ Baseline-таблица govulncheck-vs-analyzer (последний прогон
 (VERIFIED falsifier на mandatory-условии). `EXPLOITABLE`, `INCONCLUSIVE` и
 `UNKNOWN` оставляют кейс на человеке — для triage «reachable» и
 «не доказали безопасность» эквивалентны. Текущий прогон: **12/32 cleared**
-(11×NOT_AFFECTED deterministic + `real-unix-stat` NEPF — первый sound
-verified-негатив на real-кейсе: advisory декларирует единственный
-exported sink `unix.Faccessat`, продукт его не трогает, zero-refs
-фальсификатор невакуумен). После гейта `productReferenceable` NEPF без
-referenceable-субъектов не выносится: ssh-keyparse и dns-marshal
-вернулись в INCONCLUSIVE — их прежний NEPF стоял на vacuous «zero
-product refs». Цель B13/B23 — поднять долю честных cleared за счёт
-falsifier-доказательств, не объявляя недоказанное безопасным.
+(11×NOT_AFFECTED deterministic + `real-unix-stat` NEPF — sound
+verified-негатив на real-кейсе: продукт не трогает `unix.Faccessat`,
+а единственный dep-internal caller `unix.Access` доказанно мёртв —
+нет product refs, нет caller'ов внутри `x/sys`, сторонних модулей,
+импортирующих пакет, в dep-графе нет). NEPF без referenceable-субъектов
+не выносится (`productReferenceable` гейт), а dep-internal invocation
+учитывается transitively (`depSiteLive`): ssh-keyparse и dns-marshal в
+INCONCLUSIVE — их прежний NEPF стоял на vacuous «zero product refs»;
+jwt-auth — missing-call гейт. Цель B23 — поднять долю честных cleared
+за счёт falsifier-доказательств, не объявляя недоказанное безопасным.
 
 Дифференциация относительно standalone govulncheck:
 
@@ -81,11 +83,12 @@ falsifier-доказательств, не объявляя недоказанн
   «no product refs» не может быть falsifier по visibility-правилам;
   гейт `productReferenceable` в `Verifier` блокирует такие VERIFIED →
   ранее ложный NEPF (false-safe), теперь честный INCONCLUSIVE.
-- `real-jwt-auth`: **намеренный counted false-safe** — missing-call
-  advisory (B21): `Valid()` не зовёт `VerifyAudience` by design, sink
-  недостижим → NEPF при истине EXPLOITABLE. Кейс держит `expect`
-  = [EXPLOITABLE, INCONCLUSIVE], поэтому прогон падает с `false-safe=1`
-  до закрытия B21 — это честный сигнал пробела модели, не регрессия.
+- `real-jwt-auth`: missing-call advisory — `Valid()` не зовёт
+  `VerifyAudience` by design. Dep-invocation гейт видит: субъект мёртв,
+  но sibling-методы того же receiver'а вызываются на живом dep-пути →
+  «отсутствие вызова» не может обосновать негатив → INSUFFICIENT_SCOPE →
+  честный INCONCLUSIVE (истина EXPLOITABLE; should-call семантики в
+  модели нет, поэтому дальше INCONCLUSIVE не дожимается).
 - getter-кейсы: registry-dispatch в go-getter (`getters[scheme].Get`)
   резолвится через iface→impl рёбра ModuleInternalReach; func-value
   opaque dispatch помечен → unreached субъекты UNKNOWN, не FALSE.
@@ -111,6 +114,26 @@ falsifier-доказательств, не объявляя недоказанн
 evidence-id; INCONCLUSIVE перечисляет unresolved condition-ID. Пустой
 probed-набор (advisory без package-записей) даёт UNKNOWN, не FALSE —
 проверять нечего, отсутствие не утверждается.
+
+Multi-module advisory: `packages probed` включает записи всех
+affected-entries, включая pending (модуль в графе, версия
+нерезолвабельна — stdlib toolchain без `go version` факта или dep
+без `Version`). Linked только pending-модуль → `version_affected`
+остаётся UNKNOWN с limitation — версия другого, нелinked entry не
+приписывается; `resolved_version` и `selected_module` привязаны к
+подтверждённо-linked entry, а linked pending-модули выводятся строкой
+`modules version-unresolved` — version-fact не применяется к условиям
+чужих модулей. Usage- и negative-проверки сканируют все linked-модули,
+а доказательства атрибутятся по модулю владельца субъекта (владелец —
+наибольший совпадающий модульный префикс). Владелец вызываемого пакета
+берётся из графа импортов продукта: nested-модуль `dep/v2` не
+абсорбируется родителем `dep`, даже когда `dep/v2` отсутствует в
+affected-entries. Вызов с неизвестным владельцем или владельцем вне
+linked-модулей не доказывает usage и блокирует вывод об отсутствии:
+вложенный модуль может вызывать родителя транзитивно. `VersionFact`
+учитывает оба поля субъектов
+(`Subject` и `Subjects`); условие без субъекта при нескольких linked-модулях
+остаётся UNKNOWN.
 
 ## Scalability (закрытый OOM)
 

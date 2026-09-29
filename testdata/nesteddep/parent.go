@@ -1,0 +1,3 @@
+package nesteddep
+
+func Parent() {}

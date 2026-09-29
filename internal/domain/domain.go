@@ -455,6 +455,9 @@ type CallSite struct {
 	// Callee names the invoked symbol (e.g. "amqp.DialTLS") when the site is
 	// recorded for module-usage evidence rather than as an enclosing function.
 	Callee string `json:"callee,omitempty"`
+	// ModuleOwner is the module path reported for Callee's package by the
+	// product's import graph. Empty means ownership was not resolved.
+	ModuleOwner string `json:"module_owner,omitempty"`
 }
 
 type CallPath struct {

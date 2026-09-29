@@ -96,7 +96,7 @@ func TestSymbolReachableTrueViaModuleChain(t *testing.T) {
 	c.GovulncheckCoverage = "covered"
 	c.Vulnerability.AffectedSymbols = nil
 	c.EvidenceGraph.AddEvidence(domain.Evidence{Tool: "goanalysis.Index.ModuleUsage"})
-	c.EvidenceGraph.AddModuleUsages(domain.CallSite{Package: "prod/x", Function: "DialTLS"})
+	c.EvidenceGraph.AddModuleUsages(domain.CallSite{Package: "prod/x", Function: "DialTLS", Callee: "lib/transport.DialTLS", ModuleOwner: "lib/transport"})
 	c.EvidenceGraph.AddModuleReachable("lib/internal/transport.recvBuffer.put", []string{
 		"lib/transport.DialTLS", "lib/internal/transport.recvBuffer.put",
 	})
@@ -263,7 +263,7 @@ func rabbitCase() *domain.AnalysisCase {
 func TestReachableNotInDBModuleUsedUnexported(t *testing.T) {
 	c := rabbitCase()
 	c.EvidenceGraph.AddModuleUsages(domain.CallSite{
-		Package: "prod/amqp", Function: "DialTLS",
+		Package: "prod/amqp", Function: "DialTLS", Callee: "mod/amqp.DialTLS", ModuleOwner: "mod/amqp",
 	})
 	claim := SymbolReachable{}.Evaluate(domain.Condition{
 		ID: "C-REACH", Kind: domain.ConditionSymbolReachable,
@@ -289,7 +289,7 @@ func TestReachableNotInDBExportedUnknown(t *testing.T) {
 		{Package: "mod/amqp", Symbol: "URI.String"},
 	}
 	c.EvidenceGraph.AddModuleUsages(domain.CallSite{
-		Package: "prod/amqp", Function: "DialTLS",
+		Package: "prod/amqp", Function: "DialTLS", Callee: "mod/amqp.DialTLS", ModuleOwner: "mod/amqp",
 	})
 	claim := SymbolReachable{}.Evaluate(domain.Condition{
 		ID: "C-REACH", Kind: domain.ConditionSymbolReachable,
@@ -302,7 +302,7 @@ func TestReachableNotInDBExportedUnknown(t *testing.T) {
 func TestServerTransportClientSidePeerInput(t *testing.T) {
 	c := rabbitCase()
 	c.EvidenceGraph.AddModuleUsages(domain.CallSite{
-		Package: "prod/amqp", Function: "DialTLS",
+		Package: "prod/amqp", Function: "DialTLS", Callee: "mod/amqp.DialTLS", ModuleOwner: "mod/amqp",
 	})
 	claim := ServerTransportInput{}.Evaluate(domain.Condition{
 		ID: "C-ATTACK", Kind: domain.ConditionAttackerControl,
@@ -316,7 +316,7 @@ func TestServerTransportClientSidePeerInput(t *testing.T) {
 func TestServerTransportClientSideNonRemoteStaysUnknown(t *testing.T) {
 	c := rabbitCase()
 	c.EvidenceGraph.AddModuleUsages(domain.CallSite{
-		Package: "prod/amqp", Function: "DialTLS",
+		Package: "prod/amqp", Function: "DialTLS", Callee: "mod/amqp.DialTLS", ModuleOwner: "mod/amqp",
 	})
 	claim := ServerTransportInput{}.Evaluate(domain.Condition{
 		ID: "C-FMT", Kind: domain.ConditionInputConstraint,
@@ -324,5 +324,225 @@ func TestServerTransportClientSideNonRemoteStaysUnknown(t *testing.T) {
 	}, c)
 	if claim.Result != domain.ClaimUnknown {
 		t.Fatalf("got %s, want UNKNOWN: no remote-input signal", claim.Result)
+	}
+}
+
+// Under a multi-module advisory a product call into module A is not
+// evidence for an unexported subject in module B — usage sites are
+// attributed to the subject-owning module before the verdict.
+func TestModuleUsageCrossModuleIsolation(t *testing.T) {
+	c := rabbitCase()
+	c.Affected = &domain.AffectedResult{
+		SelectedModules: []string{"mod/amqp", "mod/other"},
+	}
+	c.Vulnerability.AffectedSymbols = []domain.SymbolRef{
+		{Package: "mod/other/peer", Symbol: "handleFrame"}, // unexported, module B
+	}
+	// Product calls module A's API — nothing into mod/other.
+	c.EvidenceGraph.AddModuleUsages(domain.CallSite{
+		Package: "prod/amqp", Function: "DialTLS", Callee: "mod/amqp.DialTLS", ModuleOwner: "mod/amqp",
+	})
+	claim := SymbolReachable{}.Evaluate(domain.Condition{
+		ID: "C-REACH", Kind: domain.ConditionSymbolReachable,
+	}, c)
+	if claim.Result == domain.ClaimTrue {
+		t.Fatalf("got TRUE — module A usage must not prove module B subject: %s", claim.Explanation)
+	}
+	if claim.Result != domain.ClaimFalse {
+		t.Fatalf("got %s, want FALSE candidate: no calls into the subject-owning module", claim.Result)
+	}
+}
+
+// The positive side of the same attribution: a call into the subject's
+// own module still proves the unexported sink runs.
+func TestModuleUsageOwningModuleTrue(t *testing.T) {
+	c := rabbitCase()
+	c.Affected = &domain.AffectedResult{
+		SelectedModules: []string{"mod/amqp", "mod/other"},
+	}
+	c.Vulnerability.AffectedSymbols = []domain.SymbolRef{
+		{Package: "mod/other/peer", Symbol: "handleFrame"},
+	}
+	c.EvidenceGraph.AddModuleUsages(domain.CallSite{
+		Package: "prod/other", Function: "main", Callee: "mod/other.Connect", ModuleOwner: "mod/other",
+	})
+	claim := SymbolReachable{}.Evaluate(domain.Condition{
+		ID: "C-REACH", Kind: domain.ConditionSymbolReachable,
+	}, c)
+	if claim.Result != domain.ClaimTrue {
+		t.Fatalf("got %s, want TRUE: subject-owning module is used", claim.Result)
+	}
+}
+
+// Nested modules: example.com/mod and example.com/mod/v2 share a path
+// prefix — the subject's owner is the LONGEST matching module, or the
+// parent's API usage bleeds into the child's verdict.
+func TestModuleUsageNestedModuleIsolation(t *testing.T) {
+	c := rabbitCase()
+	c.Affected = &domain.AffectedResult{
+		SelectedModules: []string{"mod/amqp", "mod/amqp/v2"},
+	}
+	c.Vulnerability.AffectedSymbols = []domain.SymbolRef{
+		{Package: "mod/amqp/v2/peer", Symbol: "handleFrame"},
+	}
+	// Product calls the PARENT module's API — nothing into mod/amqp/v2.
+	c.EvidenceGraph.AddModuleUsages(domain.CallSite{
+		Package: "prod/amqp", Function: "DialTLS", Callee: "mod/amqp.DialTLS", ModuleOwner: "mod/amqp",
+	})
+	claim := SymbolReachable{}.Evaluate(domain.Condition{
+		ID: "C-REACH", Kind: domain.ConditionSymbolReachable,
+	}, c)
+	if claim.Result == domain.ClaimTrue {
+		t.Fatalf("got TRUE — parent module usage must not prove nested-module subject: %s", claim.Explanation)
+	}
+	if claim.Result != domain.ClaimFalse {
+		t.Fatalf("got %s, want FALSE candidate: no calls into the owning module", claim.Result)
+	}
+}
+
+// Same nesting, positive direction: a call into mod/amqp/v2 still proves
+// the unexported sink runs — longest-match attribution is not a veto.
+func TestModuleUsageNestedModuleTrue(t *testing.T) {
+	c := rabbitCase()
+	c.Affected = &domain.AffectedResult{
+		SelectedModules: []string{"mod/amqp", "mod/amqp/v2"},
+	}
+	c.Vulnerability.AffectedSymbols = []domain.SymbolRef{
+		{Package: "mod/amqp/v2/peer", Symbol: "handleFrame"},
+	}
+	c.EvidenceGraph.AddModuleUsages(domain.CallSite{
+		Package: "prod/v2", Function: "main", Callee: "mod/amqp/v2.Connect", ModuleOwner: "mod/amqp/v2",
+	})
+	claim := SymbolReachable{}.Evaluate(domain.Condition{
+		ID: "C-REACH", Kind: domain.ConditionSymbolReachable,
+	}, c)
+	if claim.Result != domain.ClaimTrue {
+		t.Fatalf("got %s, want TRUE: nested owning module is used", claim.Result)
+	}
+}
+
+func TestModuleUsageNestedDependencyOutsideAdvisory(t *testing.T) {
+	c := rabbitCase()
+	c.Affected = &domain.AffectedResult{SelectedModules: []string{"mod/amqp"}}
+	c.EvidenceGraph.AddModuleUsages(domain.CallSite{
+		Package: "prod/v2", Function: "main", Callee: "mod/amqp/v2.Connect", ModuleOwner: "mod/amqp/v2",
+	})
+	claim := SymbolReachable{}.Evaluate(domain.Condition{
+		ID: "C-REACH", Kind: domain.ConditionSymbolReachable,
+	}, c)
+	if claim.Result != domain.ClaimUnknown {
+		t.Fatalf("got %s, want UNKNOWN: nested dependency may call parent transitively", claim.Result)
+	}
+}
+
+func TestModuleUsageUnknownOwnerBlocksAbsence(t *testing.T) {
+	c := rabbitCase()
+	c.EvidenceGraph.AddModuleUsages(domain.CallSite{
+		Package: "prod/v2", Function: "main", Callee: "mod/amqp/v2.Connect",
+	})
+	claim := SymbolReachable{}.Evaluate(domain.Condition{
+		ID: "C-REACH", Kind: domain.ConditionSymbolReachable,
+	}, c)
+	if claim.Result != domain.ClaimUnknown {
+		t.Fatalf("got %s, want UNKNOWN: module owner was not resolved", claim.Result)
+	}
+}
+
+// A confirmed module's version must not decide a condition whose subject
+// belongs to a pending (version-undecidable) module.
+func TestVersionFactPendingModuleSubject(t *testing.T) {
+	c := &domain.AnalysisCase{}
+	c.Affected = &domain.AffectedResult{
+		VersionAffected: domain.ClaimTrue,
+		ResolvedVersion: "v1.0.0",
+		SelectedModule:  "mod/a",
+		SelectedModules: []string{"mod/a", "mod/b"},
+		PendingModules:  []string{"mod/b"},
+		EvidenceIDs:     []domain.EvidenceID{"EV-AFFECTED-MODULES"},
+	}
+	claim := VersionFact{}.Evaluate(domain.Condition{
+		ID: "C-BUILD", Kind: domain.ConditionBuild,
+		Description: "The version must be prior to 2.0 (the release containing the fix).",
+		Subjects:    []domain.SymbolRef{{Package: "mod/b/lib", Symbol: "Open"}},
+	}, c)
+	if claim.Result != domain.ClaimUnknown {
+		t.Fatalf("got %s — module A's version must not prove a module-B condition", claim.Result)
+	}
+}
+
+// Same version fact stays usable for subjects of the confirmed module.
+func TestVersionFactConfirmedModuleSubject(t *testing.T) {
+	c := &domain.AnalysisCase{}
+	c.Affected = &domain.AffectedResult{
+		VersionAffected: domain.ClaimTrue,
+		ResolvedVersion: "v1.0.0",
+		SelectedModule:  "mod/a",
+		SelectedModules: []string{"mod/a", "mod/b"},
+		PendingModules:  []string{"mod/b"},
+		EvidenceIDs:     []domain.EvidenceID{"EV-AFFECTED-MODULES"},
+	}
+	claim := VersionFact{}.Evaluate(domain.Condition{
+		ID: "C-BUILD", Kind: domain.ConditionBuild,
+		Description: "The version must be prior to 2.0 (the release containing the fix).",
+		Subjects:    []domain.SymbolRef{{Package: "mod/a/lib", Symbol: "Open"}},
+	}, c)
+	if claim.Result != domain.ClaimTrue {
+		t.Fatalf("got %s, want TRUE: subject owns the attributed module", claim.Result)
+	}
+}
+
+func TestVersionFactSingularSubjectOtherModule(t *testing.T) {
+	c := affectedCase("v1.0.0")
+	c.Affected.SelectedModule = "mod/a"
+	c.Affected.SelectedModules = []string{"mod/a", "mod/b"}
+	c.Affected.PendingModules = []string{"mod/b"}
+	claim := VersionFact{}.Evaluate(domain.Condition{
+		ID: "C-BUILD", Kind: domain.ConditionBuild,
+		Description: "version must be prior to 2.0",
+		Subject:     &domain.SymbolRef{Package: "mod/b/lib", Symbol: "Open"},
+	}, c)
+	if claim.Result != domain.ClaimUnknown {
+		t.Fatalf("got %s — singular subject belongs to pending module", claim.Result)
+	}
+}
+
+func TestVersionFactUnboundMultiModule(t *testing.T) {
+	c := affectedCase("v1.0.0")
+	c.Affected.SelectedModule = "mod/a"
+	c.Affected.SelectedModules = []string{"mod/a", "mod/b"}
+	claim := VersionFact{}.Evaluate(domain.Condition{
+		ID: "C-BUILD", Kind: domain.ConditionBuild,
+		Description: "version must be prior to 2.0",
+	}, c)
+	if claim.Result != domain.ClaimUnknown {
+		t.Fatalf("got %s — condition has no module attribution", claim.Result)
+	}
+}
+
+func TestVersionFactStdlibSubjectOtherModule(t *testing.T) {
+	c := affectedCase("v1.0.0")
+	c.Affected.SelectedModule = "golang.org/x/sys"
+	c.Affected.SelectedModules = []string{"golang.org/x/sys", "std"}
+	claim := VersionFact{}.Evaluate(domain.Condition{
+		ID: "C-BUILD", Kind: domain.ConditionBuild,
+		Description: "version must be prior to 2.0",
+		Subject:     &domain.SymbolRef{Package: "syscall", Symbol: "Access"},
+	}, c)
+	if claim.Result != domain.ClaimUnknown {
+		t.Fatalf("got %s — stdlib subject cannot inherit dependency version", claim.Result)
+	}
+}
+
+func TestVersionFactStdlibSubjectSelectedModule(t *testing.T) {
+	c := affectedCase("v1.0.0")
+	c.Affected.SelectedModule = "std"
+	c.Affected.SelectedModules = []string{"std", "golang.org/x/sys"}
+	claim := VersionFact{}.Evaluate(domain.Condition{
+		ID: "C-BUILD", Kind: domain.ConditionBuild,
+		Description: "version must be prior to 2.0",
+		Subject:     &domain.SymbolRef{Package: "syscall", Symbol: "Access"},
+	}, c)
+	if claim.Result != domain.ClaimTrue {
+		t.Fatalf("got %s, want TRUE: stdlib subject belongs to selected std module", claim.Result)
 	}
 }

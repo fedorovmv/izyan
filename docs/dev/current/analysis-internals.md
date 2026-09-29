@@ -14,7 +14,7 @@ harness, tool audit, экспорты, известные границы.
 |---|---|---|
 | SNAPSHOT_PRODUCT | `go version`, `go.mod` (`GoModDirective`), флаги | `ProductSnapshot` — toolchain, GOOS/GOARCH, `--release-go-version`, `--binary` |
 | RESOLVE_VULNERABILITY | OSV API / `--vuln-file` | `Vulnerability` + алиас-дотягивание GO-* документа |
-| CHECK_AFFECTED | `go list -m all` + `vendor/modules.txt`, `go list -deps ./...`, `x/mod/semver` | `AffectedResult`: module/version/package/build — каждый факт с evidence |
+| CHECK_AFFECTED | `go list -m all` + `vendor/modules.txt`, `go list -deps ./...`, `x/mod/semver` | `AffectedResult`: module/version/package/build — каждый факт с evidence; multi-module advisory: `SelectedModules` — все linked-модули, pending-entries (модуль в графе, версия нерезолвабельна) проходят package-пробу и попадают в `PendingModules`, а `VersionAffected`/`ResolvedVersion` атрибутятся только к подтверждённо-linked модулю |
 | RESOLVE_ROOT_CAUSE | advisory `affected_symbols` → fix-commit diff → LLM-retry | верифицированные sink-символы (каждый проверен `FindSymbol` в dep source) |
 | BUILD_EXPLOIT_MODEL | `Classify` → pattern из `exploit.Registry` → LLM → generic fallback | `ExploitModel` — класс + mandatory conditions с `Subjects`/`Params` |
 | COLLECT_EVIDENCE | govulncheck + `goanalysis.Index` | `EvidenceGraph`: call paths, data flows, entrypoints, module usages, limitations |
@@ -91,7 +91,24 @@ module-usage evidence (`libraryUsageVerdict`). Отказ инструмента
 | проверка не выполнялась | UNKNOWN |
 
 `ModuleUsage` собирает product call sites в API модуля с точным callee
-(`pkg.Recv.Method`). `ModuleInternalReach` загружает vendored-пакет
+(`pkg.Recv.Method`). Владелец callee берётся из `packages.Package.Module`
+пакета в графе импортов продукта: вложенный модуль, даже если его нет в
+affected-entries, не считается частью родителя. Сайт с неизвестным
+владельцем или владельцем вне linked-модулей не доказывает использование
+модуля и блокирует FALSE-кандидат (вложенный модуль может вызвать
+родителя транзитивно).
+Только сайты с подтверждённым владельцем становятся входами
+`ModuleInternalReach` для этого модуля.
+При multi-module advisory usage-сайты атрибутуются по модулю владельца
+субъектов (`subjectModuleUsages`, owner = наибольший совпадающий префикс):
+вызов API модуля A не является evidence для субъекта модуля B; сайты вне
+всех linked-модулей (без атрибуции) не доказывают TRUE, но и блокируют
+FALSE-кандидат. VersionFact аналогично ограничен `SelectedModule`:
+проверяются и `Subject`, и `Subjects`; условие с субъектом в другом
+linked-модуле (pending/confirmed) или без привязки к модулю при
+multi-module advisory не наследует чужой version fact. Пакеты stdlib
+атрибутуются к `std`/`stdlib`, когда такая запись есть среди linked-модулей.
+`ModuleInternalReach` загружает vendored-пакет
 `packages.Load` (с типами), строит внутримодульный call graph и BFS'ит
 от используемых API до sink — реальные цепочки вроде
 `DialTLS → DialConfig → Open → Connection.reader → ReadFrame → parseMethodFrame → readLongstr`

@@ -64,13 +64,19 @@ func (ServerTransportInput) Evaluate(cond domain.Condition, c *domain.AnalysisCa
 		// is controlled by the remote peer (broker/server), not product code.
 		// Applies when the condition is about peer input — declared via
 		// input_source=peer or inferred from remote-input wording.
-		if len(c.EvidenceGraph.ModuleUsages) > 0 && wantsPeerInput(cond, c.Vulnerability) &&
-			reachabilitySubjects(cond, c) != nil && allUnexported(reachabilitySubjects(cond, c)) {
+		// Usage sites are filtered to the subject-owning modules — a call
+		// into a different linked module is no evidence here either.
+		if subs := reachabilitySubjects(cond, c); subs != nil && allUnexported(subs) &&
+			wantsPeerInput(cond, c.Vulnerability) {
+			usages, _ := subjectModuleUsages(c, subs)
+			if len(usages) == 0 {
+				return ArgumentOrigin{}.Evaluate(cond, c)
+			}
 			claim.Result = domain.ClaimTrue
 			claim.EvidenceIDs = moduleUsageEvidence(c)
 			claim.Explanation = fmt.Sprintf(
-				"product calls the vulnerable module's API at %d site(s); unexported transport internals consume peer-controlled input",
-				len(c.EvidenceGraph.ModuleUsages))
+				"product calls the subject-owning module's API at %d site(s); unexported transport internals consume peer-controlled input",
+				len(usages))
 			claim.Limitations = append(claim.Limitations,
 				"peer identity/trust is a deployment property — TRUE assumes the remote endpoint is attacker-influenced")
 			return claim

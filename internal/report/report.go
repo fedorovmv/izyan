@@ -67,6 +67,12 @@ func Markdown(c *domain.AnalysisCase) string {
 		if len(a.CheckedModules) > 0 {
 			fmt.Fprintf(&b, "| modules probed | `%s` |\n", strings.Join(a.CheckedModules, "`, `"))
 		}
+		if len(a.SelectedModules) > 0 {
+			fmt.Fprintf(&b, "| modules linked | `%s` |\n", strings.Join(a.SelectedModules, "`, `"))
+		}
+		if len(a.PendingModules) > 0 {
+			fmt.Fprintf(&b, "| modules version-unresolved | `%s` |\n", strings.Join(a.PendingModules, "`, `"))
+		}
 		if len(a.CheckedPackages) > 0 {
 			fmt.Fprintf(&b, "| packages probed | `%s` |\n", strings.Join(a.CheckedPackages, "`, `"))
 		}

@@ -121,15 +121,24 @@ func (SymbolReachable) Evaluate(cond domain.Condition, c *domain.AnalysisCase) d
 // execute inside the library's peer-driven path, so real evidence is whether
 // the product calls the module's API at all.
 func libraryUsageVerdict(claim domain.Claim, c *domain.AnalysisCase, subjects []domain.SymbolRef, why string) domain.Claim {
-	usages := c.EvidenceGraph.ModuleUsages
+	// Attribute usage sites to the modules owning the subjects — under a
+	// multi-module advisory a call into module A says nothing about a
+	// subject in module B.
+	usages, stray := subjectModuleUsages(c, subjects)
 	if len(usages) == 0 {
 		if !moduleUsageChecked(c) {
 			claim.Limitations = append(claim.Limitations,
 				"module-usage scan did not run; absence of call sites is no evidence")
 			return claim
 		}
+		if stray > 0 {
+			claim.Limitations = append(claim.Limitations, fmt.Sprintf(
+				"%d module-usage site(s) could not be attributed to any linked module; absence in the subject-owning module(s) is unproven",
+				stray))
+			return claim
+		}
 		claim.Result = domain.ClaimFalse
-		claim.Explanation = why + " and product makes no calls into the vulnerable module"
+		claim.Explanation = why + " and product makes no calls into the module(s) owning the subjects"
 		claim.Limitations = append(claim.Limitations,
 			"FALSE is a candidate: module API usage is measured from product call sites, not vendored internals")
 		return claim
@@ -138,7 +147,7 @@ func libraryUsageVerdict(claim domain.Claim, c *domain.AnalysisCase, subjects []
 		claim.Result = domain.ClaimTrue
 		claim.EvidenceIDs = moduleUsageEvidence(c)
 		claim.Explanation = fmt.Sprintf(
-			"product calls the vulnerable module's API at %d site(s); unexported sinks execute inside its peer-driven path (%s)",
+			"product calls the subject-owning module's API at %d site(s); unexported sinks execute inside its peer-driven path (%s)",
 			len(usages), why)
 		claim.Limitations = append(claim.Limitations,
 			"transitive reach inferred from module API usage, not traced to the sink")
@@ -321,6 +330,74 @@ func memberInvoked(key string, c *domain.AnalysisCase) bool {
 	}
 	for _, u := range c.EvidenceGraph.ModuleUsages {
 		if u.Callee == key {
+			return true
+		}
+	}
+	return false
+}
+
+// linkedModules returns every module the resolver linked into the case —
+// SelectedModules when the multi-module resolver ran, else the advisory
+// module.
+func linkedModules(c *domain.AnalysisCase) []string {
+	if c.Affected != nil && len(c.Affected.SelectedModules) > 0 {
+		return c.Affected.SelectedModules
+	}
+	if c.Vulnerability.Module != "" {
+		return []string{c.Vulnerability.Module}
+	}
+	return nil
+}
+
+// subjectModules returns the linked modules owning the subjects — the
+// longest matching module per subject, so a nested module is not absorbed
+// by its parent's prefix. A subject matching none of them widens the
+// answer to all linked modules rather than zeroing the usage set.
+func subjectModules(c *domain.AnalysisCase, subjects []domain.SymbolRef) []string {
+	linked := linkedModules(c)
+	own := map[string]bool{}
+	var out []string
+	for _, s := range subjects {
+		if m := domain.OwnerModule(s.Package, linked); m != "" && !own[m] {
+			own[m] = true
+			out = append(out, m)
+		}
+	}
+	if len(out) == 0 {
+		return linked
+	}
+	return out
+}
+
+// subjectModuleUsages filters module-usage call sites to those whose callee
+// lives in a module owning at least one subject. Sites attributable to a
+// different linked module are excluded outright; sites that cannot be
+// attributed at all are counted separately — they cannot prove use, but
+// they also prevent claiming absence.
+func subjectModuleUsages(c *domain.AnalysisCase, subjects []domain.SymbolRef) (relevant []domain.CallSite, unattributable int) {
+	linked := linkedModules(c)
+	if len(linked) == 0 {
+		// No module context (flat intake) — keep all sites relevant.
+		return c.EvidenceGraph.ModuleUsages, 0
+	}
+	ownSet := map[string]bool{}
+	for _, m := range subjectModules(c, subjects) {
+		ownSet[m] = true
+	}
+	for _, u := range c.EvidenceGraph.ModuleUsages {
+		switch m := u.ModuleOwner; {
+		case m != "" && ownSet[m]:
+			relevant = append(relevant, u)
+		case m == "" || !containsModule(linked, m):
+			unattributable++
+		}
+	}
+	return relevant, unattributable
+}
+
+func containsModule(mods []string, target string) bool {
+	for _, m := range mods {
+		if m == target {
 			return true
 		}
 	}

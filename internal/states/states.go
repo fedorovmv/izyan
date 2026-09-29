@@ -535,18 +535,44 @@ func filepathBase(p string) string {
 	return p
 }
 
-// runModuleUsage records product call sites into the vulnerable module's API.
-// For library-internal sinks (unexported, peer-driven) module usage — not a
-// direct symbol reference — is what makes the vulnerable code run.
+// runModuleUsage records product call sites into each linked vulnerable
+// module's API. For library-internal sinks (unexported, peer-driven)
+// module usage — not a direct symbol reference — is what makes the
+// vulnerable code run. Multi-module advisories can link several
+// affected entries — each gets its own usage/reach scan.
 func (h CollectEvidence) runModuleUsage(ctx context.Context, c *domain.AnalysisCase) {
-	module := c.Vulnerability.Module
-	if module == "" || isStdlibModule(module) {
-		return
+	seen := map[string]bool{}
+	var modules []string
+	if c.Affected != nil {
+		for _, m := range c.Affected.SelectedModules {
+			if !seen[m] {
+				seen[m] = true
+				modules = append(modules, m)
+			}
+		}
 	}
+	if m := c.Vulnerability.Module; m != "" && !seen[m] {
+		seen[m] = true
+		modules = append(modules, m)
+	}
+	for _, module := range modules {
+		if !isStdlibModule(module) {
+			h.moduleUsage(ctx, c, module, modules)
+		}
+	}
+}
+
+func (h CollectEvidence) moduleUsage(ctx context.Context, c *domain.AnalysisCase, module string, linked []string) {
 	sites, err := h.Source.ModuleUsage(ctx, module)
 	if err != nil {
 		c.EvidenceGraph.AddToolLimitation(fmt.Sprintf("module usage scan failed: %v", err))
 		return
+	}
+	owned := 0
+	for _, s := range sites {
+		if s.ModuleOwner == module {
+			owned++
+		}
 	}
 	// The check record is written even with zero sites: it distinguishes
 	// "verified no usage" from "never attempted" for evaluators.
@@ -555,7 +581,7 @@ func (h CollectEvidence) runModuleUsage(ctx context.Context, c *domain.AnalysisC
 		Quality: domain.QualityDeterministic,
 		Source:  "source index: module usage check",
 		Tool:    "goanalysis.Index.ModuleUsage",
-		Content: fmt.Sprintf("%d product call site(s) into module %s", len(sites), module),
+		Content: fmt.Sprintf("%d product call site(s) with prefix %s; %d owner-confirmed", len(sites), module, owned),
 	})
 	if len(sites) == 0 {
 		return
@@ -566,27 +592,27 @@ func (h CollectEvidence) runModuleUsage(ctx context.Context, c *domain.AnalysisC
 		Quality: domain.QualityDeterministic,
 		Source:  "source index: module usage",
 		Tool:    "goanalysis.Index.ModuleUsage",
-		Content: fmt.Sprintf("product calls into %s at %d site(s), e.g. %s.%s (%s:%d)",
-			module, len(sites), sites[0].Package, sites[0].Function, sites[0].File, sites[0].Line),
+		Content: fmt.Sprintf("product has %d call site(s) with prefix %s (%d owner-confirmed), e.g. %s.%s (%s:%d)",
+			len(sites), module, owned, sites[0].Package, sites[0].Function, sites[0].File, sites[0].Line),
 	})
 
 	// For affected symbols not invoked directly, trace call edges inside the
 	// vendored module: product-used API → ... → sink.
 	entries := map[string]bool{}
 	for _, s := range sites {
-		if s.Callee != "" {
+		if s.Callee != "" && s.ModuleOwner == module {
 			entries[s.Callee] = true
 		}
 	}
 	var subjects []domain.SymbolRef
 	for _, sym := range c.Vulnerability.AffectedSymbols {
-		if strings.HasPrefix(sym.Package, module) {
+		if domain.OwnerModule(sym.Package, linked) == module {
 			subjects = append(subjects, sym)
 		}
 	}
 	if c.RootCause != nil {
 		for _, rc := range c.RootCause.RootCauses {
-			if strings.HasPrefix(rc.Package, module) {
+			if domain.OwnerModule(rc.Package, linked) == module {
 				subjects = append(subjects, domain.SymbolRef{Package: rc.Package, Symbol: rc.Symbol})
 			}
 		}

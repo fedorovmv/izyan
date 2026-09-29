@@ -21,6 +21,24 @@ func fixture(t *testing.T, name string) *Index {
 	return ix
 }
 
+func TestModuleUsageAttributesNestedDependency(t *testing.T) {
+	ix := fixture(t, "nestedprod")
+	parent, err := ix.ModuleUsage(context.Background(), "example.com/nesteddep")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(parent) != 1 || parent[0].ModuleOwner != "example.com/nesteddep/v2" {
+		t.Fatalf("parent prefix scan must retain foreign-owner site as uncertain: %+v", parent)
+	}
+	child, err := ix.ModuleUsage(context.Background(), "example.com/nesteddep/v2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(child) != 1 || child[0].Callee != "example.com/nesteddep/v2.Child" {
+		t.Fatalf("child usage=%+v, want Child call", child)
+	}
+}
+
 func TestFindCallers(t *testing.T) {
 	ix := fixture(t, "constprod")
 	sites, err := ix.FindCallers(context.Background(), vulnSym)

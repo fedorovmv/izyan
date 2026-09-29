@@ -1411,12 +1411,10 @@ func (ix *Index) FindListeners(ctx context.Context) ([]domain.Entrypoint, error)
 	return out, nil
 }
 
-// ModuleUsage reports product call sites into any package of the given
-// module ("github.com/rabbitmq/amqp091-go" covers ".../amqp091-go/spec091"
-// too). When a vulnerability's sinks are library internals that only execute
-// while the library handles peer input, module usage is evidence that the
-// vulnerable code paths run — product code can never name the unexported
-// symbols directly.
+// ModuleUsage reports product call sites whose callee package matches the
+// module path prefix. Each site carries the actual owner from the import
+// graph; nested modules and unresolved owners remain visible to consumers
+// but cannot count as confirmed calls into the requested module.
 func (ix *Index) ModuleUsage(ctx context.Context, module string) ([]domain.CallSite, error) {
 	ix.mu.Lock()
 	defer ix.mu.Unlock()
@@ -1448,8 +1446,13 @@ func (ix *Index) ModuleUsage(ctx context.Context, module string) ([]domain.CallS
 				if p != module && !strings.HasPrefix(p, module+"/") {
 					return true
 				}
+				owner := ""
+				if imported := pkg.Imports[p]; imported != nil && imported.Module != nil {
+					owner = imported.Module.Path
+				}
 				site := ix.siteOf(pkg, enc, call)
 				site.Callee = p + "." + fn.Name()
+				site.ModuleOwner = owner
 				if sig, ok := fn.Type().(*types.Signature); ok && sig.Recv() != nil {
 					rn := strings.TrimPrefix(sig.Recv().Type().String(), "*")
 					if i := strings.LastIndexByte(rn, '.'); i >= 0 {

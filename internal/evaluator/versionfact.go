@@ -43,6 +43,44 @@ func (VersionFact) Evaluate(cond domain.Condition, c *domain.AnalysisCase) domai
 	if c.Affected == nil || c.Affected.VersionAffected != domain.ClaimTrue {
 		return claim
 	}
+	// VersionAffected/ResolvedVersion are attributed to SelectedModule —
+	// a condition whose subjects live in another linked module (pending
+	// or a different confirmed entry) cannot inherit the fact.
+	if c.Affected.SelectedModule != "" {
+		linked := linkedModules(c)
+		subjects := condSubjects(cond)
+		if len(subjects) == 0 && len(linked) > 1 {
+			claim.Limitations = append(claim.Limitations,
+				"version fact cannot be attributed to a module: condition has no subjects")
+			return claim
+		}
+		for _, s := range subjects {
+			m := domain.OwnerModule(s.Package, linked)
+			if m == "" && !strings.Contains(strings.Split(s.Package, "/")[0], ".") {
+				for _, candidate := range linked {
+					if candidate == "std" || candidate == "stdlib" {
+						if m != "" {
+							m = ""
+							break
+						}
+						m = candidate
+					}
+				}
+			}
+			if m != c.Affected.SelectedModule {
+				if m == "" {
+					claim.Limitations = append(claim.Limitations, fmt.Sprintf(
+						"version fact is attributed to module %s; subject %s has no known module owner",
+						c.Affected.SelectedModule, s.Package+"."+s.Symbol))
+					return claim
+				}
+				claim.Limitations = append(claim.Limitations, fmt.Sprintf(
+					"version fact is attributed to module %s; subject %s belongs to module %s",
+					c.Affected.SelectedModule, s.Package+"."+s.Symbol, m))
+				return claim
+			}
+		}
+	}
 	desc := cond.Description
 	resolved := "v" + strings.TrimPrefix(c.Affected.ResolvedVersion, "v")
 

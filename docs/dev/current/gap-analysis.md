@@ -18,7 +18,7 @@
 | Transformations | Семантика трансформов не моделируется: opaque call → UNKNOWN (честно, но закрывает claim'ы) | limitation, не бэклог |
 | Negative check | Конфигурация, меняющая reachability (не гарды) — в резерве | → B6 |
 | Reviewer | «patch misinterpretation» и «scope mismatch» из §21 не проверяются — Structural ловит только структурные дефекты | → B15 |
-| Exploit model | «Missing-call» advisory: уязвимость — отсутствие вызова валидации (jwt-go GO-2020-0017: `Valid()` не зовёт `VerifyAudience`); declared sink недостижим по определению → govulncheck-silence даёт VERIFIED-FALSE при эксплуатируемой истине; модель «reach+input» не представляет такой механизм | → B21 |
+| Exploit model | «Missing-call» advisory (уязвимость — отсутствие вызова валидации, jwt-go GO-2020-0017): dep-invocation гейт блокирует false-safe NEPF → INCONCLUSIVE, но should-call семантики в модели нет — условие «валидация обязана выполняться» не выводится | → B21 |
 
 ## 2. Открытый бэклог (приоритетный, с done-критериями)
 
@@ -36,7 +36,7 @@
 
 | # | Пункт | Зачем | Done-критерий |
 |---|-------|-------|----------------|
-| B13 | **Расширение корпуса доказательной базы** | Live-слой узок: 11 кейсов, 1 dep, 1 класс; нет сравнительной базы vs standalone govulncheck | ≥30 кейсов суммарно (≥4 класса, ≥3 реальных dep) через generated-manifest продукты `eval/products/` без committed уязвимых манифестов; baseline-таблица govulncheck-vs-analyzer в [`eval/README.md`](../../../eval/README.md); ground-truth файл на каждый позитивный вердикт; `false_safe=0`; план: [`dev/plans/corpus-expansion-plan.md`](../plans/corpus-expansion-plan.md). **Статус**: corpus-real вырос до 32 кейсов / 11 классов / 11 deps, таблица и ground-truth на месте, суммарно с fixture-корпусом 50; единственный невыполненный критерий — `false_safe=0`, блокер B21 (real-jwt-auth) |
+
 
 ### P2 — глубина покрытия
 
@@ -54,8 +54,9 @@
 | B18 | Snapshot/toolchain-факты как platform conditions | `go_version` продукта и тулчейн-семантика (TLS 1.2 floor с go1.22+ и т.п.) не моделируются → 33mj истина NEPF, анализатор INCONCLUSIVE. Done: platform-condition claim решается по snapshot `go_version` + тест; 33mj-кейс даёт NEPF |
 | B19 | Точность reflect/unsafe демоций NV | Демоция по маркеру не проверяет, что write-site реально достигает типа субъекта (465g: `amqp091.URI` никогда не создаётся продуктом → истина NEPF, анализатор INCONCLUSIVE). Done: маркер учитывает достижимость типа/поля; 465g-кейс даёт NEPF |
 | B20 | Root-cause верификация теряет fix-added символы | `Verifier.Verify` ищет кандидата только в dep-версии продукта (`FindSymbol` → product-scope); символ, добавленный патчем, там отсутствует по определению → в Alternatives. 27gv: LLM верно предложил `PlainAuth.String`/`setSASL`/`Reconnect` — существуют в v1.13.0 (это и есть фикс), но отброшены | Двойная верификация: vuln-версия (exploit-субъект) + fix-diff/fixed source (root-cause идентичность, метка «added by fix»); кейс с аддитивным фиксом сохраняет fix-side кандидата в RootCauses; регресс-тест на 27gv-сценарий |
-| B21 | Missing-call advisories | Уязвимость — отсутствие вызова (jwt-go `Valid()` никогда не зовёт `VerifyAudience`): declared sink недостижим by design → reach=FALSE VERIFIED → NEPF при эксплуатируемой истине. real-jwt-auth в corpus-real — live-демонстрация | Модель «should-call»: условие «валидация выполняется на пути парсинга» — FALSE, когда caller-цепочка проверяемо не вызывает субъект (все статические вызовы Valid() просмотрены, ни одного VerifyAudience); e2e: jwt-auth-сценарий даёт INCONCLUSIVE минимум, NEPF недопустим |
+| B21 | Missing-call модель (остаток) | False-safe закрыт гейтом: `DepInvocationState`+`checkDepInvocation` — мёртвый субъект + живой sibling-пайплайн → INSUFFICIENT_SCOPE (real-jwt-auth → INCONCLUSIVE). Остаток: модель «should-call» не представлена — условие «валидация обязана выполняться на пути» не выводится из advisory, поэтому missing-call кейс навсегда INCONCLUSIVE, а не EXPLOITABLE/NEPF | Условие `should-call`: receiver-пайплайн доказанно жив И субъект доказанно не вызывается внутри него (все вызовы enclosing-цепочки просмотрены) → mandatory-условие TRUE (дефект подтверждён), а не только блок NEPF; регресс-e2e: jwt-auth → EXPLOITABLE с named evidence |
 | B24 | Dep-internal opaque dispatch (function-регистрации, watcher/goroutine-ребра) | grpc xds: sink `rbac.builder.ParseFilterConfig` достигается через `httpfilter.Register(builder{})` (запись в registry — вызов функции, не map-literal) + watcher-колбэки из pump-горутины xdsclient → govulncheck даёт только package-level, наш moduleEdges тоже обрывается; real-micro-xds истина EXPLOITABLE, анализатор INCONCLUSIVE. Соседний дефект (vacuous «zero product refs» для internal/unexported субъектов) исправлен — гейт `productReferenceable` в negative.go | Рёбра через registry-регистраторы вида `pkg.Register(v)` и watcher-callback интерфейсы в dep-графе, либо честный `incomplete-scope` evidence-гейт; e2e: real-micro-xds не INCONCLUSIVE-молчит, а несёт точный limitation «registry/callback dispatch unproven» или резолвится |
+| B25 | Вызовы между вложенными модулями | `ModuleUsage` атрибутирует callee по реальному модулю; вызов API nested-модуля не доказывает использование родителя, но может вызвать его транзитивно и поэтому блокирует FALSE-кандидат. Done: проверять рёбра child→parent по полному import/call graph; тесты с таким ребром и без него; UNKNOWN при неполном графе, без false-safe |
 
 ### P3 — deferred by design
 
@@ -88,4 +89,3 @@
   `internal/goanalysis/provenance.go` — `exprIntValue`,
   `boundsDirection`. Расширять по одной форме: `len(x)`, `x != 0`,
   float. Тесты — `provenance_bound_test.go` образец.
-
