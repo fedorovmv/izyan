@@ -7,12 +7,16 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
+	"time"
 
 	"example.com/vuln-analyzer/internal/affected"
 	"example.com/vuln-analyzer/internal/domain"
 	"example.com/vuln-analyzer/internal/eval"
 	"example.com/vuln-analyzer/internal/goanalysis"
 	"example.com/vuln-analyzer/internal/toolchain"
+	"example.com/vuln-analyzer/internal/vulnerability"
 )
 
 // runEval executes a corpus of cases through the full pipeline and
@@ -78,6 +82,7 @@ func runEval(args []string) error {
 		corpus.Cases[i].Repo = resolve(corpus.Cases[i].Repo)
 		corpus.Cases[i].VulnFile = resolve(corpus.Cases[i].VulnFile)
 		corpus.Cases[i].ExploitModel = resolve(corpus.Cases[i].ExploitModel)
+		corpus.Cases[i].Product = resolve(corpus.Cases[i].Product)
 	}
 	repo := o.repo
 	if repo == "" {
@@ -85,7 +90,7 @@ func runEval(args []string) error {
 	}
 	if repo == "" {
 		for _, c := range corpus.Cases {
-			if c.Repo == "" {
+			if c.Repo == "" && c.Product == "" {
 				return fmt.Errorf("no repository: set --repo, corpus.repo, or per-case repo")
 			}
 		}
@@ -131,12 +136,25 @@ func runEval(args []string) error {
 	}
 	ctx, stop := applyMemoryLimit(context.Background(), budget)
 	defer stop()
+	gen := eval.Gen{GoBin: o.toolchain.GoBin, Env: o.toolchain.Env}
+	genRoot := filepath.Join(base, ".gen")
 	var rep eval.Report
-	for _, c := range corpus.Cases {
+	for i, c := range corpus.Cases {
+		fmt.Fprintf(os.Stderr, "→ case %d/%d %s\n", i+1, len(corpus.Cases), c.Label())
+		caseStart := time.Now()
 		co := o
 		co.vulnID = c.Vuln
 		co.vulnFile = c.VulnFile
 		co.exploitModel = c.ExploitModel
+		if c.GOOS != "" {
+			co.goos = c.GOOS
+		}
+		if c.GOARCH != "" {
+			co.goarch = c.GOARCH
+		}
+		if len(c.BuildTags) > 0 {
+			co.tags = strings.Join(c.BuildTags, ",")
+		}
 		if c.GoVersion != "" {
 			// Per-case toolchain: shared tools/index carry the corpus-level
 			// env — rebuild under this case's toolchain instead.
@@ -150,6 +168,25 @@ func runEval(args []string) error {
 		for _, rc := range c.RootCauses {
 			co.manualRC = append(co.manualRC, rc.RootCause)
 		}
+		var productDir string
+		switch {
+		case c.Product != "" && c.Repo != "":
+			rep.Record(c, "", "", nil, fmt.Errorf("case sets both repo and product — they are mutually exclusive"))
+			continue
+		case c.Product == "" && (c.Module != "" || len(c.Deps) > 0):
+			rep.Record(c, "", "", nil, fmt.Errorf("module/deps declared without a product"))
+			continue
+		case c.Product != "":
+			// Generated-manifest product: sources are committed, the
+			// vulnerable manifest is generated under .gen/.
+			dir, err := gen.Materialize(ctx, c, base, genRoot)
+			if err != nil {
+				rep.Record(c, "", "", nil, err)
+				continue
+			}
+			productDir = dir
+			co.repo = dir
+		}
 		if c.Repo != "" {
 			absCase, err := filepath.Abs(c.Repo)
 			if err != nil {
@@ -157,10 +194,14 @@ func runEval(args []string) error {
 				continue
 			}
 			co.repo = absCase
-			// A case on a different repo cannot share the corpus index.
-			if absCase != o.repo {
-				co.srcIndex = nil
-			}
+		}
+		if co.repo != o.repo {
+			// Per-repo tools cannot share corpus-level caches: a cached
+			// `go list`/govulncheck output names the first repo's module
+			// graph, which is wrong for any other product.
+			co.srcIndex = nil
+			co.goTool = nil
+			co.gvRunner = nil
 		}
 		cs, err := analyzeCase(ctx, co)
 		var verdict domain.Verdict
@@ -176,6 +217,15 @@ func runEval(args []string) error {
 			}
 		}
 		rep.Record(c, verdict, reason, claims, err)
+		if productDir != "" {
+			// Baseline: what standalone govulncheck says about this
+			// advisory on this product — differentiation evidence.
+			rep.Results[len(rep.Results)-1].Baseline = eval.Baseline(ctx,
+				goanalysis.ExecRunner{Env: co.toolchain.Env}, productDir,
+				baselineVuln(ctx, c, cs), domain.ProductSnapshot{
+					GOOS: co.goos, GOARCH: co.goarch, BuildTags: splitCSV(co.tags),
+				})
+		}
 		res := rep.Results[len(rep.Results)-1]
 		mark := "  "
 		if res.FalseSafe {
@@ -185,7 +235,11 @@ func runEval(args []string) error {
 		} else if res.Err != "" {
 			mark = "??"
 		}
-		fmt.Printf("%s %-28s %-22s %s\n", mark, c.Label(), firstNonEmpty(res.Verdict, res.Err), res.Reason)
+		fmt.Printf("%s %-28s %-22s %s (%.0fs)\n", mark, c.Label(),
+			firstNonEmpty(res.Verdict, res.Err), res.Reason, time.Since(caseStart).Seconds())
+		if cs != nil {
+			fmt.Fprintf(os.Stderr, "  states: %s\n", topTimings(cs.Workflow.Timings, 3))
+		}
 	}
 
 	m := rep.Metrics
@@ -214,4 +268,42 @@ func firstNonEmpty(a, b string) string {
 		return a
 	}
 	return b
+}
+
+// topTimings renders the n workflow states that consumed the most case
+// time — the eval progress diagnostic answering "where is it spending
+// the minutes" without digging through the persisted case.
+func topTimings(timings map[string]float64, n int) string {
+	type kv struct {
+		k string
+		v float64
+	}
+	var sorted []kv
+	for k, v := range timings {
+		sorted = append(sorted, kv{k, v})
+	}
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].v > sorted[j].v })
+	if len(sorted) > n {
+		sorted = sorted[:n]
+	}
+	parts := make([]string, 0, len(sorted))
+	for _, s := range sorted {
+		parts = append(parts, fmt.Sprintf("%s=%.0fs", s.k, s.v))
+	}
+	return strings.Join(parts, " ")
+}
+
+// baselineVuln resolves the advisory identity for the standalone
+// govulncheck baseline: the pipeline's parsed document when available,
+// else the case's vuln file, else the bare id.
+func baselineVuln(ctx context.Context, c eval.Case, cs *domain.AnalysisCase) domain.Vulnerability {
+	if cs != nil && cs.Vulnerability.ID != "" {
+		return cs.Vulnerability
+	}
+	if c.VulnFile != "" {
+		if v, err := (vulnerability.FileSource{Path: c.VulnFile}).Get(ctx, c.Vuln); err == nil && v != nil {
+			return *v
+		}
+	}
+	return domain.Vulnerability{ID: c.Vuln}
 }

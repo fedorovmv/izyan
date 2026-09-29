@@ -1,0 +1,450 @@
+{
+ "cases": [
+  {
+   "id": "real-yaml-http",
+   "vuln": "GO-2021-0061",
+   "vuln_file": "advisories/real/GO-2021-0061.json",
+   "product": "products/yaml-http",
+   "module": "example.com/yaml-http",
+   "deps": {
+    "gopkg.in/yaml.v2": "v2.2.2"
+   },
+   "expect": [
+    "EXPLOITABLE"
+   ]
+  },
+  {
+   "id": "real-yaml-file",
+   "vuln": "GO-2021-0061",
+   "vuln_file": "advisories/real/GO-2021-0061.json",
+   "product": "products/yaml-file",
+   "module": "example.com/yaml-file",
+   "deps": {
+    "gopkg.in/yaml.v2": "v2.2.2"
+   },
+   "expect": [
+    "INCONCLUSIVE"
+   ]
+  },
+  {
+   "id": "real-yaml-http-fixed",
+   "vuln": "GO-2021-0061",
+   "vuln_file": "advisories/real/GO-2021-0061.json",
+   "product": "products/yaml-http",
+   "module": "example.com/yaml-http",
+   "deps": {
+    "gopkg.in/yaml.v2": "v2.4.0"
+   },
+   "expect": [
+    "NOT_AFFECTED"
+   ]
+  },
+  {
+   "id": "real-md-render",
+   "vuln": "GO-2023-2074",
+   "vuln_file": "advisories/real/GO-2023-2074.json",
+   "product": "products/md-render",
+   "module": "example.com/md-render",
+   "deps": {
+    "github.com/gomarkdown/markdown": "v0.0.0-20230916125811-7478c230c7cd"
+   },
+   "expect": [
+    "EXPLOITABLE"
+   ]
+  },
+  {
+   "id": "real-getter-fetch",
+   "vuln": "GO-2024-2800",
+   "vuln_file": "advisories/real/GO-2024-2800.json",
+   "product": "products/getter-fetch",
+   "module": "example.com/getter-fetch",
+   "deps": {
+    "github.com/hashicorp/go-getter": "v1.7.0"
+   },
+   "_note": "attacker URL via POST body; ground truth EXPLOITABLE — getter registry dispatch (Getter interface map) traced via iface-impl edges; func-value opaque dispatch keeps reach UNKNOWN",
+   "expect": [
+    "EXPLOITABLE",
+    "INCONCLUSIVE"
+   ]
+  },
+  {
+   "id": "real-getter-const",
+   "vuln": "GO-2024-2800",
+   "vuln_file": "advisories/real/GO-2024-2800.json",
+   "product": "products/getter-const",
+   "module": "example.com/getter-const",
+   "deps": {
+    "github.com/hashicorp/go-getter": "v1.7.0"
+   },
+   "_note": "URL is a build-time constant — attacker never controls it; negative via C-INPUT falsifier or unknown",
+   "expect": [
+    "NO_EXPLOIT_PATH_FOUND",
+    "INCONCLUSIVE"
+   ]
+  },
+  {
+   "id": "real-ssh-server",
+   "vuln": "GO-2022-0968",
+   "vuln_file": "advisories/real/GO-2022-0968.json",
+   "product": "products/ssh-server",
+   "module": "example.com/ssh-server",
+   "deps": {
+    "golang.org/x/crypto": "v0.0.0-20211117183948-ae814b36b871"
+   },
+   "expect": [
+    "EXPLOITABLE"
+   ]
+  },
+  {
+   "id": "real-ssh-keyparse",
+   "vuln": "GO-2022-0968",
+   "vuln_file": "advisories/real/GO-2022-0968.json",
+   "product": "products/ssh-keyparse",
+   "module": "example.com/ssh-keyparse",
+   "deps": {
+    "golang.org/x/crypto": "v0.0.0-20211117183948-ae814b36b871"
+   },
+   "expect": [
+    "NO_EXPLOIT_PATH_FOUND",
+    "INCONCLUSIVE"
+   ]
+  },
+  {
+   "id": "real-jose-decrypt",
+   "vuln": "GO-2023-2409",
+   "vuln_file": "advisories/real/GO-2023-2409.json",
+   "product": "products/jose-decrypt",
+   "module": "example.com/jose-decrypt",
+   "deps": {
+    "github.com/dvsekhvalnov/jose2go": "v1.5.0"
+   },
+   "expect": [
+    "EXPLOITABLE"
+   ]
+  },
+  {
+   "id": "real-jwt-auth",
+   "vuln": "GO-2020-0017",
+   "vuln_file": "advisories/real/GO-2020-0017.json",
+   "product": "products/jwt-auth",
+   "module": "example.com/jwt-auth",
+   "deps": {
+    "github.com/dgrijalva/jwt-go": "v3.2.0+incompatible"
+   },
+   "_note": "missing-call advisory — Valid() never calls VerifyAudience, so the declared sink is unreachable by design; truth EXPLOITABLE. NEPF here is a counted false-safe (model gap tracked as B21); INCONCLUSIVE accepted until then.",
+   "expect": [
+    "EXPLOITABLE",
+    "INCONCLUSIVE"
+   ]
+  },
+  {
+   "id": "real-http2-server",
+   "vuln": "GO-2023-2102",
+   "vuln_file": "advisories/real/GO-2023-2102.json",
+   "product": "products/http2-server",
+   "module": "example.com/http2-server",
+   "expect": [
+    "NOT_AFFECTED"
+   ]
+  },
+  {
+   "id": "real-dns-zone",
+   "vuln": "GO-2020-0028",
+   "vuln_file": "advisories/real/GO-2020-0028.json",
+   "product": "products/dns-zone",
+   "module": "example.com/dns-zone",
+   "deps": {
+    "github.com/miekg/dns": "v1.0.9"
+   },
+   "expect": [
+    "EXPLOITABLE"
+   ]
+  },
+  {
+   "id": "real-getter-file",
+   "vuln": "GO-2024-2800",
+   "vuln_file": "advisories/real/GO-2024-2800.json",
+   "product": "products/getter-file",
+   "module": "example.com/getter-file",
+   "deps": {
+    "github.com/hashicorp/go-getter": "v1.7.0"
+   },
+   "_note": "const file:// URL — dispatch key 'file' selects FileGetter only; no nested re-dispatch (X-Terraform-Get is HttpGetter-only) → GitGetter unreachable if narrowing holds",
+   "expect": [
+    "NO_EXPLOIT_PATH_FOUND",
+    "INCONCLUSIVE"
+   ]
+  },
+  {
+   "id": "real-getter-fixed",
+   "vuln": "GO-2024-2800",
+   "vuln_file": "advisories/real/GO-2024-2800.json",
+   "product": "products/getter-const",
+   "module": "example.com/getter-const",
+   "deps": {
+    "github.com/hashicorp/go-getter": "v1.7.4"
+   },
+   "expect": [
+    "NOT_AFFECTED"
+   ]
+  },
+  {
+   "id": "real-yaml-const",
+   "vuln": "GO-2021-0061",
+   "vuln_file": "advisories/real/GO-2021-0061.json",
+   "product": "products/yaml-const",
+   "module": "example.com/yaml-const",
+   "deps": {
+    "gopkg.in/yaml.v2": "v2.2.2"
+   },
+   "_note": "document is a build-time constant — attacker-control falsifier candidate",
+   "expect": [
+    "NO_EXPLOIT_PATH_FOUND",
+    "INCONCLUSIVE"
+   ]
+  },
+  {
+   "id": "real-yaml3-http",
+   "vuln": "GO-2022-0603",
+   "vuln_file": "advisories/real/GO-2022-0603.json",
+   "product": "products/yaml3-http",
+   "module": "example.com/yaml3-http",
+   "deps": {
+    "gopkg.in/yaml.v3": "v3.0.0-20210107192922-496545a6307b"
+   },
+   "expect": [
+    "EXPLOITABLE",
+    "INCONCLUSIVE"
+   ]
+  },
+  {
+   "id": "real-protojson-http",
+   "vuln": "GO-2024-2611",
+   "vuln_file": "advisories/real/GO-2024-2611.json",
+   "product": "products/protojson-http",
+   "module": "example.com/protojson-http",
+   "deps": {
+    "google.golang.org/protobuf": "v1.32.0"
+   },
+   "expect": [
+    "EXPLOITABLE",
+    "INCONCLUSIVE"
+   ]
+  },
+  {
+   "id": "real-protojson-const",
+   "vuln": "GO-2024-2611",
+   "vuln_file": "advisories/real/GO-2024-2611.json",
+   "product": "products/protojson-const",
+   "module": "example.com/protojson-const",
+   "deps": {
+    "google.golang.org/protobuf": "v1.32.0"
+   },
+   "_note": "payload is a const literal — attacker-control falsifier candidate",
+   "expect": [
+    "NO_EXPLOIT_PATH_FOUND",
+    "INCONCLUSIVE"
+   ]
+  },
+  {
+   "id": "real-protojson-fixed",
+   "vuln": "GO-2024-2611",
+   "vuln_file": "advisories/real/GO-2024-2611.json",
+   "product": "products/protojson-http",
+   "module": "example.com/protojson-http",
+   "deps": {
+    "google.golang.org/protobuf": "v1.33.0"
+   },
+   "expect": [
+    "NOT_AFFECTED"
+   ]
+  },
+  {
+   "id": "real-dns-fixed",
+   "vuln": "GO-2020-0028",
+   "vuln_file": "advisories/real/GO-2020-0028.json",
+   "product": "products/dns-zone",
+   "module": "example.com/dns-zone",
+   "deps": {
+    "github.com/miekg/dns": "v1.0.10"
+   },
+   "expect": [
+    "NOT_AFFECTED"
+   ]
+  },
+  {
+   "id": "real-dns-marshal",
+   "vuln": "GO-2020-0028",
+   "vuln_file": "advisories/real/GO-2020-0028.json",
+   "product": "products/dns-marshal",
+   "module": "example.com/dns-marshal",
+   "deps": {
+    "github.com/miekg/dns": "v1.0.9"
+   },
+   "_note": "product only packs outbound messages — ParseZone/NewRR never called → sink unreachable",
+   "expect": [
+    "NO_EXPLOIT_PATH_FOUND",
+    "INCONCLUSIVE"
+   ]
+  },
+  {
+   "id": "real-md-fixed",
+   "vuln": "GO-2023-2074",
+   "vuln_file": "advisories/real/GO-2023-2074.json",
+   "product": "products/md-render",
+   "module": "example.com/md-render",
+   "deps": {
+    "github.com/gomarkdown/markdown": "v0.0.0-20230922105210-14b16010c2ee"
+   },
+   "expect": [
+    "NOT_AFFECTED"
+   ]
+  },
+  {
+   "id": "real-ssh-fixed",
+   "vuln": "GO-2022-0968",
+   "vuln_file": "advisories/real/GO-2022-0968.json",
+   "product": "products/ssh-server",
+   "module": "example.com/ssh-server",
+   "deps": {
+    "golang.org/x/crypto": "v0.0.0-20211202192323-5770296d904e"
+   },
+   "expect": [
+    "NOT_AFFECTED"
+   ]
+  },
+  {
+   "id": "real-jose-fixed",
+   "vuln": "GO-2023-2409",
+   "vuln_file": "advisories/real/GO-2023-2409.json",
+   "product": "products/jose-decrypt",
+   "module": "example.com/jose-decrypt",
+   "deps": {
+    "github.com/dvsekhvalnov/jose2go": "v1.5.1-0.20231206184617-48ba0b76bc88"
+   },
+   "expect": [
+    "NOT_AFFECTED"
+   ]
+  },
+  {
+   "id": "real-ssh-callback",
+   "vuln": "GO-2024-3321",
+   "vuln_file": "advisories/real/GO-2024-3321.json",
+   "product": "products/ssh-callback",
+   "module": "example.com/ssh-callback",
+   "deps": {
+    "golang.org/x/crypto": "v0.30.0"
+   },
+   "_note": "PublicKeyCallback present — serverAuthenticate path reachable",
+   "expect": [
+    "EXPLOITABLE",
+    "INCONCLUSIVE"
+   ]
+  },
+  {
+   "id": "real-micro-xds",
+   "vuln": "GO-2026-6441",
+   "vuln_file": "advisories/real/GO-2026-6441.json",
+   "product": "products/micro-xds",
+   "module": "example.com/micro-xds",
+   "deps": {
+    "google.golang.org/grpc": "v1.83.0"
+   },
+   "_note": "xds.NewGRPCServer + xds creds — rbac httpfilter ParseFilterConfig reachable via xds filter chain",
+   "expect": [
+    "EXPLOITABLE",
+    "INCONCLUSIVE"
+   ]
+  },
+  {
+   "id": "real-micro-xds-fixed",
+   "vuln": "GO-2026-6441",
+   "vuln_file": "advisories/real/GO-2026-6441.json",
+   "product": "products/micro-xds",
+   "module": "example.com/micro-xds",
+   "deps": {
+    "google.golang.org/grpc": "v1.83.1"
+   },
+   "expect": [
+    "NOT_AFFECTED"
+   ]
+  },
+  {
+   "id": "real-micro-plain",
+   "vuln": "GO-2026-6441",
+   "vuln_file": "advisories/real/GO-2026-6441.json",
+   "product": "products/micro-plain",
+   "module": "example.com/micro-plain",
+   "deps": {
+    "google.golang.org/grpc": "v1.83.0"
+   },
+   "_note": "plain grpc.NewServer, no xds import — rbac httpfilter absent from build graph",
+   "expect": [
+    "NOT_AFFECTED",
+    "NO_EXPLOIT_PATH_FOUND",
+    "INCONCLUSIVE"
+   ]
+  },
+  {
+   "id": "real-unix-access",
+   "vuln": "GO-2022-0493",
+   "vuln_file": "advisories/real/GO-2022-0493.json",
+   "product": "products/unix-access",
+   "module": "example.com/unix-access",
+   "deps": {
+    "golang.org/x/sys": "v0.0.0-20220209214540-3681064d5158"
+   },
+   "goos": "linux",
+   "_note": "product calls unix.Faccessat(AT_EACCESS) — vulnerable function on the security decision path",
+   "expect": [
+    "EXPLOITABLE",
+    "INCONCLUSIVE"
+   ]
+  },
+  {
+   "id": "real-unix-stat",
+   "vuln": "GO-2022-0493",
+   "vuln_file": "advisories/real/GO-2022-0493.json",
+   "product": "products/unix-stat",
+   "module": "example.com/unix-stat",
+   "deps": {
+    "golang.org/x/sys": "v0.0.0-20220209214540-3681064d5158"
+   },
+   "goos": "linux",
+   "_note": "imports unix for Statfs/Geteuid only — Faccessat (single exported advisory symbol) never referenced → zero-refs falsifier valid",
+   "expect": [
+    "NO_EXPLOIT_PATH_FOUND",
+    "INCONCLUSIVE"
+   ]
+  },
+  {
+   "id": "real-unix-fixed",
+   "vuln": "GO-2022-0493",
+   "vuln_file": "advisories/real/GO-2022-0493.json",
+   "product": "products/unix-access",
+   "module": "example.com/unix-access",
+   "deps": {
+    "golang.org/x/sys": "v0.0.0-20220412211240-33da011f77ad"
+   },
+   "goos": "linux",
+   "expect": [
+    "NOT_AFFECTED"
+   ]
+  },
+  {
+   "id": "real-ssh-slowpesh",
+   "vuln": "GO-2025-3487",
+   "vuln_file": "advisories/real/GO-2025-3487.json",
+   "product": "products/ssh-server",
+   "module": "example.com/ssh-server",
+   "deps": {
+    "golang.org/x/crypto": "v0.34.0"
+   },
+   "_note": "same ssh-server product, newer advisory — DoS via slow handshake; mixed exported/unexported sinks",
+   "expect": [
+    "EXPLOITABLE",
+    "INCONCLUSIVE"
+   ]
+  }
+ ]
+}

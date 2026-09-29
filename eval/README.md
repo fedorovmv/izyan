@@ -1,5 +1,127 @@
 # Live corpus — реальные advisory на реальном репо
 
+## Real corpus — generated-manifest продукты (B13)
+
+`eval/corpus-real.json` — 32 кейса против реальных зависимостей через
+generated-manifest продукты `eval/products/`: исходники коммитятся без
+манифестов, `go.mod`/`go.sum` генерируются в `eval/.gen/<case-id>` из
+полей `module`/`deps` кейса; кейс может задавать `goos`/`goarch`/
+`build_tags` (нужно для platform-only dep'ов, напр. `unix.Faccessat` —
+linux-only). Классы: yaml unmarshal DoS (v2 GO-2021-0061, v3
+GO-2022-0603), markdown render (GO-2023-2074), go-getter arg-injection
+(GO-2024-2800), ssh/x-crypto (GO-2022-0968 crash, GO-2024-3321 authz,
+GO-2025-3487 slow-handshake DoS), jose2go (GO-2023-2409), jwt-go
+missing-call (GO-2020-0017), http2 (GO-2023-2102), miekg/dns zone-parse
+(GO-2020-0028), protobuf protojson unmarshal loop (GO-2024-2611), grpc
+xDS RBAC bypass (GO-2026-6441), x/sys Faccessat priv-report
+(GO-2022-0493) — 11 классов, 11 реальных зависимостей.
+
+Прогон: `analyzer eval --corpus eval/corpus-real.json` (сеть для `go mod
+tidy` + govulncheck; `--mem-limit 4GiB` стоит по умолчанию).
+
+Baseline-таблица govulncheck-vs-analyzer (последний прогон):
+
+| case | analyzer | govulncheck | cleared? |
+|---|---|---|---|
+| real-yaml-http | EXPLOITABLE | reachable | нет — нужен эксплойт-review |
+| real-yaml-file | INCONCLUSIVE | reachable | нет — unresolved |
+| real-yaml-http-fixed | NOT_AFFECTED | silent | **да — deterministic** |
+| real-md-render | EXPLOITABLE | reachable | нет |
+| real-getter-fetch | INCONCLUSIVE | reachable | нет |
+| real-getter-const | INCONCLUSIVE | reachable | нет — protocol-switch через X-Terraform-Get держит GitGetter reachable |
+| real-ssh-server | EXPLOITABLE | reachable | нет |
+| real-ssh-keyparse | INCONCLUSIVE | package-level | нет — sinks unexported; «zero product refs» вакуумен, dep-internal graph opaque |
+| real-jose-decrypt | EXPLOITABLE | reachable | нет |
+| real-jwt-auth | NO_EXPLOIT_PATH_FOUND **FALSE-SAFE** | package-level | нет — известный B21 |
+| real-http2-server | NOT_AFFECTED | silent | **да — deterministic** |
+| real-dns-zone | EXPLOITABLE | reachable | нет |
+| real-getter-file | INCONCLUSIVE | reachable | нет — dispatch-key const `file`, eval-полнота не дожимает |
+| real-getter-fixed | NOT_AFFECTED | silent | **да — deterministic** |
+| real-yaml-const | INCONCLUSIVE | reachable | нет — const-input falsifier не реализован |
+| real-yaml3-http | EXPLOITABLE | reachable | нет |
+| real-protojson-http | EXPLOITABLE | reachable | нет |
+| real-protojson-const | INCONCLUSIVE | reachable | нет — const-input falsifier не реализован |
+| real-protojson-fixed | NOT_AFFECTED | silent | **да — deterministic** |
+| real-dns-fixed | NOT_AFFECTED | silent | **да — deterministic** |
+| real-dns-marshal | INCONCLUSIVE | package-level | нет — sinks частично unexported; та же vacuous-refs проблема |
+| real-md-fixed | NOT_AFFECTED | silent | **да — deterministic** |
+| real-ssh-fixed | NOT_AFFECTED | silent | **да — deterministic** |
+| real-jose-fixed | NOT_AFFECTED | silent | **да — deterministic** |
+| real-ssh-callback | EXPLOITABLE | reachable | нет |
+| real-micro-xds | INCONCLUSIVE | package-level | нет — dep-internal registry (`httpfilter.Register`) + watcher callbacks (B24) |
+| real-micro-xds-fixed | NOT_AFFECTED | silent | **да — deterministic** |
+| real-micro-plain | NOT_AFFECTED | silent | **да — rbac-пакет не в build graph** |
+| real-unix-access | INCONCLUSIVE | reachable | нет — Faccessat вызван, harm-условие deploy-зависимо |
+| real-unix-stat | NO_EXPLOIT_PATH_FOUND | package-level | **да — zero-refs falsifier невакуумен (единственный exported sink)** |
+| real-unix-fixed | NOT_AFFECTED | silent | **да — deterministic** |
+| real-ssh-slowpesh | EXPLOITABLE | reachable | нет |
+
+**Метрика ценности — cleared rate**, а не корреляция с govulncheck.
+Кейс «cleared», когда анализатор выносит доказанный негатив:
+`NOT_AFFECTED` (deterministic affected-chain) или `NO_EXPLOIT_PATH_FOUND`
+(VERIFIED falsifier на mandatory-условии). `EXPLOITABLE`, `INCONCLUSIVE` и
+`UNKNOWN` оставляют кейс на человеке — для triage «reachable» и
+«не доказали безопасность» эквивалентны. Текущий прогон: **12/32 cleared**
+(11×NOT_AFFECTED deterministic + `real-unix-stat` NEPF — первый sound
+verified-негатив на real-кейсе: advisory декларирует единственный
+exported sink `unix.Faccessat`, продукт его не трогает, zero-refs
+фальсификатор невакуумен). После гейта `productReferenceable` NEPF без
+referenceable-субъектов не выносится: ssh-keyparse и dns-marshal
+вернулись в INCONCLUSIVE — их прежний NEPF стоял на vacuous «zero
+product refs». Цель B13/B23 — поднять долю честных cleared за счёт
+falsifier-доказательств, не объявляя недоказанное безопасным.
+
+Дифференциация относительно standalone govulncheck:
+
+- `real-ssh-keyparse`: govulncheck видит пакет без symbol-trace
+  (package-level). Раньше «zero product references» верифицировал FALSE →
+  NEPF; после фикса это вакуумно для unexported sinks — кейс честно
+  INCONCLUSIVE до dep-internal негативной проверки (B24).
+- `real-micro-xds` (GO-2026-6441): все sinks в `internal/…/rbac` —
+  «no product refs» не может быть falsifier по visibility-правилам;
+  гейт `productReferenceable` в `Verifier` блокирует такие VERIFIED →
+  ранее ложный NEPF (false-safe), теперь честный INCONCLUSIVE.
+- `real-jwt-auth`: **намеренный counted false-safe** — missing-call
+  advisory (B21): `Valid()` не зовёт `VerifyAudience` by design, sink
+  недостижим → NEPF при истине EXPLOITABLE. Кейс держит `expect`
+  = [EXPLOITABLE, INCONCLUSIVE], поэтому прогон падает с `false-safe=1`
+  до закрытия B21 — это честный сигнал пробела модели, не регрессия.
+- getter-кейсы: registry-dispatch в go-getter (`getters[scheme].Get`)
+  резолвится через iface→impl рёбра ModuleInternalReach; func-value
+  opaque dispatch помечен → unreached субъекты UNKNOWN, не FALSE.
+  Dispatch-narrowing (B23): iface→impl рёбра и iface-caller'ы сужены до
+  типов, реально инстанцированных в загруженном коде (`new`/`T{}`/`var`/
+  `make`/конверсии; отключается при `reflect.New`/`unsafe`/`plugin`/
+  linkname), dep-caller'ы и field-write'ы — до product-driven конуса
+  модуля, а per-callsite `g = registry[key]` — до impl'ов по
+  вычисленным const-ключам (инициализаторы `T{F:}` на receiver-инстансах,
+  `init`, knowledge string-semantics: `Detect`-identity для schemed URL,
+  `forced_split`, `subdir_split`, `url.Values.Get` по `Query()`).
+  **Важно про getter-const**: INCONCLUSIVE там — честный вердикт, не
+  пробел: `HttpGetter.Get` переиспускает `Get(dst, source)` с `source`
+  из server-controlled `X-Terraform-Get` header / meta-тега → тот же
+  синтаксический сайт `c.Getters[force]` обслуживает и outer (const),
+  и nested (не-const) инстансы → ключ не вычисляется → сайт остаётся
+  unrestricted → `GitGetter` реально reachable через protocol-switch.
+  NEPF здесь был бы false-safe.
+
+Заметка про отчётность: verdict-reasons и таблица «Affected analysis»
+называют проверенный предмет — `modules probed` / `packages probed`
+(что именно искали в `go list -m all` / `go list -deps -test ./...`) и
+evidence-id; INCONCLUSIVE перечисляет unresolved condition-ID. Пустой
+probed-набор (advisory без package-записей) даёт UNKNOWN, не FALSE —
+проверять нечего, отсутствие не утверждается.
+
+## Scalability (закрытый OOM)
+
+Исторический OOM (`hashicorp/go-getter` съедал память хоста) закрыт:
+dep-syntax грузится только для пакетов из `loadExtra`-паттернов
+(`NeedDeps` убран), `extraPkgs`≤64, `callerCache`≤8192, per-trace
+`classifyCache` сворачивает экспоненциальный caller-fan-out
+(yaml-file 413s→8s), `why`-строки capped (md-render 6.5GiB→8s),
+`--mem-limit` watchdog с hard-exit >150% ~1s. Getter-кейс: 7-10s,
+INCONCLUSIVE, без троттлинга хоста.
+
 ## Статус: первый слой реализован
 
 `eval/live-corpus.json` + `eval/advisories/live/*.json` — 11 advisory

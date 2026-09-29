@@ -21,6 +21,14 @@ type Case struct {
 	Vuln     string `json:"vuln"`
 	VulnFile string `json:"vuln_file,omitempty"`
 	Repo     string `json:"repo,omitempty"`
+	// Product names a directory of committed product sources (e.g.
+	// "products/yaml-http" under eval/); combined with Module+Deps the
+	// harness materializes a buildable module under <corpus>/.gen/<id> —
+	// vulnerable manifests live only inside .gen, never in the tree.
+	// Product and Repo are mutually exclusive.
+	Product string            `json:"product,omitempty"`
+	Module  string            `json:"module,omitempty"`
+	Deps    map[string]string `json:"deps,omitempty"`
 	// RootCauses supplies manual root causes, bypassing resolution. Entries
 	// are either "pkg/path.Symbol" strings or objects
 	// {"package":"pkg/path","symbol":"Type.Method","role":"SINK"} — the
@@ -32,6 +40,11 @@ type Case struct {
 	// the version the release was built with. Resolved via SDK/GOTOOLCHAIN;
 	// unavailability records a limitation, never a silent wrong-version run.
 	GoVersion string `json:"go_version,omitempty"`
+	// GOOS/GOARCH/BuildTags override the snapshot target platform for this
+	// case — needed for platform-specific deps (e.g. linux-only unix calls).
+	GOOS      string   `json:"goos,omitempty"`
+	GOARCH    string   `json:"goarch,omitempty"`
+	BuildTags []string `json:"build_tags,omitempty"`
 	// Expect lists acceptable verdicts; empty means informational only
 	// (the case still counts toward distribution metrics).
 	Expect []string `json:"expect,omitempty"`
@@ -94,6 +107,10 @@ type Result struct {
 	ExpectOK  *bool `json:"expect_ok,omitempty"`
 	ClaimsOK  *bool `json:"claims_ok,omitempty"`
 	FalseSafe bool  `json:"false_safe,omitempty"`
+	// Baseline records what standalone govulncheck reported about this
+	// advisory on the case's repository: reachable / package-level /
+	// silent / not-in-db / error. Empty when no baseline ran.
+	Baseline string `json:"govulncheck_baseline,omitempty"`
 }
 
 // Metrics is the aggregate evaluation report — the numbers the spec's
@@ -197,7 +214,7 @@ func (r Report) Markdown() string {
 		sort.Strings(vs)
 		fmt.Fprintf(&b, "verdicts: %s\n\n", strings.Join(vs, " "))
 	}
-	b.WriteString("| case | verdict | expect | claims | note |\n|---|---|---|---|---|\n")
+	b.WriteString("| case | verdict | expect | claims | govulncheck | note |\n|---|---|---|---|---|---|\n")
 	for _, res := range r.Results {
 		v := res.Verdict
 		if res.Err != "" {
@@ -219,13 +236,17 @@ func (r Report) Markdown() string {
 				cl = "FAIL"
 			}
 		}
+		gv := res.Baseline
+		if gv == "" {
+			gv = "-"
+		}
 		note := ""
 		if res.FalseSafe {
 			note = "**FALSE-SAFE**"
 		} else if res.Err != "" {
 			note = res.Err
 		}
-		fmt.Fprintf(&b, "| %s | %s | %s | %s | %s |\n", res.Case.Label(), v, exp, cl, note)
+		fmt.Fprintf(&b, "| %s | %s | %s | %s | %s | %s |\n", res.Case.Label(), v, exp, cl, gv, note)
 	}
 	return b.String()
 }

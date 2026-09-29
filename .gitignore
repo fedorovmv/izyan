@@ -8,3 +8,5 @@
 !.env.example
 # built binaries at repo root (bare "analyzer" would ignore cmd/analyzer/)
 /analyzer
+# generated-manifest products materialized by `vuln-analyzer eval`
+eval/.gen/
