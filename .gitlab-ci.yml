@@ -1,0 +1,123 @@
+# GitLab CI:
+#   merge requests + branch pushes — build, gofmt/vet/test, fixture eval corpus
+#   push to default branch (master) — release binaries → Generic Package
+#   Registry → GitLab Release с тегом v0.1.<pipeline iid>
+#
+# Live-корпус (eval/live-corpus.json) в CI не входит — сеть и тяжёлый
+# продукт-репо; см. docs/current/20-live-corpus.md.
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    # не дублировать пайплайны: для ветки с открытым MR хватает MR-пайплайна
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
+      when: never
+    - if: $CI_COMMIT_BRANCH
+    - if: $CI_COMMIT_TAG
+
+default:
+  image: golang:1.25
+
+stages:
+  - test
+  - build
+  - release
+
+variables:
+  GOPATH: "$CI_PROJECT_DIR/.go"
+  GOCACHE: "$CI_PROJECT_DIR/.cache/go-build"
+  GOFLAGS: "-mod=readonly"
+  RELEASE_VERSION: "v0.1.${CI_PIPELINE_IID}"
+  PKG_URL: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/vuln-analyzer/${RELEASE_VERSION}"
+
+.go-cache: &go-cache
+  key:
+    files:
+      - go.sum
+      - testdata/authwire/go.sum
+  paths:
+    - .go/pkg/mod
+    - .cache/go-build
+
+test:
+  stage: test
+  interruptible: true
+  cache: *go-cache
+  script:
+    - unformatted=$(gofmt -l cmd internal); if [ -n "$unformatted" ]; then echo "not gofmt-clean: $unformatted"; exit 1; fi
+    - go vet ./...
+    - go test ./...
+
+eval:corpus:
+  stage: test
+  interruptible: true
+  cache: *go-cache
+  script:
+    - go build -o bin/analyzer ./cmd/analyzer
+    - ./bin/analyzer eval --corpus eval/corpus.json
+
+build:
+  stage: build
+  interruptible: true
+  cache: *go-cache
+  script:
+    - go build ./...
+    - go build -o bin/ ./cmd/analyzer
+  artifacts:
+    paths:
+      - bin/
+    expire_in: 1 day
+
+# --- release (только push в master) ---
+
+.release-rules: &release-rules
+  - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE == "push"
+
+build:release:
+  stage: build
+  cache: *go-cache
+  rules: *release-rules
+  script:
+    - mkdir -p dist
+    - CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o dist/vuln-analyzer-linux-amd64 ./cmd/analyzer
+    - CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o dist/vuln-analyzer-darwin-arm64 ./cmd/analyzer
+    - cd dist && sha256sum vuln-analyzer-* > SHA256SUMS
+  artifacts:
+    paths:
+      - dist/
+    expire_in: 1 week
+
+publish:packages:
+  stage: release
+  rules: *release-rules
+  needs: ["build:release"]
+  script:
+    - |
+      for f in dist/*; do
+        name=$(basename "$f")
+        echo "uploading $name"
+        curl --fail-with-body --header "JOB-TOKEN: $CI_JOB_TOKEN" \
+          --upload-file "$f" "${PKG_URL}/${name}"
+      done
+
+release:
+  stage: release
+  # образ release-cli; если runner не тянет registry.gitlab.com —
+  # зеркалируйте его в локальный registry и подставьте путь здесь
+  image: registry.gitlab.com/gitlab-org/release-cli:latest
+  rules: *release-rules
+  needs: ["build:release", "publish:packages"]
+  script:
+    - echo "creating release ${RELEASE_VERSION} for ${CI_COMMIT_SHORT_SHA}"
+  release:
+    tag_name: "${RELEASE_VERSION}"
+    name: "vuln-analyzer ${RELEASE_VERSION}"
+    description: "Automated release of vuln-analyzer from commit ${CI_COMMIT_SHA}."
+    assets:
+      links:
+        - name: vuln-analyzer-linux-amd64
+          url: "${PKG_URL}/vuln-analyzer-linux-amd64"
+        - name: vuln-analyzer-darwin-arm64
+          url: "${PKG_URL}/vuln-analyzer-darwin-arm64"
+        - name: SHA256SUMS
+          url: "${PKG_URL}/SHA256SUMS"
