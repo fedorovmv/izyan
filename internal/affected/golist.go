@@ -41,10 +41,15 @@ func (m Module) EffectiveVersion() string {
 
 // Package mirrors `go list -json` subset.
 type Package struct {
-	ImportPath string  `json:"ImportPath"`
-	Standard   bool    `json:"Standard"`
-	DepOnly    bool    `json:"DepOnly"`
-	Module     *Module `json:"Module"`
+	ImportPath string `json:"ImportPath"`
+	Standard   bool   `json:"Standard"`
+	DepOnly    bool   `json:"DepOnly"`
+	Dir        string `json:"Dir"`
+	// IgnoredGoFiles are source files excluded by the current build
+	// constraints — they can import the affected package under another
+	// tag set, so package absence is a claim about this configuration only.
+	IgnoredGoFiles []string `json:"IgnoredGoFiles"`
+	Module         *Module  `json:"Module"`
 }
 
 // GoTool runs the go toolchain inside the analyzed repository. Implementations

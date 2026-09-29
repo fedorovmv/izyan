@@ -84,6 +84,36 @@ func TestVersionInRangePackageAbsent(t *testing.T) {
 	if res.PackagePresent != domain.ClaimFalse {
 		t.Fatalf("got PackagePresent=%s, want FALSE", res.PackagePresent)
 	}
+	// The justification must name what was probed — a bare FALSE is not
+	// self-explanatory in the report.
+	if len(res.CheckedPackages) != 1 || res.CheckedPackages[0] != "example.com/dep/vuln" {
+		t.Fatalf("CheckedPackages=%v", res.CheckedPackages)
+	}
+	if len(res.CheckedModules) != 1 || res.CheckedModules[0] != "example.com/dep" {
+		t.Fatalf("CheckedModules=%v", res.CheckedModules)
+	}
+}
+
+// An advisory that names no affected package leaves nothing to probe —
+// absence cannot be asserted from an empty check set.
+func TestNoAffectedPackagesIsUnknown(t *testing.T) {
+	v := domain.Vulnerability{
+		ID:     "GO-0000-0002",
+		Module: "example.com/dep",
+		AffectedVersions: []domain.VersionRange{
+			{Introduced: "0", Fixed: "1.2.0"},
+		},
+	}
+	mods := `{"Path":"example.com/dep","Version":"v1.0.0"}`
+	pkgs := `{"ImportPath":"example.com/product"}`
+	res, _, err := GoResolver{Tool: fakeTool{modules: []byte(mods), packages: []byte(pkgs)}}.
+		Resolve(context.Background(), v, product())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.PackagePresent != domain.ClaimUnknown {
+		t.Fatalf("empty probed set must not assert absence: got %s", res.PackagePresent)
+	}
 }
 
 func TestModuleWithoutVersionIsUnknown(t *testing.T) {
@@ -116,5 +146,75 @@ func TestPlatformConstraint(t *testing.T) {
 	}
 	if res.BuildRelevant != domain.ClaimFalse {
 		t.Fatalf("windows-only package on linux build: got %s, want FALSE", res.BuildRelevant)
+	}
+}
+
+// A multi-module advisory is resolved against the entry the product
+// actually depends on — an unaffected alternative must not shield the
+// affected one (GO-2022-0493: stdlib fixed by toolchain, x/sys still
+// vulnerable).
+func TestMultiModuleSelectsAffectedEntry(t *testing.T) {
+	v := domain.Vulnerability{
+		ID:     "GO-2022-0493",
+		Module: "stdlib",
+		AffectedModules: []domain.AffectedModule{
+			{
+				Module:           "stdlib",
+				AffectedVersions: []domain.VersionRange{{Introduced: "0", Fixed: "1.17.10"}},
+				AffectedPackages: []domain.AffectedPackage{{Path: "syscall"}},
+			},
+			{
+				Module:           "golang.org/x/sys",
+				AffectedVersions: []domain.VersionRange{{Introduced: "0", Fixed: "0.0.0-20220412"}},
+				AffectedPackages: []domain.AffectedPackage{{Path: "golang.org/x/sys/unix"}},
+			},
+		},
+	}
+	mods := `{"Path":"golang.org/x/sys","Version":"v0.0.0-20220209"}`
+	pkgs := `{"ImportPath":"golang.org/x/sys/unix"}`
+	res, _, err := GoResolver{Tool: fakeTool{modules: []byte(mods), packages: []byte(pkgs)}}.
+		Resolve(context.Background(), v, product())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.SelectedModule != "golang.org/x/sys" {
+		t.Fatalf("selected=%q", res.SelectedModule)
+	}
+	if res.VersionAffected != domain.ClaimTrue || res.PackagePresent != domain.ClaimTrue {
+		t.Fatalf("res=%+v", res)
+	}
+}
+
+// When only the stdlib alternative applies (product toolchain fixed and
+// the vendored module absent), the verdict stays deterministic-negative.
+func TestMultiModuleNoEntryAffected(t *testing.T) {
+	v := domain.Vulnerability{
+		ID:               "GO-2022-0493",
+		Module:           "stdlib",
+		AffectedVersions: []domain.VersionRange{{Introduced: "0", Fixed: "1.17.10"}},
+		AffectedModules: []domain.AffectedModule{
+			{
+				Module:           "stdlib",
+				AffectedVersions: []domain.VersionRange{{Introduced: "0", Fixed: "1.17.10"}},
+				AffectedPackages: []domain.AffectedPackage{{Path: "syscall"}},
+			},
+			{
+				Module:           "golang.org/x/sys",
+				AffectedVersions: []domain.VersionRange{{Introduced: "0", Fixed: "0.0.0-20220412"}},
+				AffectedPackages: []domain.AffectedPackage{{Path: "golang.org/x/sys/unix"}},
+			},
+		},
+	}
+	mods := `{"Path":"example.com/product","Main":true}`
+	pkgs := `{"ImportPath":"example.com/product"}`
+	prod := product()
+	prod.GoVersion = "go version go1.26.1 linux/amd64"
+	res, _, err := GoResolver{Tool: fakeTool{modules: []byte(mods), packages: []byte(pkgs)}}.
+		Resolve(context.Background(), v, prod)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.VersionAffected != domain.ClaimFalse {
+		t.Fatalf("res=%+v", res)
 	}
 }

@@ -1,6 +1,7 @@
 package evaluator
 
 import (
+	"strings"
 	"testing"
 
 	"example.com/vuln-analyzer/internal/domain"
@@ -75,6 +76,24 @@ func TestVerdictInconclusiveOnUnknown(t *testing.T) {
 	got := VerdictEvaluator{}.Evaluate(affectedAllTrue(), model, claims)
 	if got.Verdict != domain.VerdictInconclusive {
 		t.Fatalf("got %s, want INCONCLUSIVE", got.Verdict)
+	}
+	if !strings.Contains(got.Reason, "C1") {
+		t.Fatalf("inconclusive reason must name unresolved conditions: %q", got.Reason)
+	}
+}
+
+// NOT_AFFECTED reasons name the checked subject — a bare code is not a
+// justification a reader can audit.
+func TestNotAffectedReasonNamesProbedSubjects(t *testing.T) {
+	res := domain.AffectedResult{
+		ModulePresent:   domain.ClaimTrue,
+		VersionAffected: domain.ClaimTrue,
+		PackagePresent:  domain.ClaimFalse,
+		CheckedPackages: []string{"example.com/dep/vuln"},
+	}
+	got := VerdictEvaluator{}.Evaluate(res, domain.ExploitModel{}, nil)
+	if !strings.Contains(got.Reason, "example.com/dep/vuln") {
+		t.Fatalf("reason must name probed packages: %q", got.Reason)
 	}
 }
 

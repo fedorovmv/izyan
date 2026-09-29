@@ -65,12 +65,18 @@ type Vulnerability struct {
 	FixedVersions    []string          `json:"fixed_versions,omitempty"`
 	AffectedPackages []AffectedPackage `json:"affected_packages,omitempty"`
 	AffectedSymbols  []SymbolRef       `json:"affected_symbols,omitempty"`
-	Summary          string            `json:"summary,omitempty"`
-	Description      string            `json:"description,omitempty"`
-	CWE              []string          `json:"cwe,omitempty"`
-	Modified         string            `json:"modified,omitempty"`
-	References       []Reference       `json:"references,omitempty"`
-	Provenance       map[string]string `json:"provenance,omitempty"`
+	// AffectedModules carries per-affected-entry data for advisories that
+	// span several modules (e.g. stdlib + golang.org/x/sys mirrors of the
+	// same fix). Each entry holds the module path with its own version
+	// ranges, packages and symbols; the resolver picks the entry matching
+	// the product's dependency graph and narrows the vulnerability to it.
+	AffectedModules []AffectedModule  `json:"affected_modules,omitempty"`
+	Summary         string            `json:"summary,omitempty"`
+	Description     string            `json:"description,omitempty"`
+	CWE             []string          `json:"cwe,omitempty"`
+	Modified        string            `json:"modified,omitempty"`
+	References      []Reference       `json:"references,omitempty"`
+	Provenance      map[string]string `json:"provenance,omitempty"`
 }
 
 type VersionRange struct {
@@ -125,6 +131,32 @@ type AffectedResult struct {
 	BuildRelevant   ClaimResult  `json:"build_relevant"`
 	EvidenceIDs     []EvidenceID `json:"evidence_ids,omitempty"`
 	Limitations     []string     `json:"limitations,omitempty"`
+	// SelectedModule is the affected-entry module the product was
+	// resolved against (multi-module advisories carry alternatives —
+	// e.g. stdlib + golang.org/x/sys — and only the entry matching the
+	// product's dependency graph is authoritative).
+	SelectedModule string `json:"selected_module,omitempty"`
+	// CheckedModules names every advisory module entry probed against the
+	// product's module graph — ModulePresent=FALSE means none of these
+	// resolved to a product dependency.
+	CheckedModules []string `json:"checked_modules,omitempty"`
+	// CheckedPackages names the affected package paths probed against the
+	// product's transitive import closure (go list -deps -test ./...,
+	// including build-constraint-excluded files). PackagePresent=FALSE
+	// means every listed path is absent — the code is not linked into
+	// the product — not "some package was missing".
+	CheckedPackages []string `json:"checked_packages,omitempty"`
+}
+
+// AffectedModule is one OSV affected[] entry: a module path with its own
+// version ranges, packages and symbols. Advisories may list alternatives
+// (stdlib + vendored module) — each is evaluated independently.
+type AffectedModule struct {
+	Module           string            `json:"module"`
+	AffectedVersions []VersionRange    `json:"affected_versions,omitempty"`
+	FixedVersions    []string          `json:"fixed_versions,omitempty"`
+	AffectedPackages []AffectedPackage `json:"affected_packages,omitempty"`
+	AffectedSymbols  []SymbolRef       `json:"affected_symbols,omitempty"`
 }
 
 type RootCauseStatus string

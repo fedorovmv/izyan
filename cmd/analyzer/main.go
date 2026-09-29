@@ -742,10 +742,21 @@ func deterministicallyNotAffected(r domain.AffectedResult) bool {
 func notAffectedReason(r domain.AffectedResult) string {
 	switch {
 	case r.ModulePresent == domain.ClaimFalse:
+		if len(r.CheckedModules) > 0 {
+			return fmt.Sprintf("none of the affected module(s) %s resolve to a product dependency (go list -m all)",
+				strings.Join(r.CheckedModules, ", "))
+		}
 		return "vulnerable module is not part of the product dependency graph"
 	case r.VersionAffected == domain.ClaimFalse:
+		if r.ResolvedVersion != "" {
+			return fmt.Sprintf("resolved version %s is outside the affected range", r.ResolvedVersion)
+		}
 		return "resolved dependency version is outside affected range"
 	case r.PackagePresent == domain.ClaimFalse:
+		if len(r.CheckedPackages) > 0 {
+			return fmt.Sprintf("affected package(s) %s are absent from the product's transitive import closure (go list -deps -test ./...) — the code is not linked into the product",
+				strings.Join(r.CheckedPackages, ", "))
+		}
 		return "affected package is not imported by the product build"
 	case r.BuildRelevant == domain.ClaimFalse:
 		return "affected package excluded by GOOS/GOARCH/build tags"

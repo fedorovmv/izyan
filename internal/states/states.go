@@ -109,6 +109,24 @@ func (h CheckAffected) Run(ctx context.Context, c *domain.AnalysisCase) (workflo
 		id := c.EvidenceGraph.AddEvidence(e)
 		_ = id
 	}
+	// Multi-module advisories: the resolver picked the entry the product
+	// actually depends on — narrow the vulnerability to that entry so
+	// downstream states (symbols, packages, ranges) see the matching view.
+	if res.SelectedModule != "" && res.SelectedModule != c.Vulnerability.Module {
+		for _, am := range c.Vulnerability.AffectedModules {
+			if am.Module == res.SelectedModule {
+				c.Vulnerability.Module = am.Module
+				c.Vulnerability.AffectedVersions = am.AffectedVersions
+				c.Vulnerability.FixedVersions = am.FixedVersions
+				c.Vulnerability.AffectedPackages = am.AffectedPackages
+				c.Vulnerability.AffectedSymbols = am.AffectedSymbols
+				if len(am.AffectedPackages) > 0 {
+					c.Vulnerability.Package = am.AffectedPackages[0].Path
+				}
+				break
+			}
+		}
+	}
 	c.EvidenceGraph.ComputeHash()
 	if res.ModulePresent == domain.ClaimFalse ||
 		res.VersionAffected == domain.ClaimFalse ||

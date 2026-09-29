@@ -63,7 +63,17 @@ func Markdown(c *domain.AnalysisCase) string {
 		fmt.Fprintf(&b, "| resolved version | `%s` |\n", a.ResolvedVersion)
 		fmt.Fprintf(&b, "| version affected | %s |\n", a.VersionAffected)
 		fmt.Fprintf(&b, "| package present | %s |\n", a.PackagePresent)
-		fmt.Fprintf(&b, "| build relevant | %s |\n\n", a.BuildRelevant)
+		fmt.Fprintf(&b, "| build relevant | %s |\n", a.BuildRelevant)
+		if len(a.CheckedModules) > 0 {
+			fmt.Fprintf(&b, "| modules probed | `%s` |\n", strings.Join(a.CheckedModules, "`, `"))
+		}
+		if len(a.CheckedPackages) > 0 {
+			fmt.Fprintf(&b, "| packages probed | `%s` |\n", strings.Join(a.CheckedPackages, "`, `"))
+		}
+		if len(a.EvidenceIDs) > 0 {
+			fmt.Fprintf(&b, "| evidence | %s |\n", strings.Join(evidenceIDs(a.EvidenceIDs), ", "))
+		}
+		b.WriteString("\n")
 	}
 	if c.RootCause != nil {
 		fmt.Fprintf(&b, "## Root cause: `%s`\n\n", c.RootCause.Status)
