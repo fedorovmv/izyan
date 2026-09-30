@@ -35,6 +35,7 @@
 | [`dev/specs/analyzer-agent-spec.md`](dev/specs/analyzer-agent-spec.md) | актуальный | Контракт поведения Analyzer Agent |
 | [`dev/specs/incremental-analysis-value-spec.md`](dev/specs/incremental-analysis-value-spec.md) | reviewed draft | Контракт дополнительной ценности поверх govulncheck; первый срез — полное доказательство mandatory input condition; готов к плану реализации |
 | [`dev/specs/llm-dismissal-research-spec.md`](dev/specs/llm-dismissal-research-spec.md) | исследовательская спецификация | LLM-assisted отклонение, экспертное досье, deployment и контекстная критичность; гипотезы не подтверждены |
+| [`dev/specs/llm-cve-analysis-spec.md`](dev/specs/llm-cve-analysis-spec.md) | спецификация следующего направления | Самостоятельное LLM-исследование механизма CVE, стратегии, независимая проверка доказательств, контекстная критичность и обязательное обоснование решения; B31–B33 |
 | [`dev/decisions/architecture-decisions.md`](dev/decisions/architecture-decisions.md) | актуальный | Ключевые архитектурные решения и запреты |
 | [`dev/decisions/reference-projects-analysis.md`](dev/decisions/reference-projects-analysis.md) | актуальный | Разбор VEX Toolset/VulnReach/amihit/govulncheck — обоснование решений |
 | [`dev/current/analysis-internals.md`](dev/current/analysis-internals.md) | актуальный | Механика реализации: evaluators, NV, pattern library, toolchain, audit |
@@ -42,6 +43,7 @@
 | [`dev/current/gap-analysis.md`](dev/current/gap-analysis.md) | актуальный | Gap analysis спека↔код + канонический бэклог (§2) |
 | [`dev/plans/mvp-implementation-plan.md`](dev/plans/mvp-implementation-plan.md) | актуальный | Порядок реализации и milestones |
 | [`dev/plans/llm-dismissal-research-plan.md`](dev/plans/llm-dismissal-research-plan.md) | план исследования | Пошаговая проверка локального type gate в jose2go: четыре контрольных продукта, baseline, LLM-прогоны и досье; не production-checker |
+| [`dev/plans/llm-cve-analysis-plan.md`](dev/plans/llm-cve-analysis-plan.md) | план реализации | Поэтапная поставка research/dossier, validated proof capabilities и критичности; 16 задач с файлами, интерфейсами, controls и gates |
 | [`dev/plans/pattern-library-plan.md`](dev/plans/pattern-library-plan.md) | done | Exploit Pattern Library: classify → patterns → conditions |
 | [`dev/plans/exposure-facts-plan.md`](dev/plans/exposure-facts-plan.md) | done | Deployment/exposure facts: listeners, dial-sites, `C-EXPOSURE` |
 | [`dev/plans/negative-coverage-plan.md`](dev/plans/negative-coverage-plan.md) | done | NV scope: build-tag-excluded files + interface dispatch |
