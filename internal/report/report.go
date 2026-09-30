@@ -108,6 +108,14 @@ func Markdown(c *domain.AnalysisCase) string {
 			}
 			b.WriteString("\n")
 		}
+		if len(c.Exploit.ProposedNonLocus) > 0 {
+			b.WriteString("### Proposed non-locus decisions\n\n")
+			b.WriteString("Machine proposals based on observed anchors — not verified, not used in the verdict. To approve, record as a `non_locus` decision and rerun:\n\n")
+			for _, d := range c.Exploit.ProposedNonLocus {
+				fmt.Fprintf(&b, "- `%s.%s` — %s\n", d.Symbol.Package, d.Symbol.Symbol, d.Basis)
+			}
+			b.WriteString("\n")
+		}
 	}
 	if exps := c.EvidenceGraph.ExposuresList(); len(exps) > 0 {
 		b.WriteString("## Exposure facts\n\n")

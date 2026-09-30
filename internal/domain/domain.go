@@ -382,7 +382,13 @@ type ExploitModel struct {
 	// not machine evidence — verification may check the falsifier's
 	// package coverage, never the truth of the basis itself.
 	NonLocusBasis []LocusDecision `json:"non_locus_basis,omitempty"`
-	EvidenceIDs   []EvidenceID    `json:"evidence_ids,omitempty"`
+	// ProposedNonLocus carries machine-generated non-locus proposals for
+	// declared symbols lacking defect-site anchors. Each entry keeps the
+	// observed evidence (fix-diff class, body-scan result) as the basis.
+	// Proposals never shrink L — they are the draft an expert may approve
+	// by recording them as NonLocusBasis input.
+	ProposedNonLocus []LocusDecision `json:"proposed_non_locus,omitempty"`
+	EvidenceIDs      []EvidenceID    `json:"evidence_ids,omitempty"`
 }
 
 // LocusDecision is one expert necessity decision: declared symbol S is
