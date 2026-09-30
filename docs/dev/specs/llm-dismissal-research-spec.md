@@ -350,6 +350,20 @@ coverage, не адаптировать production-архитектуру скр
   с подтверждённым reachable baseline и точным недостающим доказательством**
   — до этого анализатор dep-internal callers преждевременен.
 
+**Выбранный кандидат (карточка в приватном реестре, POOL-A-02):
+`GO-2026-4762`** — grpc `:path` authz bypass. Baseline: govulncheck
+source-mode на продуктовом снапшоте — `reachable` до `Server.Serve`.
+Недостающее доказательство — не SYM-ABSENT, а GATE-FEATURE: «продукт
+не принимает authz-решений по `:path`/`FullMethod` нигде» — дефектный
+сайт слинкован и достижим, поэтому package-absence неприменим; факт
+раскладывается на package-absence `grpc/authz` (проверено механически)
++ перечисление server interceptor chain (1 сайт, 4 interceptor'а) +
+экспертный просмотр ограниченного списка. Простой verifier покрывает
+часть факта; checker оправдан только при повторяемости — на одном кейсе
+ручное перечисление дешевле. Кейс выбран именно для измерения: если
+на следующем срезе GATE-FEATURE встретится повторно, появится основание
+для enumeration-checker'а.
+
 Наблюдения из первого прогона на реальных снапшотах (публичные якоря):
 
 - `GO-2026-6443`: анализатор выдал `EXPLOITABLE` на продукте без xDS —
@@ -475,7 +489,7 @@ govulncheck `reachable` baseline во всех вариантах:
 
 | Вариант | analyzer | govulncheck | Контракт |
 |---|---|---|---|
-| real-micro-plain-6443 | **EXPLOITABLE** (без basis: весь declared set в L; HandleStreams в трейсе → `C-LOCUS` TRUE) | reachable (`HandleStreams`) | автоматическое исключение запрещено — машина совпадает с govulncheck |
+| real-micro-plain-6443 | **EXPLOITABLE** — сигнал сохранён, не подтверждение эксплуатации (без basis весь declared set в L; HandleStreams в трейсе → `C-LOCUS` TRUE) | reachable (`HandleStreams`) | автоматическое исключение запрещено — машина совпадает с govulncheck |
 | real-micro-plain-6443x | **NO_EXPLOIT_PATH_FOUND** | reachable | expert `non_locus` на HandleStreams+operateHeaders записан в модель → `C-LOCUS` FALSE + `locus-package-absent` VERIFIED |
 | real-micro-xds-6443 | EXPLOITABLE | reachable (`RouteAndProcess` в трейсе) | `C-LOCUS` TRUE — сигнал сохранён |
 | real-micro-wrap-6443 | EXPLOITABLE | reachable | factory-обёртка не ослабила: module-internal chain доказал локус |
@@ -484,7 +498,8 @@ govulncheck `reachable` baseline во всех вариантах:
 На реальном вендореном снапшоте (grpc v1.80.0, `internal/xds` отсутствует
 в vendor): `RouteAndProcess` не резолвится в source → `UnresolvedSubjects`,
 но он ∈ L; без экспертного basis транспортные символы остаются в L и
-достижимый declared символ даёт `C-LOCUS` TRUE → EXPLOITABLE; с записанным
+достижимый declared символ даёт `C-LOCUS` TRUE → EXPLOITABLE (сигнал
+сохранён — текущая модель не подтверждает эксплуатацию); с записанным
 basis на transport-символы → NEPF через coverage-гейт
 `locusCoversUnresolved` (прогон `case-snap-6443-v3`: NEPF, basis-блок
 в отчёте, limitation о сокращении coverage записан). Verdict-кейс:
@@ -567,6 +582,17 @@ absence и хранит replayable запись с поимёнными эксп
 «пакет локуса вне графа» покрыл бы и тривиальный verifier. Дифференциальная
 ценность собственного механизма против `verifier + expert basis` — тема
 следующего среза, не установленный факт.
+
+**Текущая роль B30 (после P0-закрытия):** модуль проверяет машинную часть
+экспертно подготовленного основания — привязку `L`, absence по графу,
+replayable запись и границы ошибки. Самостоятельное получение
+дополнительного отклонения поверх govulncheck **не показано**: без
+экспертного basis вердикт совпадает с исходным сигналом (EXPLOITABLE —
+«сигнал сохранён»). Расширение анализатора остановлено; следующий шаг —
+выбор одного кандидата по карточке недостающего доказательства (§7.1):
+snapshot + build context + Go, сырой `govulncheck: reachable`, достаточное
+экспертное основание отклонения, конкретный факт вне текущего модуля,
+возможность проверки простым verifier'ом.
 
 ### 8.5. Artifact fidelity
 
