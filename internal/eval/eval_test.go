@@ -66,6 +66,7 @@ func TestReportSignalClearedCountsOnlySafeVerdictsAgainstGovulncheckSignals(t *t
 		{"negative", domain.VerdictNoExploitPathFound, eval.BaselinePackageLevel, []string{"NO_EXPLOIT_PATH_FOUND"}},
 		{"positive", domain.VerdictExploitable, eval.BaselineReachable, []string{"EXPLOITABLE"}},
 		{"silent", domain.VerdictNotAffected, eval.BaselineSilent, []string{"NOT_AFFECTED"}},
+		{"module", domain.VerdictNotAffected, "module-level", []string{"NOT_AFFECTED"}},
 		{"unsafe", domain.VerdictNoExploitPathFound, eval.BaselineReachable, []string{"EXPLOITABLE"}},
 	} {
 		r.Record(eval.Case{ID: tc.id, Expect: tc.expect}, tc.verdict, "", nil, nil)

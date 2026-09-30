@@ -2193,10 +2193,9 @@ func TestE2EDepInternalPeerInput(t *testing.T) {
 	}
 }
 
-// The traced dep-internal origin wins over the structural heuristic:
-// parseConstant is only ever called with a literal inside the dep, so
-// peer input is disproven — a verified FALSE, not the heuristic's TRUE.
-func TestE2EDepInternalFalseVerified(t *testing.T) {
+// The traced dep-internal constant cannot close the module's peer-fed
+// ingress cone, and the known advisory symbol is not a complete sink set.
+func TestE2EDepInternalConstantWithOpenIngress(t *testing.T) {
 	repo := initRepoFrom(t, "wireprod")
 	dir := t.TempDir()
 	model := `{"impact":"peer bytes reach dep-internal parser","mandatory_conditions":[
@@ -2231,15 +2230,15 @@ func TestE2EDepInternalFalseVerified(t *testing.T) {
 		t.Fatalf("state=%s reason=%s", c.Workflow.State, c.Workflow.Reason)
 	}
 	claim := findClaimT(t, c.Claims, "C-PEER-INPUT")
-	if claim.Result != domain.ClaimFalse {
-		t.Fatalf("C-PEER-INPUT=%s want FALSE (%s)", claim.Result, claim.Explanation)
+	if claim.Result != domain.ClaimUnknown {
+		t.Fatalf("C-PEER-INPUT=%s want UNKNOWN (%s)", claim.Result, claim.Explanation)
 	}
-	if claim.NegativeVerification == nil ||
-		claim.NegativeVerification.Status != domain.NegativeVerified {
-		t.Fatalf("negative verification=%+v want VERIFIED", claim.NegativeVerification)
+	if claim.NegativeVerification != nil &&
+		claim.NegativeVerification.Status == domain.NegativeVerified {
+		t.Fatalf("negative verification=%+v despite unclosed ingress", claim.NegativeVerification)
 	}
-	if c.Verdict == nil || c.Verdict.Verdict != domain.VerdictNoExploitPathFound {
-		t.Fatalf("verdict=%+v want NO_EXPLOIT_PATH_FOUND", c.Verdict)
+	if c.Verdict == nil || c.Verdict.Verdict != domain.VerdictInconclusive {
+		t.Fatalf("verdict=%+v want INCONCLUSIVE", c.Verdict)
 	}
 }
 

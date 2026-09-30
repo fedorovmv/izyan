@@ -250,10 +250,10 @@
     "example.com/dep/vuln.parseConstant"
    ],
    "expect": [
-    "NO_EXPLOIT_PATH_FOUND"
+    "INCONCLUSIVE"
    ],
    "expect_claims": {
-    "C-PEER-INPUT": "FALSE"
+    "C-PEER-INPUT": "UNKNOWN"
    }
   }
  ]

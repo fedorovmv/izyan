@@ -371,6 +371,9 @@ func (ix *Index) mapLiteralsRec(pkg *packages.Package, enc *ast.FuncDecl, e ast.
 			if idx := paramIndexOf(enc, v.Name()); idx >= 0 {
 				seenAny := false
 				for _, r := range ix.callersOf(pkg, funcSymbolRef(pkg, enc)) {
+					if r.possible {
+						return nil
+					}
 					if idx >= len(r.call.Args) || !ix.callerOnPath(r) {
 						continue
 					}
@@ -568,6 +571,9 @@ func (ix *Index) instSrcs(pkg *packages.Package, enc *ast.FuncDecl, e ast.Expr, 
 				// expressions (`recv.M()` → instSrcs(recv) in the caller
 				// frame); a self-recursive `c.M()` re-enters via seen.
 				for _, r := range ix.callersOf(pkg, funcSymbolRef(pkg, enc)) {
+					if r.possible {
+						return nil, false
+					}
 					if !ix.callerOnPath(r) {
 						continue
 					}
@@ -583,6 +589,9 @@ func (ix *Index) instSrcs(pkg *packages.Package, enc *ast.FuncDecl, e ast.Expr, 
 				}
 			} else if idx := paramIndexOf(enc, v.Name()); idx >= 0 {
 				for _, r := range ix.callersOf(pkg, funcSymbolRef(pkg, enc)) {
+					if r.possible {
+						return nil, false
+					}
 					if idx >= len(r.call.Args) || !ix.callerOnPath(r) {
 						continue
 					}
@@ -729,6 +738,9 @@ func (ix *Index) stringValsInto(pkg *packages.Package, enc *ast.FuncDecl, e ast.
 			refs := ix.callersOf(pkg, funcSymbolRef(pkg, enc))
 			n := 0
 			for _, r := range refs {
+				if r.possible {
+					return false
+				}
 				if idx >= len(r.call.Args) || !ix.callerOnPath(r) {
 					continue
 				}
@@ -947,6 +959,9 @@ func (ix *Index) urlSourceVals(pkg *packages.Package, enc *ast.FuncDecl, e ast.E
 		if idx := paramIndexOf(enc, v.Name()); idx >= 0 {
 			found := false
 			for _, r := range ix.callersOf(pkg, funcSymbolRef(pkg, enc)) {
+				if r.possible {
+					return false
+				}
 				if idx >= len(r.call.Args) || !ix.callerOnPath(r) {
 					continue
 				}

@@ -230,25 +230,6 @@ const (
 	OriginUnknown               DataOrigin = "UNKNOWN"
 )
 
-// SymbolsDeclared reports whether every subject under evaluation is part
-// of the advisory's declared affected-symbol set — the condition for the
-// set to carry a sink-completeness contract.
-func SymbolsDeclared(subjects, declared []SymbolRef) bool {
-	if len(declared) == 0 {
-		return false
-	}
-	set := map[string]bool{}
-	for _, s := range declared {
-		set[s.Package+"."+s.Symbol] = true
-	}
-	for _, s := range subjects {
-		if !set[s.Package+"."+s.Symbol] {
-			return false
-		}
-	}
-	return true
-}
-
 // SafeOrigin reports whether a provenance origin is proven non-external —
 // the value is a compile-time constant or a generated value whose inputs
 // are all safe. Everything else is either attacker-capable,
@@ -521,7 +502,8 @@ type DataFlow struct {
 	// Value is the argument's resolved integer literal/constant when the
 	// trace could determine it — used to check constant arguments against
 	// declared input bounds.
-	Value *int64 `json:"value,omitempty"`
+	Value           *int64 `json:"value,omitempty"`
+	PayloadUnproven bool   `json:"payload_unproven,omitempty"`
 }
 
 type Entrypoint struct {
@@ -588,6 +570,7 @@ type IngressItem struct {
 	Origin DataOrigin `json:"origin,omitempty"`
 	// Reaches lists condition subject keys ("pkg.Symbol") provably
 	// reachable from this item's boundary entry inside the module cone.
+	// An empty list does not prove that the item cannot become payload.
 	Reaches []string `json:"reaches,omitempty"`
 	Detail  string   `json:"detail,omitempty"`
 }

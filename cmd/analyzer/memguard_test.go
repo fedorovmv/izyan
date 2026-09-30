@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"runtime"
+	"runtime/debug"
 	"testing"
 	"time"
 )
@@ -53,14 +54,22 @@ func TestApplyMemoryLimitDisabled(t *testing.T) {
 // With the budget set between current usage and 150% of it, the watchdog
 // cancels promptly without entering the hard-exit band.
 func TestApplyMemoryLimitCancelsOverBudget(t *testing.T) {
+	oldLimit := debug.SetMemoryLimit(-1)
+	defer debug.SetMemoryLimit(oldLimit)
+
+	retained := make([]byte, 256<<20)
+	for i := 0; i < len(retained); i += 4096 {
+		retained[i] = byte(i)
+	}
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
 	used := int64(m.HeapSys) + int64(m.StackInuse)
-	ctx, stop := applyMemoryLimit(context.Background(), int64(float64(used)*0.8))
+	ctx, stop := applyMemoryLimit(context.Background(), int64(float64(used)*0.95))
 	defer stop()
 	select {
 	case <-ctx.Done():
 	case <-time.After(2 * time.Second):
 		t.Fatal("watchdog did not cancel the over-budget context")
 	}
+	runtime.KeepAlive(retained)
 }

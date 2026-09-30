@@ -37,11 +37,11 @@ Baseline-таблица govulncheck-vs-analyzer (последний прогон
 | real-dns-zone | EXPLOITABLE | reachable | нет |
 | real-getter-file | INCONCLUSIVE | reachable | нет — dispatch-key const `file`, eval-полнота не дожимает |
 | real-getter-fixed | NOT_AFFECTED | silent | **да — deterministic** |
-| real-yaml-const | NO_EXPLOIT_PATH_FOUND | reachable | **да — ingress closure verified: все входы в cone разрешены safe; NV VERIFIED** |
+| real-yaml-const | INCONCLUSIVE | reachable | нет — payload constant, но reflective value operations в ingress cone не доказаны безопасными |
 | real-yaml3-http | EXPLOITABLE | reachable | нет |
-| real-yaml3-const | NO_EXPLOIT_PATH_FOUND | reachable | **да — единственный `Unmarshal` получает build-time constant; NV VERIFIED** |
+| real-yaml3-const | INCONCLUSIVE | reachable | нет — payload constant, но reflective value operations в ingress cone не доказаны безопасными |
 | real-protojson-http | EXPLOITABLE | reachable | нет |
-| real-protojson-const | NO_EXPLOIT_PATH_FOUND | reachable | **да — sink closure verified: advisory sink set полный, все live payload-позиции non-external; NV VERIFIED** |
+| real-protojson-const | INCONCLUSIVE | reachable | нет — advisory symbols имеют scope KNOWN_ONLY; отдельного контракта полноты sink set нет, ingress содержит автономные и непроверенные источники |
 | real-protojson-fixed | NOT_AFFECTED | silent | **да — deterministic** |
 | real-dns-fixed | NOT_AFFECTED | silent | **да — deterministic** |
 | real-dns-marshal | INCONCLUSIVE | package-level | нет — sinks частично unexported; та же vacuous-refs проблема |
@@ -51,7 +51,7 @@ Baseline-таблица govulncheck-vs-analyzer (последний прогон
 | real-ssh-callback | EXPLOITABLE | reachable | нет |
 | real-micro-xds | INCONCLUSIVE | package-level | нет — dep-internal registry (`httpfilter.Register`) + watcher callbacks (B24) |
 | real-micro-xds-fixed | NOT_AFFECTED | silent | **да — deterministic** |
-| real-micro-plain | NOT_AFFECTED | package-level | **да — rbac-пакет не в build graph** |
+| real-micro-plain | NOT_AFFECTED | module-level | **да — rbac-пакет не в build graph; govulncheck также не сообщает уязвимый пакет** |
 | real-unix-access | EXPLOITABLE | reachable | нет — `unix.Access` вызван на dep-пути, payload внешний |
 | real-unix-stat | NO_EXPLOIT_PATH_FOUND | package-level | **да — zero-refs + dep-internal caller `unix.Access` транзитивно мёртв (нет product refs, нет caller'ов в модуле, сторонних импортеров пакета нет)** |
 | real-unix-fixed | NOT_AFFECTED | silent | **да — deterministic** |
@@ -62,16 +62,13 @@ Baseline-таблица govulncheck-vs-analyzer (последний прогон
 `NOT_AFFECTED` (deterministic affected-chain) или `NO_EXPLOIT_PATH_FOUND`
 (VERIFIED falsifier на mandatory-условии). `EXPLOITABLE`, `INCONCLUSIVE` и
 `UNKNOWN` оставляют кейс на человеке — для triage «reachable» и
-«не доказали безопасность» эквивалентны. Текущий прогон: **15/33 cleared**:
+«не доказали безопасность» эквивалентны. Текущий прогон: **12/33 cleared**:
 11×NOT_AFFECTED deterministic (в том числе `real-micro-plain` при
-package-level сигнале govulncheck) и четыре NEPF: `real-yaml-const`,
-`real-yaml3-const` и `real-protojson-const` (constant input — yaml'ы
-через ingress-closure, protojson через sink-closure) плюс
-`real-unix-stat` — sound
-verified-негатив на real-кейсе: продукт не трогает `unix.Faccessat`,
+module-only finding govulncheck) и один verified-негатив NEPF:
+`real-unix-stat` — продукт не трогает `unix.Faccessat`,
 а единственный dep-internal caller `unix.Access` доказанно мёртв —
 нет product refs, нет caller'ов внутри `x/sys`, сторонних модулей,
-импортирующих пакет, в dep-графе нет). NEPF без referenceable-субъектов
+импортирующих пакет, в dep-графе нет. NEPF без referenceable-субъектов
 не выносится (`productReferenceable` гейт), а dep-internal invocation
 учитывается transitively (`depSiteLive`): ssh-keyparse и dns-marshal в
 INCONCLUSIVE — их прежний NEPF стоял на vacuous «zero product refs»;
@@ -79,27 +76,59 @@ jwt-auth — missing-call гейт. Цель B23 — поднять долю ч�
 за счёт falsifier-доказательств, не объявляя недоказанное безопасным.
 
 Для сравнения со standalone govulncheck важен более узкий показатель:
-**signal-cleared rate = 5/23** на этом прогоне. Знаменатель — кейсы,
+**signal-cleared rate = 1/22** на этом прогоне. Знаменатель — кейсы,
 где govulncheck сообщил `reachable` или `package-level`; числитель —
-доказанный негатив анализатора при таком сигнале (`real-yaml-const`,
-`real-yaml3-const`, `real-protojson-const`, `real-micro-plain`,
-`real-unix-stat`). Разбивка: **3/17** при `reachable`, **2/6** при
-`package-level`. Остальные cleared имеют `govulncheck: silent` и не
-сокращают ручной triage относительно baseline. Значение описывает этот
-корпус, а не ожидаемую долю на произвольных CVE.
+verified-негатив анализатора при таком сигнале (`real-unix-stat`).
+Разбивка: **0/17** при `reachable`, **1/5** при `package-level`.
+Finding только с модулем учитывается отдельно (`module-level`), без
+приписывания ему присутствующего уязвимого пакета. Остальные cleared
+имеют `govulncheck: silent` или `module-level`.
+
+Эта метрика не доказывает дополнительную пользу относительно
+govulncheck: его обычный вывод уже сообщает, что package/module findings
+не имеют найденного вызова. `real-unix-stat` добавляет negative
+verification к этой информации, но одного такого кейса недостаточно
+для вывода о надёжности или экономии ручного triage. Нужны независимые
+проверки отрицательных результатов и контрпримеры; reachable-отклонений
+в текущем корпусе нет. `false-safe=0` означает совпадение с разметкой,
+не независимую верификацию самой разметки.
+
+Дополнительный контроль двух прежних cleared: прямой JSON govulncheck
+для micro-plain содержит только модуль, а `go list -deps -test` не
+содержит xDS/RBAC-пакетов. Для linux/arm64 unix-stat сборка с
+`-gcflags=all=-l` не содержит символа `unix.Faccessat`; парный
+unix-access его содержит и получает EXPLOITABLE/reachable. Эти
+контроли поддерживают конкретные отрицательные результаты, но не
+являются доказательством надёжности механизма на других продуктах.
 
 Негативный exploit-claim несёт именованный falsifier; финальный
 `NO_EXPLOIT_PATH_FOUND` требует и его, и `VERIFIED` negative verification.
 Неполное происхождение аргумента (включая пустой origin) остаётся
-`UNKNOWN`. FALSE-кандидат верифицируется одной из двух closure-стратегий
-(спека §5.2): полный ingress-closure (все входы в product-reachable
-dependency cone) либо полный sink-closure (все live-сайты advisory
-sink set с non-external payload). `real-yaml-const` и `real-yaml3-const`
-закрываются ingress-closure; `real-protojson-const` — sink-closure:
-dependency cone содержит автономные источники (`detrand` читает
-/dev/urandom), поэтому ingress неполон в принципе, а sink-closure
-проверяет, что все 49 live payload-позиций declared sinks получают
-non-external значения.
+`UNKNOWN`, включая guard-кандидаты с unresolved dep-flow. FALSE-кандидат
+требует полного ingress closure: безопасны все inventoried inputs и
+автономные источники product-reachable dependency cone. Пустой `Reaches`
+не исключает источник: отсутствие найденного пути не доказывает
+невозможность стать payload.
+
+Альтернативная sink-closure стратегия спеки §5.2 требует отдельного
+проверенного контракта полноты, привязанного к advisory, версии и
+mandatory condition. `OSV imports.symbols` задаёт только `KNOWN_ONLY`;
+production-пайплайн сохраняет sink inventory для аудита, но не выставляет
+полноту по одному этому списку. Поэтому `real-protojson-const` остаётся
+INCONCLUSIVE: локальные константные payloads не закрывают возможный sink
+вне известного списка, а ingress содержит `detrand` и непроверенную
+семантику вызовов. Остаток — B26 в каноническом backlog.
+
+Регрессионные контрпримеры проверяют переданный внешний ввод через func
+values, переназначенные callbacks, `os.LookupEnv`, несколько `init()`,
+package initializers, форматирование с `String`/`Format` callbacks,
+void stdlib callbacks, `reflect.Indirect`, `complex` и `recover`.
+Непроверенный вызов сохраняет UNKNOWN. Dep pins снимаются после каждой
+closure query; эвикция кэшей и bodyless declarations не должны приводить
+к панике. Смена dependency scope во время сканирования не разрешает
+кешировать неполный результат как полный. Provenance локальной переменной
+объединяет присваивания с заполнением через out-parameters, slice writes
+и receiver mutations: `make` не стирает данные последующего `io.ReadFull`.
 
 Дифференциация относительно standalone govulncheck:
 
@@ -188,6 +217,11 @@ per-trace `classifyCache` сворачивает экспоненциальны�
 ложное отсутствие. Getter-кейс: INCONCLUSIVE, память ограничена
 эвикцией.
 
+Текущий контроль `real-ssh-slowpesh` завершился EXPLOITABLE за 905с.
+Expression budget действует на отдельную payload-позицию; он не
+ограничивает всю enumeration и повторные dependency loads после
+эвикции. Общий deadline/work budget closure query остаётся B28.
+
 ## Статус: первый слой реализован
 
 `eval/live-corpus.json` + `eval/advisories/live/*.json` — 11 advisory
@@ -206,20 +240,20 @@ PATH=$HOME/go/bin:$PATH VA_PRODUCT_REPO=<product-repo> analyzer eval --corpus ev
 advisory) и `govulncheck` в PATH. Без govulncheck reachability идёт через
 module-usage fallback — вердикты могут честно смещаться к INCONCLUSIVE.
 
-Результат (детерминистичный прогон, govulncheck v1.1.4):
+Результат (детерминистичный прогон, govulncheck v1.8.0):
 
 | Группа | Кейсы |
 |---|---|
-| EXPLOITABLE | GHSA-4v58, 6c5v, c5pq, r9c8, xwwf, GO-2026-6372 — wire-parser/exhaustion классы, peer-driven input, продукт дёргает Dial+Consume |
-| NO_EXPLOIT_PATH_FOUND | GHSA-rm6m — аргументы Qos клампятся bound-гардами ([0,1024]/[0,1GiB]), NV VERIFIED |
-| INCONCLUSIVE | GHSA-27gv, 33mj, 465g, j497 — deploy/config-dependent условия (нет доказанного читателя creds; TLS-floor по toolchain; отсутствующая URI-пара; config-contingent peer→shortstr) |
+| EXPLOITABLE | GHSA-4v58, c5pq, r9c8 — доказан внешний payload на wire-parser/exhaustion путях |
+| INCONCLUSIVE | GHSA-27gv, 33mj, 465g, j497 — deploy/config-dependent условия; GHSA-6c5v, xwwf, GO-2026-6372 — фактический peer payload не доказан через fix-subjects/opaque вызовы; GHSA-rm6m — unresolved dep-flow не позволяет верифицировать полноту bound-гардов |
 
 `expect` в корпусе пиннит **ground truth** — истинный вердикт каждого
 кейса размечен вручную по advisory+коду продукта; метод и обоснования —
 [`ground-truth.md`](ground-truth.md). `INCONCLUSIVE` в expect допускается
 там, где истина определённа, но механизм её доказательства пока не
 реализован (33mj — PLATFORM_CONDITION по go_version; 465g — reflect-
-демоция без значения типа). false-safe=0 остаётся стоп-критерием.
+демоция без значения типа; 6c5v/xwwf/GO-2026-6372 — peer payload;
+rm6m — полнота guard coverage). false-safe=0 остаётся стоп-критерием.
 
 После B2: кейсы, доходящие до GAP_ANALYSIS, без `--allow-exec` несут
 limitation «build/test evidence actions skipped»; с флагом — BUILD/TEST
@@ -232,11 +266,24 @@ resolved origin решает claim вместо эвристики «module usag
 peer-driven» (эвристика остаётся fallback, когда dep-trace пуст или
 UNKNOWN). На живом amqp091 ожидаемое поведение: `readField`-цепь упирается
 в interface dispatch (`m.read(r)`) → trace UNKNOWN → эвристика сохраняет
-TRUE — вердикты EXPLOITABLE-кейсов не должны сдвинуться, но claims могут
-нести дополнительные dep-flow evidence/limitations. Fixture-корпус
+TRUE. Наличие resolved flow направляет claim в provenance evaluator;
+это может оставить UNKNOWN, если origin известен, но роль payload
+не доказана. Claims несут dep-flow evidence/limitations. Fixture-корпус
 расширен до 18 кейсов (`wire-dep-peer` → EXPLOITABLE через resolved
-EXTERNAL_UNTRUSTED, `wire-dep-const` → NO_EXPLOIT_PATH_FOUND через
-VERIFIED-FALSE по dep-retrace).
+EXTERNAL_UNTRUSTED). `wire-dep-const` → INCONCLUSIVE: локальный
+константный аргумент разрешён, но модуль одновременно получает peer
+input; полная ingress closure небезопасна, а единственный известный
+sink не несёт отдельного доказательства полноты. Проверка не исключает
+другие источники по отсутствию найденного пути к этому символу.
+
+После ревью closure-логики live 6c5v/GO-2026-6372 и xwwf допускают
+INCONCLUSIVE при сохранении ground truth EXPLOITABLE: opaque `pick`
+и fix-subjects `openTune` не доказывают происхождение фактического
+уязвимого payload. Полноценный позитив требует независимого трейсинга
+peer tune/header/body; остаток scope mismatch отмечен в B15. Сетевой
+writer в неизвестной payload-позиции не доказывает входные данные:
+его внешний origin сохраняется, но positive payload evidence остаётся
+неполным, а отрицательная проверка продолжает учитывать этот flow.
 
 ## Что прогон валидировал на живом коде
 

@@ -40,6 +40,22 @@ func (ix *Index) funcValueCallSites(scope []*packages.Package, ref domain.Symbol
 			continue
 		}
 		sites = append(sites, idx.byFunc[key]...)
+		if idx.open {
+			for _, p := range idx.pending {
+				compatible := len(wantKeys) == 0
+				for _, wk := range wantKeys {
+					if fvSigKey(p.sig) == wk {
+						compatible = true
+						break
+					}
+				}
+				if compatible {
+					p.site.possible = true
+					sites = append(sites, p.site)
+				}
+			}
+			continue
+		}
 		for _, wk := range wantKeys {
 			for _, s := range idx.partial[wk] {
 				s.possible = true
@@ -60,6 +76,7 @@ type fvPkgIndex struct {
 	byFunc  map[string][]CallSiteRef
 	partial map[string][]CallSiteRef
 	pending []fvPendingSite
+	open    bool
 }
 
 type fvPendingSite struct {
@@ -77,6 +94,7 @@ func (ix *Index) fvIndex(pkg *packages.Package) *fvPkgIndex {
 	if pkg == nil || pkg.TypesInfo == nil {
 		return nil
 	}
+	gen := ix.extrasGen
 	if ix.fvIdxGen != ix.extrasGen {
 		ix.fvIdx = map[*packages.Package]*fvPkgIndex{}
 		ix.fvIdxGen = ix.extrasGen
@@ -134,6 +152,21 @@ func (ix *Index) fvIndex(pkg *packages.Package) *fvPkgIndex {
 		}
 		if partial {
 			idx.partial[fvSigKey(p.sig)] = append(idx.partial[fvSigKey(p.sig)], p.site)
+		}
+	}
+	if ix.extrasGen != gen {
+		idx.open = true
+		for k := range idx.byFunc {
+			for i := range idx.byFunc[k] {
+				idx.byFunc[k][i].possible = true
+			}
+		}
+		for _, p := range idx.pending {
+			p.site.possible = true
+			idx.partial[fvSigKey(p.sig)] = append(idx.partial[fvSigKey(p.sig)], p.site)
+		}
+		if ix.fvIdxGen == gen && ix.fvIdx[pkg] == idx {
+			delete(ix.fvIdx, pkg)
 		}
 	}
 	return idx
@@ -203,6 +236,7 @@ func (ix *Index) fvParamCallers(pkg *packages.Package, enc *ast.FuncDecl, idx in
 		if i == nil {
 			continue
 		}
+		open = open || i.open
 		for _, s := range i.byFunc[refKey] {
 			push(s)
 		}
@@ -328,7 +362,7 @@ func (ix *Index) funcCandidates(pkg *packages.Package, enc *ast.FuncDecl, expr a
 			return nil, true
 		}
 		decl, dp := ix.funcDecl(fn)
-		if decl == nil {
+		if decl == nil || decl.Body == nil || dp == nil {
 			return nil, true
 		}
 		var out []*types.Func
@@ -417,6 +451,7 @@ func (ix *Index) varFuncValues(pkg *packages.Package, vr *types.Var, seen map[as
 	if vp == nil {
 		return nil, true
 	}
+	gen := ix.extrasGen
 	var out []*types.Func
 	var anyOpen bool
 	eval := func(p *packages.Package, expr ast.Expr) {
@@ -433,10 +468,14 @@ func (ix *Index) varFuncValues(pkg *packages.Package, vr *types.Var, seen map[as
 		eval(w.pkg, w.expr)
 	}
 	open = len(out) == 0 || anyOpen
+	if ix.extrasGen != gen {
+		open = true
+		return out, open
+	}
 	if ix.funcValsCache == nil {
 		ix.funcValsCache = map[*types.Var]funcValEntry{}
 	}
-	ix.funcValsCache[vr] = funcValEntry{gen: ix.extrasGen, funcs: out, open: open}
+	ix.funcValsCache[vr] = funcValEntry{gen: gen, funcs: out, open: open}
 	return out, open
 }
 

@@ -7,7 +7,6 @@ import (
 	"go/constant"
 	"go/token"
 	"go/types"
-	"os"
 	"reflect"
 	"slices"
 	"strconv"
@@ -86,6 +85,7 @@ func (ix *Index) TraceArgument(ctx context.Context, site domain.CallSite, argInd
 	if argIndex >= len(call.Args) {
 		return flow, nil, fmt.Errorf("call site has %d args, arg %d requested", len(call.Args), argIndex)
 	}
+	flow.PayloadUnproven = payloadUnprovenParameter(pkg, call, argIndex)
 	// Collect the transformation chain: every call the traced value passes
 	// through, recorded by classifyCall while txBuf is set. Held under the
 	// same mutex as the rest of the trace — nil outside TraceArgument.
@@ -192,9 +192,6 @@ func (ix *Index) classify(pkg *packages.Package, enc *ast.FuncDecl, expr ast.Exp
 	}
 	o, w := ix.classifyExpr(pkg, enc, expr, depth)
 	ix.leaveExpr()
-	if o == domain.OriginUnknown && os.Getenv("INGRESS_DEBUG") != "" {
-		fmt.Fprintf(os.Stderr, "  classify UNKNOWN depth=%d expr=%s why=%.160s\n", depth, funText(expr), w)
-	}
 	// Why-strings compose upward — an uncapped trace embeds every child's
 	// explanation and grows exponentially (multi-MB strings per memoized
 	// entry is what blew the memory budget on md-render). Cap at every
@@ -326,54 +323,55 @@ func (ix *Index) classifyIdent(pkg *packages.Package, enc *ast.FuncDecl, id *ast
 	// var already being resolved on this trace is a cycle (x = f(x)).
 	rhsList := ix.assigns(enc, obj)
 	rhsList = append(rhsList, elemWriteRHSs(enc, obj)...)
-	if len(rhsList) > 0 {
-		if ix.traceSeen != nil && ix.traceSeen[obj] {
-			// Self-referential writes (`x = append(x, e)`, `x.f(x)`)
-			// contribute no new origin: x's own origin is already being
-			// merged by the outer classify of the same object.
-			return domain.OriginConstant, fmt.Sprintf("local %s: self-reference", id.Name)
-		}
-		if ix.traceSeen != nil {
-			ix.traceSeen[obj] = true
-			defer delete(ix.traceSeen, obj)
-		}
-		var merged domain.DataOrigin
-		var whys []string
-		for _, rhs := range rhsList {
-			o, w := ix.classify(pkg, enc, rhs, depth)
-			whys = append(whys, w)
-			merged = mergeOrigin(merged, o)
-		}
-		if merged == "" {
-			return domain.OriginUnknown, fmt.Sprintf("local %s: no resolvable assignment", id.Name)
-		}
-		return merged, fmt.Sprintf("local %s <- {%s}", id.Name, strings.Join(whys, " | "))
+	if ix.traceSeen == nil {
+		ix.traceSeen = map[types.Object]bool{}
+	}
+	if ix.traceSeen[obj] {
+		// Self-referential writes (`x = append(x, e)`, `x.f(x)`)
+		// contribute no new origin: x's own origin is already being
+		// merged by the outer classify of the same object.
+		return domain.OriginConstant, fmt.Sprintf("local %s: self-reference", id.Name)
+	}
+	ix.traceSeen[obj] = true
+	defer delete(ix.traceSeen, obj)
+	var merged domain.DataOrigin
+	var whys []string
+	for _, rhs := range rhsList {
+		o, w := ix.classify(pkg, enc, rhs, depth)
+		whys = append(whys, w)
+		merged = mergeOrigin(merged, o)
 	}
 	// populated by a call rather than assigned: out-parameters f(..., &v),
 	// slice destinations io.ReadFull(r, buf), receiver mutations v.Write(x).
 	if o, why, ok := ix.populatedByCall(pkg, enc, obj, depth, ix.topEval(pkg, enc)); ok {
-		return o, fmt.Sprintf("local %s <- %s", id.Name, why)
+		merged = mergeOrigin(merged, o)
+		whys = append(whys, why)
 	}
 	// Unsafe pointer stores `*(*T)(unsafe.Pointer(&v)) = e` populate the
 	// variable through a dereference — the stored value's origin applies.
 	if rhsList := derefWriteRHSs(enc, obj); len(rhsList) > 0 {
-		var merged domain.DataOrigin
 		for _, rhs := range rhsList {
-			o, _ := ix.classify(pkg, enc, rhs, depth)
+			o, w := ix.classify(pkg, enc, rhs, depth)
 			merged = mergeOrigin(merged, o)
+			whys = append(whys, "deref-write: "+w)
 		}
-		return merged, fmt.Sprintf("local %s <- deref-write", id.Name)
 	}
 	// `a, b := f()` — the shared producing call carries the origin;
 	// only the result index bound to this variable is evaluated so an
 	// error branch cannot taint the payload result.
 	if rhs, ridx := multiAssignRHS(enc, obj, pkg.TypesInfo); rhs != nil {
+		var o domain.DataOrigin
+		var w string
 		if call, isCall := rhs.(*ast.CallExpr); isCall {
-			o, w := ix.evalCallResult(pkg, enc, call, ridx, ix.topEval(pkg, enc), depth)
-			return o, fmt.Sprintf("local %s <- multi-assign %s", id.Name, w)
+			o, w = ix.evalCallResult(pkg, enc, call, ridx, ix.topEval(pkg, enc), depth)
+		} else {
+			o, w = ix.classify(pkg, enc, rhs, depth)
 		}
-		o, w := ix.classify(pkg, enc, rhs, depth)
-		return o, fmt.Sprintf("local %s <- multi-assign %s", id.Name, w)
+		merged = mergeOrigin(merged, o)
+		whys = append(whys, "multi-assign: "+w)
+	}
+	if merged != "" {
+		return merged, fmt.Sprintf("local %s <- {%s}", id.Name, strings.Join(whys, " | "))
 	}
 	// `for i, item := range X` binds i/item to elements of X — the
 	// element provenance is the ranged container's origin.
@@ -727,7 +725,7 @@ func (ix *Index) isServiceCall(fn *types.Func) bool {
 }
 
 func isParam(enc *ast.FuncDecl, v *types.Var) bool {
-	if enc == nil || enc.Type.Params == nil {
+	if enc == nil || enc.Type == nil || enc.Type.Params == nil {
 		return false
 	}
 	for _, f := range enc.Type.Params.List {
@@ -1269,16 +1267,23 @@ func (ix *Index) fieldOrigin(field *types.Var, depth int) (domain.DataOrigin, st
 	if depth >= ix.hops() {
 		return "", "", false
 	}
+	gen := ix.extrasGen
 	if ix.fieldOriginCache == nil {
 		ix.fieldOriginCache = map[fieldOriginKey]cachedFieldOrigin{}
 	}
 	key := fieldOriginKey{field: field, depth: depth}
-	if c, ok := ix.fieldOriginCache[key]; ok && c.gen == ix.extrasGen {
+	if c, ok := ix.fieldOriginCache[key]; ok && c.gen == gen {
 		return c.origin, c.why, c.ok
 	}
 	o, w, ok := ix.fieldOriginScan(field, depth)
-	if len(ix.fieldOriginCache) < maxAuxCache {
-		ix.fieldOriginCache[key] = cachedFieldOrigin{gen: ix.extrasGen, origin: o, why: capWhy(w), ok: ok}
+	if ix.extrasGen != gen {
+		return domain.OriginUnknown, "dependency scope changed while resolving field origin", true
+	}
+	if ix.extrasGen == gen && len(ix.fieldOriginCache) < maxAuxCache {
+		if ix.fieldOriginCache == nil {
+			ix.fieldOriginCache = map[fieldOriginKey]cachedFieldOrigin{}
+		}
+		ix.fieldOriginCache[key] = cachedFieldOrigin{gen: gen, origin: o, why: capWhy(w), ok: ok}
 	}
 	return o, w, ok
 }
@@ -1494,7 +1499,7 @@ func (ix *Index) classifyCall(pkg *packages.Package, enc *ast.FuncDecl, call *as
 // classifyCallEval classifies a call expression. Argument provenance is
 // evaluated through evalArg — the caller-frame classify at top level or
 // the callee-frame evalCalleeExpr when tracing function bodies — so the
-// same source/passthrough/dep-merge rules apply in both frames. ridx is
+// same source, passthrough and body-tracing rules apply in both frames. ridx is
 // the bound result index for multi-value assignments (-1 = unspecified).
 // classifyCallEval caps its explanation — the callee evaluator composes
 // child whys upward recursively, so every boundary must bound its output
@@ -1564,13 +1569,18 @@ func (ix *Index) classifyCallEval0(pkg *packages.Package, enc *ast.FuncDecl, cal
 				return domain.OriginConstant, "reflect.TypeOf type descriptor"
 			case "PtrTo", "PointerTo", "SliceOf", "ArrayOf", "MapOf", "ChanOf",
 				"FuncOf", "StructOf", "MakeMap", "MakeMapWithSize", "MakeSlice",
-				"MakeChan", "New", "Zero", "Indirect":
+				"MakeChan", "New", "Zero":
 				// Type constructors yield descriptors; fresh-container
 				// constructors allocate zero values — neither carries
 				// input data. NewAt is excluded: it wraps a raw unsafe
 				// pointer whose writes are untraceable; Append/Copy/
 				// Swapper move boxed values — they propagate via Value.
 				return domain.OriginConstant, "reflect." + fn.Name() + " (metadata/fresh value)"
+			case "Indirect":
+				if len(call.Args) == 1 {
+					return evalArg(call.Args[0], depth+1)
+				}
+				return domain.OriginUnknown, "reflect.Indirect argument unavailable"
 			case "ValueOf":
 				if len(call.Args) == 1 {
 					return evalArg(call.Args[0], depth)
@@ -1608,6 +1618,12 @@ func (ix *Index) classifyCallEval0(pkg *packages.Package, enc *ast.FuncDecl, cal
 			return o, fmt.Sprintf("%s(%s)", key, why)
 		}
 		if ix.kb().ArgsMergeFuncs[key] {
+			if callHasFunctionArg(pkg, call) {
+				return domain.OriginUnknown, key + " invokes a callback with independent effects"
+			}
+			if strings.HasPrefix(key, "fmt.") && formatArgsMayCallUserCode(pkg, call) {
+				return domain.OriginUnknown, key + " may invoke a formatting method with independent provenance"
+			}
 			// Variadic combinator: the result is built from every
 			// argument (Sprintf format + operands, Join's error list).
 			out := domain.OriginConstant
@@ -1626,30 +1642,14 @@ func (ix *Index) classifyCallEval0(pkg *packages.Package, enc *ast.FuncDecl, cal
 		if sig, ok2 := fn.Type().(*types.Signature); ok2 && sig.Recv() != nil && isHTTPRequest(sig.Recv().Type()) {
 			return domain.OriginExternalUntrusted, "method on *http.Request"
 		}
+		if callHasFunctionArg(pkg, call) {
+			return domain.OriginUnknown, fmt.Sprintf("opaque callback passed to %s", key)
+		}
 		// Not a named source: trace into the callee body — if its result is
 		// derived purely from parameters/constants, the caller's argument
 		// origins propagate. Unresolvable bodies stay UNKNOWN.
 		if o, why, ok := ix.traceCallee(fn, call, evalArg, depth, ridx); ok {
 			return o, why
-		}
-		// A callee inside a dependency module: its autonomous reads are
-		// inventoried separately as cone-source items, so expression-level
-		// provenance merges only the argument origins — plus the receiver
-		// for method calls (`x.M(...)` derives from x as much as args).
-		if ix.depModuleOf(fn.Pkg().Path()) != "" {
-			out := domain.OriginConstant
-			var parts []string
-			if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
-				o, w := evalArg(sel.X, depth+1)
-				parts = append(parts, "recv "+w)
-				out = mergeOrigin(out, o)
-			}
-			for _, a := range call.Args {
-				o, w := evalArg(a, depth+1)
-				parts = append(parts, w)
-				out = mergeOrigin(out, o)
-			}
-			return out, fmt.Sprintf("dep callee %s args merged {%s}", key, strings.Join(parts, " | "))
 		}
 		return domain.OriginUnknown, fmt.Sprintf("opaque call %s", key)
 	}
@@ -1664,15 +1664,17 @@ func (ix *Index) classifyCallEval0(pkg *packages.Package, enc *ast.FuncDecl, cal
 	}
 	if b, ok := obj.(*types.Builtin); ok {
 		switch b.Name() {
-		case "new", "make", "recover", "print", "println", "complex":
+		case "new", "make", "print", "println":
 			// Freshly allocated or derived-from-nothing values.
 			return domain.OriginConstant, "builtin " + b.Name()
+		case "recover":
+			return domain.OriginUnknown, "builtin recover may return a dynamic panic value"
 		case "len", "cap":
 			if len(call.Args) == 1 {
 				o, w := evalArg(call.Args[0], depth)
 				return o, "len(" + w + ")"
 			}
-		case "append", "copy", "clear", "delete", "min", "max", "real", "imag":
+		case "append", "copy", "clear", "delete", "min", "max", "real", "imag", "complex":
 			out := domain.OriginConstant
 			var whys []string
 			for _, a := range call.Args {
@@ -1692,6 +1694,76 @@ func (ix *Index) classifyCallEval0(pkg *packages.Package, enc *ast.FuncDecl, cal
 		return evalArg(call.Args[0], depth)
 	}
 	return domain.OriginUnknown, "unresolvable call"
+}
+
+func callHasFunctionArg(pkg *packages.Package, call *ast.CallExpr) bool {
+	if pkg == nil || pkg.TypesInfo == nil {
+		return len(call.Args) > 0
+	}
+	for _, arg := range call.Args {
+		t := pkg.TypesInfo.TypeOf(arg)
+		if t != nil {
+			if _, ok := types.Unalias(t).Underlying().(*types.Signature); ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func formatArgsMayCallUserCode(pkg *packages.Package, call *ast.CallExpr) bool {
+	if pkg == nil || pkg.TypesInfo == nil {
+		return true
+	}
+	seen := map[types.Type]bool{}
+	for _, arg := range call.Args {
+		if mayCallFormattingMethod(pkg.TypesInfo.TypeOf(arg), seen, 0) {
+			return true
+		}
+	}
+	return false
+}
+
+func mayCallFormattingMethod(t types.Type, seen map[types.Type]bool, depth int) bool {
+	if t == nil || depth > 12 {
+		return true
+	}
+	t = types.Unalias(t)
+	if seen[t] {
+		return false
+	}
+	seen[t] = true
+	defer delete(seen, t)
+	if _, ok := t.Underlying().(*types.Interface); ok {
+		return true
+	}
+	for _, candidate := range []types.Type{t, types.NewPointer(t)} {
+		ms := types.NewMethodSet(candidate)
+		for _, name := range []string{"String", "Error", "GoString", "Format"} {
+			if ms.Lookup(nil, name) != nil {
+				return true
+			}
+		}
+	}
+	switch u := t.Underlying().(type) {
+	case *types.Pointer:
+		return mayCallFormattingMethod(u.Elem(), seen, depth+1)
+	case *types.Array:
+		return mayCallFormattingMethod(u.Elem(), seen, depth+1)
+	case *types.Slice:
+		return mayCallFormattingMethod(u.Elem(), seen, depth+1)
+	case *types.Map:
+		return mayCallFormattingMethod(u.Key(), seen, depth+1) || mayCallFormattingMethod(u.Elem(), seen, depth+1)
+	case *types.Struct:
+		for i := 0; i < u.NumFields(); i++ {
+			if mayCallFormattingMethod(u.Field(i).Type(), seen, depth+1) {
+				return true
+			}
+		}
+	case *types.TypeParam:
+		return true
+	}
+	return false
 }
 
 // peerSourceCallee reports whether fn produces or reads peer-controlled
@@ -1837,9 +1909,8 @@ func (ix *Index) traceCallee(fn *types.Func, call *ast.CallExpr, evalArg exprEva
 	}
 	// Recursive callee chains (f → … → f) are exponential without a
 	// guard: each re-entry re-scans the whole body. A function already
-	// on the trace stack yields nothing — the caller's arg-merge or
-	// opaque fallback applies — matching the self-reference convention
-	// for assignments.
+	// on the trace stack yields nothing, so the caller leaves that call
+	// UNKNOWN instead of treating its explicit arguments as exhaustive.
 	if ix.calleeTraceIn == nil {
 		ix.calleeTraceIn = map[string]bool{}
 	}
@@ -1930,11 +2001,7 @@ func (ix *Index) traceCallee(fn *types.Func, call *ast.CallExpr, evalArg exprEva
 				continue
 			}
 			nret++
-			o, w := ix.evalCalleeExpr(dp, decl, re, argAt, evalArg, depth)
-			if o == domain.OriginUnknown && os.Getenv("INGRESS_DEBUG") != "" {
-				fmt.Fprintf(os.Stderr, "  callee %s return expr=%s -> UNKNOWN: %.400s\n",
-					fn.Name(), funText(re), w)
-			}
+			o, _ := ix.evalCalleeExpr(dp, decl, re, argAt, evalArg, depth)
 			out = mergeOrigin(out, o)
 		}
 		return true
@@ -1989,13 +2056,6 @@ func (ix *Index) evalCalleeExpr0(dp *packages.Package, decl *ast.FuncDecl, e ast
 	}
 	defer ix.leaveExpr()
 
-	dbg := func(o domain.DataOrigin, w string) (domain.DataOrigin, string) {
-		if o == domain.OriginUnknown && os.Getenv("INGRESS_DEBUG") != "" {
-			fmt.Fprintf(os.Stderr, "  callee-eval UNKNOWN depth=%d expr=%s why=%.200s\n", depth, funText(e), w)
-		}
-		return o, w
-	}
-
 	// Type expressions (`map[K]V`, `[]T`) carry metadata, not data.
 	if tv, ok := dp.TypesInfo.Types[e]; ok && tv.IsType() {
 		return domain.OriginConstant, "type expression"
@@ -2010,10 +2070,7 @@ func (ix *Index) evalCalleeExpr0(dp *packages.Package, decl *ast.FuncDecl, e ast
 			if kv, ok := el.(*ast.KeyValueExpr); ok {
 				el = kv.Value
 			}
-			o, w := ix.evalCalleeExpr(dp, decl, el, argAt, evalArg, depth)
-			if o == domain.OriginUnknown && os.Getenv("INGRESS_DEBUG") != "" {
-				fmt.Fprintf(os.Stderr, "  composite elt %s -> UNKNOWN: %.300s\n", funText(el), w)
-			}
+			o, _ := ix.evalCalleeExpr(dp, decl, el, argAt, evalArg, depth)
 			out = mergeOrigin(out, o)
 		}
 		return out, "composite literal"
@@ -2047,33 +2104,27 @@ func (ix *Index) evalCalleeExpr0(dp *packages.Package, decl *ast.FuncDecl, e ast
 		}
 		rhsList := ix.assigns(decl, obj)
 		rhsList = append(rhsList, elemWriteRHSs(decl, obj)...)
-		if len(rhsList) > 0 {
-			// Same cycle guard as classifyIdent: x = x + t re-enters the
-			// same var's assignments — the accumulated value keeps the
-			// origins already merged, the self-reference adds nothing.
-			// calleeEvalSeen is lazily owned by this frame so the guard
-			// holds on any entry path, not only inside Trace*.
-			if ix.calleeEvalSeen == nil {
-				ix.calleeEvalSeen = map[types.Object]bool{}
-			}
-			if ix.calleeEvalSeen[obj] {
-				// Self-referential writes contribute no new origin — the
-				// accumulated value keeps the origins already merged.
-				return domain.OriginConstant, "self-reference"
-			}
-			ix.calleeEvalSeen[obj] = true
-			defer delete(ix.calleeEvalSeen, obj)
-			var merged domain.DataOrigin
-			for _, rhs := range rhsList {
-				o, w := ix.evalCalleeExpr(dp, decl, rhs, argAt, evalArg, depth)
-				if o == domain.OriginUnknown && os.Getenv("INGRESS_DEBUG") != "" {
-					fmt.Fprintf(os.Stderr, "  local %s rhs %s -> UNKNOWN: %.300s\n", v.Name, funText(rhs), w)
-				}
-				merged = mergeOrigin(merged, o)
-			}
-			if merged != "" {
-				return merged, "local " + v.Name + " <- merged assignments"
-			}
+		// Same cycle guard as classifyIdent: x = x + t re-enters the
+		// same var's assignments — the accumulated value keeps the
+		// origins already merged, the self-reference adds nothing.
+		// calleeEvalSeen is lazily owned by this frame so the guard
+		// holds on any entry path, not only inside Trace*.
+		if ix.calleeEvalSeen == nil {
+			ix.calleeEvalSeen = map[types.Object]bool{}
+		}
+		if ix.calleeEvalSeen[obj] {
+			// Self-referential writes contribute no new origin — the
+			// accumulated value keeps the origins already merged.
+			return domain.OriginConstant, "self-reference"
+		}
+		ix.calleeEvalSeen[obj] = true
+		defer delete(ix.calleeEvalSeen, obj)
+		var merged domain.DataOrigin
+		var whys []string
+		for _, rhs := range rhsList {
+			o, w := ix.evalCalleeExpr(dp, decl, rhs, argAt, evalArg, depth)
+			merged = mergeOrigin(merged, o)
+			whys = append(whys, w)
 		}
 		// Call-populated locals inside the callee: io.ReadFull(r, buf),
 		// binary.Read(r, _, &size), buf.Write(x) — same rules as the
@@ -2082,25 +2133,31 @@ func (ix *Index) evalCalleeExpr0(dp *packages.Package, decl *ast.FuncDecl, e ast
 			return ix.evalCalleeExpr(dp, decl, e, argAt, evalArg, d)
 		}
 		if o, w, ok := ix.populatedByCall(dp, decl, obj, depth, inner); ok {
-			return o, "local " + v.Name + " <- " + w
+			merged = mergeOrigin(merged, o)
+			whys = append(whys, w)
 		}
 		// Unsafe pointer stores `*(*T)(unsafe.Pointer(&v)) = e` populate
 		// the variable through a dereference — stored-value origin applies.
 		if rhsList := derefWriteRHSs(decl, obj); len(rhsList) > 0 {
-			var merged domain.DataOrigin
 			for _, rhs := range rhsList {
-				o, _ := ix.evalCalleeExpr(dp, decl, rhs, argAt, evalArg, depth)
+				o, w := ix.evalCalleeExpr(dp, decl, rhs, argAt, evalArg, depth)
 				merged = mergeOrigin(merged, o)
+				whys = append(whys, "deref-write: "+w)
 			}
-			return merged, "local " + v.Name + " <- deref-write"
 		}
 		if rhs, ridx := multiAssignRHS(decl, obj, dp.TypesInfo); rhs != nil {
+			var o domain.DataOrigin
+			var w string
 			if call, isCall := rhs.(*ast.CallExpr); isCall {
-				o, w := ix.evalCallResult(dp, decl, call, ridx, inner, depth)
-				return o, "multi-assign " + w
+				o, w = ix.evalCallResult(dp, decl, call, ridx, inner, depth)
+			} else {
+				o, w = ix.evalCalleeExpr(dp, decl, rhs, argAt, evalArg, depth)
 			}
-			o, w := ix.evalCalleeExpr(dp, decl, rhs, argAt, evalArg, depth)
-			return o, "multi-assign " + w
+			merged = mergeOrigin(merged, o)
+			whys = append(whys, "multi-assign: "+w)
+		}
+		if merged != "" {
+			return merged, "local " + v.Name + " <- {" + strings.Join(whys, " | ") + "}"
 		}
 		// `switch v := e.(type)` binds v to e asserted — the guard
 		// expression carries the origin.
@@ -2143,7 +2200,7 @@ func (ix *Index) evalCalleeExpr0(dp *packages.Package, decl *ast.FuncDecl, e ast
 				return o, "package-level " + v.Name + " <- " + w
 			}
 		}
-		return dbg(domain.OriginUnknown, "unresolvable ident "+v.Name)
+		return domain.OriginUnknown, "unresolvable ident " + v.Name
 	case *ast.SelectorExpr:
 		// Field access propagates the enclosing value's origin
 		// (field.Type, info.Num); package-qualified selections resolve
@@ -2188,7 +2245,7 @@ func (ix *Index) evalCalleeExpr0(dp *packages.Package, decl *ast.FuncDecl, e ast
 			return ix.evalCalleeExpr(dp, decl, v.Args[0], argAt, evalArg, depth)
 		}
 		// Delegate to the shared call classifier so callee bodies get the
-		// same source/passthrough/reflect/dep-merge rules as top-level
+		// same source/passthrough/reflect/callback rules as top-level
 		// call sites — without them stdlib helpers (strings.Split,
 		// fmt.Sprintf, reflect.Value accessors) trace into unresolvable
 		// runtime internals and pollute the merged origin with UNKNOWN.
@@ -2197,7 +2254,7 @@ func (ix *Index) evalCalleeExpr0(dp *packages.Package, decl *ast.FuncDecl, e ast
 		}
 		return ix.classifyCallEval(dp, decl, v, depth, -1, inner)
 	}
-	return dbg(domain.OriginUnknown, fmt.Sprintf("unsupported callee expr %T", e))
+	return domain.OriginUnknown, fmt.Sprintf("unsupported callee expr %T", e)
 }
 
 // bodyContaminated reports whether the callee body reads any external data
@@ -2363,11 +2420,67 @@ func (ix *Index) TraceAllArguments(ctx context.Context, site domain.CallSite) ([
 			Sink:            site,
 			Source:          site,
 			Origin:          origin,
+			PayloadUnproven: payloadUnprovenParameter(pkg, call, i),
 			Transformations: dedupSites(tx),
 			Summary:         fmt.Sprintf("arg%d: %s", i, why),
 		})
 	}
 	return flows, ev, nil
+}
+
+func payloadUnprovenParameter(pkg *packages.Package, call *ast.CallExpr, argIndex int) bool {
+	if pkg == nil || pkg.TypesInfo == nil || call == nil || argIndex < 0 {
+		return false
+	}
+	calleeType := pkg.TypesInfo.TypeOf(call.Fun)
+	if calleeType == nil {
+		return false
+	}
+	sig, _ := types.Unalias(calleeType).Underlying().(*types.Signature)
+	if sig == nil || sig.Params() == nil {
+		return false
+	}
+	params := sig.Params()
+	if sig.Variadic() && params.Len() > 0 && argIndex >= params.Len()-1 {
+		variadic, _ := types.Unalias(params.At(params.Len() - 1).Type()).Underlying().(*types.Slice)
+		return variadic != nil && writerOnlyType(variadic.Elem())
+	}
+	if argIndex >= params.Len() {
+		return false
+	}
+	return writerOnlyType(params.At(argIndex).Type())
+}
+
+func writerOnlyType(t types.Type) bool {
+	if t == nil {
+		return false
+	}
+	methods := types.NewMethodSet(types.Unalias(t))
+	write := methods.Lookup(nil, "Write")
+	if write == nil {
+		return false
+	}
+	sig, _ := types.Unalias(write.Obj().Type()).Underlying().(*types.Signature)
+	if !canonicalByteIO(sig) {
+		return false
+	}
+	read := methods.Lookup(nil, "Read")
+	if read == nil {
+		return true
+	}
+	readSig, _ := types.Unalias(read.Obj().Type()).Underlying().(*types.Signature)
+	return !canonicalByteIO(readSig)
+}
+
+func canonicalByteIO(sig *types.Signature) bool {
+	if sig == nil || sig.Variadic() || sig.Params().Len() != 1 || sig.Results().Len() != 2 {
+		return false
+	}
+	errorType := types.Universe.Lookup("error").Type()
+	return types.Identical(types.Unalias(sig.Params().At(0).Type()),
+		types.NewSlice(types.Typ[types.Byte])) &&
+		types.Identical(types.Unalias(sig.Results().At(0).Type()), types.Typ[types.Int]) &&
+		types.Identical(types.Unalias(sig.Results().At(1).Type()), types.Unalias(errorType))
 }
 
 // InputParamIndex heuristically selects the parameter index most likely to
@@ -2646,10 +2759,6 @@ func (ix *Index) traceReceiver(pkg *packages.Package, enc *ast.FuncDecl, v *type
 		}
 		onPath++
 		o, w := ix.classify(r.pkg, r.enclosing, rexpr, depth+1)
-		if o == domain.OriginUnknown && os.Getenv("INGRESS_DEBUG") != "" {
-			fmt.Fprintf(os.Stderr, "  recv UNKNOWN caller=%s:%d expr=%s why=%.300s\n",
-				r.Site.File, r.Site.Line, funText(rexpr), w)
-		}
 		whys = append(whys, fmt.Sprintf("%s:%d %s", r.Site.File, r.Site.Line, w))
 		merged = mergeOrigin(merged, o)
 	}
@@ -2773,14 +2882,14 @@ var reflectDispatchAPIs = map[string][]string{
 // lookups on its literal name, or a reflect-driven marshaling API whose
 // call sites can carry the receiver type.
 func (ix *Index) methodDispatchExists(pkg *packages.Package, enc *ast.FuncDecl) bool {
-	if ix.reflectLookupExists(enc.Name.Name) {
-		return true
-	}
 	apis, ok := reflectDispatchAPIs[enc.Name.Name]
 	if !ok {
 		// Not a known reflect-dispatched method — the invocation surface
 		// may still exist (interface wrappers, plugin registries); keep it
 		// unknown-biased rather than claim unreachability.
+		return true
+	}
+	if ix.reflectLookupExists(enc.Name.Name) {
 		return true
 	}
 	return ix.marshalAPICarrierExists(pkg, enc, apis)

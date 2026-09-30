@@ -28,11 +28,13 @@ func TestSinkClosureReceiverViaFuncValue(t *testing.T) {
 		t.Fatal(err)
 	}
 	live := 0
+	receiver := false
 	for _, s := range cl.Sites {
 		if !s.Live {
 			continue
 		}
 		live++
+		receiver = receiver || s.Arg == -1
 		if !domain.SafeOrigin(s.Origin) {
 			t.Fatalf("live position %s:%d arg%d %s: %s",
 				s.CallSite.File, s.CallSite.Line, s.Arg, s.Origin, s.Detail)
@@ -40,6 +42,9 @@ func TestSinkClosureReceiverViaFuncValue(t *testing.T) {
 	}
 	if live == 0 {
 		t.Fatal("no live sites enumerated")
+	}
+	if !receiver {
+		t.Fatal("method-value call did not record its receiver payload position")
 	}
 	if !cl.Complete {
 		t.Fatalf("sink closure incomplete: %+v", cl)

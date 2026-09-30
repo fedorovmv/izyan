@@ -53,6 +53,7 @@ func (ix *Index) SinkClosure(ctx context.Context, condID domain.ConditionID, mod
 		ix.funcDeclCache = nil
 	}()
 	var livePos, dead, unsafePos, unresolved int
+	pinned := map[string]bool{}
 	for _, subj := range subjects {
 		key := subj.Package + "." + subj.Symbol
 		// Every declared sink must exist in the analyzed version — a
@@ -73,20 +74,31 @@ func (ix *Index) SinkClosure(ctx context.Context, condID domain.ConditionID, mod
 		// callerScope for dep packages covers product+extras, and the
 		// extras must include every package of the subject's module.
 		if spkg.Module != nil {
-			if _, err := ix.loadExtra(ctx, spkg.Module.Path+"/..."); err != nil {
+			pattern := spkg.Module.Path + "/..."
+			if _, err := ix.loadExtra(ctx, pattern); err != nil {
 				cl.Blockers = append(cl.Blockers,
 					fmt.Sprintf("declared sink %s: module load failed: %v", key, err))
 			} else {
 				// The subject module stays resident through the closure —
 				// evicting it mid-verification drops its callers and turns
 				// resolved payload positions UNKNOWN.
-				ix.pinExtra(spkg.Module.Path + "/...")
+				if !pinned[pattern] {
+					defer ix.pinExtraScoped(pattern)()
+					pinned[pattern] = true
+				}
 			}
 		}
 		cl.Blockers = append(cl.Blockers, ix.unseenDepCallers(ctx, subj, spkg)...)
 		seen := map[string]bool{}
 		for _, r := range ix.callersOf(spkg, subj) {
-			skey := fmt.Sprintf("%s:%d", r.Site.File, r.Site.Line)
+			if r.possible {
+				cl.Blockers = append(cl.Blockers, fmt.Sprintf(
+					"declared sink %s: caller set changed or has unresolved function-value dispatch", key))
+				if r.call == nil || r.pkg == nil {
+					continue
+				}
+			}
+			skey := fmt.Sprintf("%s:%d:%d", r.Site.File, r.Site.Line, r.Site.Column)
 			if seen[skey] {
 				continue
 			}
@@ -123,7 +135,9 @@ func (ix *Index) SinkClosure(ctx context.Context, condID domain.ConditionID, mod
 			// reads — a payload position in its own right (a decoder's
 			// buffer never travels through an argument).
 			if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
-				add(-1, sel.X)
+				if selection := r.pkg.TypesInfo.Selections[sel]; selection != nil && selection.Kind() == types.MethodVal {
+					add(-1, sel.X)
+				}
 			}
 			for _, p := range positions {
 				var tx []domain.CallSite

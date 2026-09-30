@@ -34,8 +34,8 @@ type Knowledge struct {
 	// origin the call result carries (io.ReadAll → arg0).
 	PassthroughFuncs map[string]int
 	// ArgsMergeFuncs names "pkgpath.Func" combinators whose result merges
-	// the provenance of every argument — formatting/joining constructors
-	// like fmt.Sprintf or errors.Join that introduce no data of their own.
+	// explicit argument provenance. The classifier still rejects callback
+	// arguments and implicit formatter callbacks whose effects are unknown.
 	ArgsMergeFuncs map[string]bool
 	// PassthroughMethods names accessor methods whose result carries the
 	// receiver's origin (scanner.Text(), buf.Bytes(), builder.String()).

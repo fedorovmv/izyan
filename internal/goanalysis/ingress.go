@@ -6,7 +6,6 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
-	"os"
 	"sort"
 	"strings"
 
@@ -32,9 +31,9 @@ import (
 //     proven closed — function values escaping the call graph, opaque
 //     callees in cone code, reflective invocation, plugins/linkname.
 //
-// A FALSE claim is allowed only for a complete closure whose elements
-// all resolve to CONSTANT/GENERATED origins or are proven unable to
-// become payload (a boundary entry that cannot reach any subject).
+// A FALSE claim is allowed only for a complete closure whose recorded
+// elements all resolve to CONSTANT/GENERATED origins. Reaches is
+// diagnostic only: an empty reach set does not exclude an inventoried item.
 // Anything else stays UNKNOWN.
 
 // ingressEntry is one product→module boundary call site.
@@ -69,11 +68,13 @@ type ingressScan struct {
 	subjects map[string]bool
 	modPkgs  []*packages.Package
 
-	edges   map[string]map[string]bool
-	decls   map[string]fnDeclRef
-	cone    map[string]bool
-	entries []ingressEntry
-	feeders []depFeeder
+	edges      map[string]map[string]bool
+	decls      map[string]fnDeclRef
+	initDecls  []fnDeclRef
+	cone       map[string]bool
+	entries    []ingressEntry
+	feeders    []depFeeder
+	extraDecls []fnDeclRef
 
 	items    []domain.IngressItem
 	blockers []string
@@ -122,7 +123,8 @@ func (ix *Index) IngressInventory(ctx context.Context, module string, subjects [
 		cl.Blockers = append(cl.Blockers, fmt.Sprintf("module source load failed: %v", err))
 		return cl, nil, nil
 	}
-	ix.pinExtra(module + "/...")
+	releasePin := ix.pinExtraScoped(module + "/...")
+	defer releasePin()
 	if _, err := ix.depImporters(ctx); err != nil {
 		cl.Blockers = append(cl.Blockers, fmt.Sprintf("dependency module map failed: %v", err))
 		return cl, nil, nil
@@ -199,7 +201,7 @@ func (s *ingressScan) summary() string {
 // code or calls the inventory never sees.
 func (s *ingressScan) indexDecls(pkgs []*packages.Package) {
 	for _, pkg := range pkgs {
-		for i, f := range pkg.Syntax {
+		for _, f := range pkg.Syntax {
 			for _, imp := range f.Imports {
 				if strings.Trim(imp.Path.Value, `"`) == "plugin" {
 					pos := s.ix.fset.Position(imp.Pos())
@@ -218,7 +220,6 @@ func (s *ingressScan) indexDecls(pkgs []*packages.Package) {
 					}
 				}
 			}
-			_ = i
 			for _, d := range f.Decls {
 				fd, ok := d.(*ast.FuncDecl)
 				if !ok || fd.Name == nil {
@@ -229,7 +230,11 @@ func (s *ingressScan) indexDecls(pkgs []*packages.Package) {
 					key = pkg.PkgPath + "." + recvDeclName(fd.Recv.List[0].Type) + "." + fd.Name.Name
 				}
 				fn, _ := pkg.TypesInfo.Defs[fd.Name].(*types.Func)
-				s.decls[key] = fnDeclRef{pkg: pkg, decl: fd, key: key, fn: fn}
+				ref := fnDeclRef{pkg: pkg, decl: fd, key: key, fn: fn}
+				s.decls[key] = ref
+				if fd.Name.Name == "init" && fd.Recv == nil {
+					s.initDecls = append(s.initDecls, ref)
+				}
 			}
 		}
 	}
@@ -366,6 +371,10 @@ func (s *ingressScan) inventoryEntries() {
 				Detail:   w,
 			})
 			s.objectState(e, arg, i)
+			d := fnDeclRef{pkg: e.pkg, decl: e.enc, key: e.calleeKey}
+			s.scanBody(e.pkg, d, arg, func(target fnDeclRef) {
+				s.extraDecls = append(s.extraDecls, target)
+			})
 		}
 		if sel, ok := e.call.Fun.(*ast.SelectorExpr); ok {
 			if _, isSel := e.pkg.TypesInfo.Selections[sel]; isSel {
@@ -379,6 +388,10 @@ func (s *ingressScan) inventoryEntries() {
 					Detail:   "receiver: " + w,
 				})
 				s.objectState(e, sel.X, -1)
+				d := fnDeclRef{pkg: e.pkg, decl: e.enc, key: e.calleeKey}
+				s.scanBody(e.pkg, d, sel.X, func(target fnDeclRef) {
+					s.extraDecls = append(s.extraDecls, target)
+				})
 			}
 		}
 	}
@@ -540,14 +553,42 @@ func (s *ingressScan) scanCone() {
 			push(d)
 		}
 	}
+	for _, d := range s.extraDecls {
+		push(d)
+	}
 	// init() bodies run only for packages actually linked into the
 	// product binary — the product's transitive import closure. Module
 	// packages the product never imports (tools, codegen mains) cannot
 	// feed runtime state and are not inventoried.
 	reach := s.importedByProduct()
-	for _, d := range s.decls {
-		if d.decl.Name.Name == "init" && d.decl.Recv == nil && reach[d.pkg.PkgPath] {
+	for _, d := range s.initDecls {
+		if reach[d.pkg.PkgPath] {
 			push(d)
+		}
+	}
+	for _, pkg := range s.modPkgs {
+		if !reach[pkg.PkgPath] || pkg.TypesInfo == nil {
+			continue
+		}
+		for _, f := range pkg.Syntax {
+			for _, decl := range f.Decls {
+				gd, ok := decl.(*ast.GenDecl)
+				if !ok || gd.Tok != token.VAR {
+					continue
+				}
+				for _, spec := range gd.Specs {
+					vs, ok := spec.(*ast.ValueSpec)
+					if !ok {
+						continue
+					}
+					for _, value := range vs.Values {
+						name := "package initializer"
+						fd := &ast.FuncDecl{Name: &ast.Ident{Name: name}, Type: &ast.FuncType{}, Body: &ast.BlockStmt{}}
+						d := fnDeclRef{pkg: pkg, decl: fd, key: pkg.PkgPath + "." + name}
+						s.scanBody(pkg, d, value, push)
+					}
+				}
+			}
 		}
 	}
 	for len(order) > 0 {
@@ -564,6 +605,10 @@ func (s *ingressScan) scanCone() {
 
 // scanDecl inspects one function body for ingress elements.
 func (s *ingressScan) scanDecl(d fnDeclRef, push func(fnDeclRef)) {
+	if d.decl == nil || d.decl.Body == nil {
+		s.blockers = append(s.blockers, fmt.Sprintf("body unavailable for %s — effects are not inventoried", d.key))
+		return
+	}
 	s.scanBody(d.pkg, d, d.decl, push)
 }
 
@@ -660,7 +705,18 @@ func (s *ingressScan) scanCall(pkg *packages.Package, d fnDeclRef, call *ast.Cal
 	}
 	obj := calleeObject(info, call.Fun)
 	switch o := obj.(type) {
-	case *types.Builtin, *types.TypeName:
+	case *types.Builtin:
+		if o.Name() == "recover" {
+			s.addItem(domain.IngressItem{
+				CallSite: s.siteAt(pkg, d.decl, call.Pos()),
+				Kind:     domain.IngressConeSource,
+				Callee:   "builtin.recover",
+				Origin:   domain.OriginUnknown,
+				Detail:   "recover may return a panic value supplied outside the inventoried cone",
+			})
+		}
+		return
+	case *types.TypeName:
 		return
 	case *types.Func:
 		// Interface dispatch: implementations outside the module are
@@ -743,6 +799,15 @@ func (s *ingressScan) funcValueCall(pkg *packages.Package, d fnDeclRef, call *as
 			// Callback parameter: every caller of the enclosing decl
 			// supplies a candidate implementation.
 			rhses = s.paramFuncValues(pkg, d, v)
+		case isPackageVar(v):
+			var open bool
+			var why string
+			rhses, open, why = s.packageFuncValues(v)
+			if open {
+				s.blockers = append(s.blockers, fmt.Sprintf(
+					"func-value call in %s — package var %s has unclosed writes or escapes: %s",
+					where, v.Name(), why))
+			}
 		default:
 			for _, e := range localAssigns(d.decl, v) {
 				rhses = append(rhses, rhsRef{pkg, d.decl, e})
@@ -817,6 +882,16 @@ func (s *ingressScan) funcValueCall(pkg *packages.Package, d fnDeclRef, call *as
 		// Alias to another func-valued var: chase its writes — locals in
 		// the write site's function, package vars in their own package.
 		if vv, ok := calleeObject(r.pkg.TypesInfo, r.expr).(*types.Var); ok {
+			if isPackageVar(vv) {
+				more, open, why := s.packageFuncValues(vv)
+				rhses = append(rhses, more...)
+				if open {
+					s.blockers = append(s.blockers, fmt.Sprintf(
+						"func-value alias in %s — package var %s has unclosed writes or escapes: %s",
+						where, vv.Name(), why))
+				}
+				continue
+			}
 			for _, e := range localAssigns(r.enc, vv) {
 				rhses = append(rhses, rhsRef{r.pkg, r.enc, e})
 			}
@@ -858,6 +933,139 @@ func (s *ingressScan) funcValueCall(pkg *packages.Package, d fnDeclRef, call *as
 		// stdlib target — e.g. a read handler bound to io.Reader paths.
 		s.scanStdlibCall(pkg, d, call, fn, push)
 	}
+}
+
+func (s *ingressScan) packageFuncValues(v *types.Var) (rhses []rhsRef, open bool, why string) {
+	vp := s.pkgOf(v)
+	if vp == nil {
+		return nil, true, "declaring package source unavailable"
+	}
+	var reasons []string
+	if v.Exported() {
+		reasons = append(reasons, "exported package var may be assigned by external importers")
+	}
+	if init := findVarInit(vp, v); init != nil {
+		rhses = append(rhses, rhsRef{pkg: vp, expr: init})
+	} else {
+		reasons = append(reasons, "no initializer")
+	}
+	scope := append(append([]*packages.Package{}, s.modPkgs...), s.ix.pkgs...)
+	for _, pkg := range scope {
+		if pkg == nil || pkg.TypesInfo == nil {
+			continue
+		}
+		for _, file := range pkg.Syntax {
+			var enc *ast.FuncDecl
+			lhs := map[ast.Node]bool{}
+			callFun := map[ast.Node]bool{}
+			addressed := map[ast.Node]bool{}
+			ast.Inspect(file, func(n ast.Node) bool {
+				switch node := n.(type) {
+				case *ast.CallExpr:
+					callFun[node.Fun] = true
+					if sel, ok := node.Fun.(*ast.SelectorExpr); ok {
+						callFun[sel.Sel] = true
+					}
+				case *ast.AssignStmt:
+					for _, e := range node.Lhs {
+						ast.Inspect(e, func(n ast.Node) bool {
+							if ident, ok := n.(*ast.Ident); ok && sameObject(pkg.TypesInfo.ObjectOf(ident), types.Object(v)) {
+								lhs[ident] = true
+							}
+							return true
+						})
+					}
+				case *ast.UnaryExpr:
+					if node.Op == token.AND {
+						ast.Inspect(node.X, func(n ast.Node) bool {
+							if ident, ok := n.(*ast.Ident); ok && sameObject(pkg.TypesInfo.ObjectOf(ident), types.Object(v)) {
+								addressed[ident] = true
+							}
+							return true
+						})
+					}
+				}
+				return true
+			})
+			ast.Inspect(file, func(n ast.Node) bool {
+				if fd, ok := n.(*ast.FuncDecl); ok {
+					enc = fd
+				}
+				switch node := n.(type) {
+				case *ast.AssignStmt:
+					for i, lhs := range node.Lhs {
+						if !sameObject(packageVarExprObject(pkg.TypesInfo, lhs), types.Object(v)) {
+							continue
+						}
+						var rhs ast.Expr
+						switch {
+						case i < len(node.Rhs):
+							rhs = node.Rhs[i]
+						case len(node.Rhs) == 1:
+							rhs = node.Rhs[0]
+						}
+						if rhs == nil {
+							reasons = append(reasons, "assignment result slot could not be identified")
+							continue
+						}
+						rhses = append(rhses, rhsRef{pkg, enc, rhs})
+						reasons = append(reasons, "package var is assigned outside its initializer")
+					}
+				case *ast.Ident:
+					if !sameObject(pkg.TypesInfo.ObjectOf(node), types.Object(v)) || lhs[node] ||
+						pkg.TypesInfo.Defs[node] != nil || callFun[node] {
+						return true
+					}
+					if addressed[node] {
+						reasons = append(reasons, "function value address is taken")
+						return true
+					}
+					reasons = append(reasons, "function value escapes its package var")
+				}
+				return true
+			})
+		}
+	}
+	if len(rhses) == 0 {
+		reasons = append(reasons, "no enumerable function target")
+	}
+	return rhses, len(reasons) > 0, strings.Join(deduplicateStrings(reasons), "; ")
+}
+
+func packageVarExprObject(info *types.Info, e ast.Expr) types.Object {
+	switch e := ast.Unparen(e).(type) {
+	case *ast.Ident:
+		return info.ObjectOf(e)
+	case *ast.SelectorExpr:
+		if _, field := info.Selections[e]; !field {
+			return info.ObjectOf(e.Sel)
+		}
+	}
+	return nil
+}
+
+func (s *ingressScan) addUnknownCall(pkg *packages.Package, d fnDeclRef, call *ast.CallExpr,
+	fn *types.Func, why string) {
+	s.addItem(domain.IngressItem{
+		CallSite: s.siteAt(pkg, d.decl, call.Pos()),
+		Kind:     domain.IngressConeSource,
+		Callee:   fn.Pkg().Path() + "." + fn.Name(),
+		Origin:   domain.OriginUnknown,
+		Detail:   why,
+	})
+}
+
+func deduplicateStrings(values []string) []string {
+	seen := map[string]bool{}
+	out := values[:0]
+	for _, value := range values {
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	return out
 }
 
 // paramFuncValues resolves a func-valued parameter of d's declaration to
@@ -1049,17 +1257,39 @@ func (s *ingressScan) inEdges() map[string][]string {
 }
 
 // scanStdlibCall classifies a call to a non-module function by the
-// knowledge base: source functions, peer channels, DB/service clients
-// and HTTP clients produce items; benign plumbing contributes nothing.
+// knowledge base: modeled calls contribute known origins; unmodeled calls
+// preserve UNKNOWN because they may return data or perform independent effects.
 func (s *ingressScan) scanStdlibCall(pkg *packages.Package, d fnDeclRef, call *ast.CallExpr, fn *types.Func, push func(fnDeclRef)) {
 	key := fn.Pkg().Path() + "." + fn.Name()
+	if fn.Pkg().Path() == "reflect" && (fn.Name() == "TypeOf" || reflectTypeConstructor(fn)) {
+		return
+	}
+	if callHasFunctionArg(pkg, call) {
+		s.addUnknownCall(pkg, d, call, fn, "external callback may have independent effects")
+		return
+	}
+	if formatArgsMayCallUserCode(pkg, call) {
+		s.addUnknownCall(pkg, d, call, fn, "external call may invoke a formatting method with independent provenance")
+		return
+	}
 	if fn.Pkg().Path() == "reflect" {
-		switch fn.Name() {
-		case "Call", "CallSlice", "Method", "MethodByName":
-			s.reflectCall(pkg, d, call, fn, push)
+		if fn.Name() == "ValueOf" && len(call.Args) == 1 {
+			o, why := s.ix.classify(pkg, d.decl, call.Args[0], 0)
+			if !domain.SafeOrigin(o) {
+				s.addItem(domain.IngressItem{
+					CallSite: s.siteAt(pkg, d.decl, call.Pos()), Kind: domain.IngressConeSource,
+					Callee: key, Origin: o, Detail: "reflect.ValueOf carries input provenance: " + why,
+				})
+			}
+			return
 		}
-		// All other reflect.* ops move values around — they introduce
-		// neither sources nor call targets.
+		if fn.Name() == "Call" || fn.Name() == "CallSlice" {
+			pos := s.ix.fset.Position(call.Pos())
+			s.blockers = append(s.blockers, fmt.Sprintf(
+				"%s in %s at %s:%d — reflective invocation target is not proven closed",
+				key, d.key, pos.Filename, pos.Line))
+		}
+		s.addUnknownCall(pkg, d, call, fn, "reflective value operation may carry or write non-constant data")
 		return
 	}
 	if o, ok := s.ix.kb().SourceFuncs[key]; ok && o != domain.OriginConstant {
@@ -1070,6 +1300,9 @@ func (s *ingressScan) scanStdlibCall(pkg *packages.Package, d fnDeclRef, call *a
 			Origin:   o,
 			Detail:   "knowledge-base source",
 		})
+		return
+	}
+	if o, ok := s.ix.kb().SourceFuncs[key]; ok && o == domain.OriginConstant {
 		return
 	}
 	if peerSourceCallee(fn) {
@@ -1110,7 +1343,70 @@ func (s *ingressScan) scanStdlibCall(pkg *packages.Package, d fnDeclRef, call *a
 			Origin:   o,
 			Detail:   "http client: " + w,
 		})
+		return
 	}
+	if idx, ok := s.ix.kb().PassthroughFuncs[key]; ok {
+		if idx >= 0 && idx < len(call.Args) {
+			o, why := s.ix.classify(pkg, d.decl, call.Args[idx], 0)
+			s.addDerivedItem(pkg, d, call, fn, o, "passthrough result: "+why)
+			return
+		}
+		s.addUnknownCall(pkg, d, call, fn, "invalid passthrough model argument")
+		return
+	}
+	if s.ix.kb().ArgsMergeFuncs[key] {
+		origin := domain.OriginConstant
+		var why []string
+		for _, arg := range call.Args {
+			o, w := s.ix.classify(pkg, d.decl, arg, 0)
+			origin = mergeOrigin(origin, o)
+			why = append(why, w)
+		}
+		s.addDerivedItem(pkg, d, call, fn, origin, "merged arguments: "+strings.Join(why, " | "))
+		return
+	}
+	if _, ok := s.ix.kb().PassthroughMethods[fn.Name()]; ok && sigHasReceiver(fn) {
+		if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
+			o, why := s.ix.classify(pkg, d.decl, sel.X, 0)
+			s.addDerivedItem(pkg, d, call, fn, o, "passthrough receiver: "+why)
+			return
+		}
+		s.addUnknownCall(pkg, d, call, fn, "passthrough method receiver unresolved")
+		return
+	}
+	if idxs, ok := s.ix.kb().SlicePopulateFuncs[key]; ok && idxs[1] >= 0 && idxs[1] < len(call.Args) {
+		o, why := s.ix.classify(pkg, d.decl, call.Args[idxs[1]], 0)
+		s.addDerivedItem(pkg, d, call, fn, o, "populated destination from: "+why)
+		return
+	}
+	s.addUnknownCall(pkg, d, call, fn, "unmodeled external call may have independent effects")
+}
+
+func (s *ingressScan) addDerivedItem(pkg *packages.Package, d fnDeclRef, call *ast.CallExpr,
+	fn *types.Func, origin domain.DataOrigin, detail string) {
+	if domain.SafeOrigin(origin) {
+		return
+	}
+	s.addItem(domain.IngressItem{
+		CallSite: s.siteAt(pkg, d.decl, call.Pos()),
+		Kind:     domain.IngressConeSource,
+		Callee:   fn.Pkg().Path() + "." + fn.Name(),
+		Origin:   origin,
+		Detail:   detail,
+	})
+}
+
+func reflectTypeConstructor(fn *types.Func) bool {
+	switch fn.Name() {
+	case "PtrTo", "PointerTo", "SliceOf", "ArrayOf", "MapOf", "ChanOf", "FuncOf", "StructOf":
+		return true
+	}
+	return false
+}
+
+func sigHasReceiver(fn *types.Func) bool {
+	sig, ok := fn.Type().(*types.Signature)
+	return ok && sig.Recv() != nil
 }
 
 // reflectCall handles reflective invocation inside the cone.
@@ -1412,9 +1708,6 @@ func (s *ingressScan) pkgVarOrigin(vr *types.Var) (domain.DataOrigin, string, bo
 	var whys []string
 	complete := true
 	merge := func(o domain.DataOrigin, w string) {
-		if o != domain.OriginConstant && o != domain.OriginGenerated && os.Getenv("INGRESS_DEBUG") != "" {
-			fmt.Fprintf(os.Stderr, "  [var %s] merge %s: %s\n", vr.Name(), o, w)
-		}
 		merged = mergeOrigin(merged, o)
 		whys = append(whys, w)
 	}
@@ -1427,17 +1720,6 @@ func (s *ingressScan) pkgVarOrigin(vr *types.Var) (domain.DataOrigin, string, bo
 	for _, r := range ws.writes {
 		o, w := s.ix.classify(r.pkg, r.enc, r.expr, 1)
 		merge(o, "write "+w)
-		if o == domain.OriginUnknown && os.Getenv("INGRESS_DEBUG") != "" {
-			var obj types.Object
-			if id, ok2 := r.expr.(*ast.Ident); ok2 {
-				obj = r.pkg.TypesInfo.ObjectOf(id)
-			}
-			for _, rhs := range s.ix.assigns(r.enc, obj) {
-				oo, ww := s.ix.classify(r.pkg, r.enc, rhs, 1)
-				fmt.Fprintf(os.Stderr, "    [var %s] rhs=%s -> %s: %.300s\n",
-					vr.Name(), funText(rhs), oo, ww)
-			}
-		}
 	}
 	for _, r := range ws.methArgs {
 		o, w := s.ix.classify(r.pkg, r.enc, r.expr, 1)

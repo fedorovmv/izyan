@@ -14,7 +14,7 @@ import (
 //
 // TRUE  — at least one trace proves EXTERNAL_UNTRUSTED/AUTHENTICATED origin.
 // FALSE (candidate) — every traced call site has a non-external origin
-// (CONSTANT/GENERATED/CONFIGURATION); requires negative verification.
+// (CONSTANT/GENERATED); requires negative verification.
 // UNKNOWN — missing traces or unresolvable origins.
 type ArgumentOrigin struct{}
 
@@ -37,8 +37,14 @@ func (ArgumentOrigin) Evaluate(cond domain.Condition, c *domain.AnalysisCase) do
 		return claim
 	}
 	module := c.Vulnerability.Module
-	var safe, external, unknown, deployDependent, coneInternal int
+	var safe, external, unknown, payloadUnproven, deployDependent, coneInternal int
 	for _, f := range flows {
+		if cond.ArgIndex < 0 && f.PayloadUnproven &&
+			(f.Origin == domain.OriginExternalUntrusted || f.Origin == domain.OriginExternalAuthenticated) {
+			unknown++
+			payloadUnproven++
+			continue
+		}
 		switch f.Origin {
 		case domain.OriginExternalUntrusted, domain.OriginExternalAuthenticated:
 			external++
@@ -96,7 +102,7 @@ func (ArgumentOrigin) Evaluate(cond domain.Condition, c *domain.AnalysisCase) do
 	// when every traced argument's origin is resolved (an UNKNOWN origin
 	// could be unbounded input we failed to see). Stricter than
 	// hasGuardBefore: only real non-conditional guards count.
-	if cond.Kind == domain.ConditionInputConstraint && unknown == 0 && len(flows) > 0 {
+	if cond.Kind == domain.ConditionInputConstraint && unknown+coneInternal == 0 && len(flows) > 0 {
 		covered := true
 		needs := 0
 		for _, f := range flows {
@@ -144,8 +150,14 @@ func (ArgumentOrigin) Evaluate(cond domain.Condition, c *domain.AnalysisCase) do
 		claim.Result = domain.ClaimTrue
 		claim.Explanation = fmt.Sprintf("%d call site(s) receive externally controlled input", external)
 	case unknown > 0:
-		claim.Limitations = append(claim.Limitations,
-			fmt.Sprintf("%d call site(s) have unresolvable argument origin", unknown))
+		if unresolved := unknown - payloadUnproven; unresolved > 0 {
+			claim.Limitations = append(claim.Limitations,
+				fmt.Sprintf("%d call site(s) have unresolvable argument origin", unresolved))
+		}
+		if payloadUnproven > 0 {
+			claim.Limitations = append(claim.Limitations,
+				fmt.Sprintf("%d externally originated writer-only flow(s); outbound writer capability alone does not establish payload at an unspecified argument index", payloadUnproven))
+		}
 	case deployDependent > 0:
 		claim.Limitations = append(claim.Limitations,
 			fmt.Sprintf("%d call site(s) receive config/service-provided input; attacker control depends on deployment trust boundary — cannot prove non-external", deployDependent))
@@ -163,12 +175,12 @@ func (ArgumentOrigin) Evaluate(cond domain.Condition, c *domain.AnalysisCase) do
 // closureGate applies the dependency completeness records to a claim —
 // the two negative-verdict strategies the spec allows. The records can
 // only weaken a claim: a FALSE candidate survives when EITHER the
-// ingress closure is complete with every reaching item safe, OR the
+// ingress closure is complete with every inventoried item safe, OR the
 // sink closure is complete (the declared sink set is enumerable and
 // every live site's payload input resolved non-external). Ingress items
-// with no recorded path to a subject and dead sink sites are excluded
-// by call-graph evidence and listed in limitations for auditability.
-// Incomplete inventories, unresolved reaching items and unsafe reaching
+// with no recorded path to a subject still require safe origins. Dead
+// sink sites are recorded in limitations for auditability.
+// Incomplete inventories, unresolved items and unsafe
 // sources demote FALSE to UNKNOWN; nothing here promotes a claim.
 // coneInternal counts traced sinks inside the module cone whose argument
 // provenance was unresolvable — they are absorbed only by a verified
@@ -224,7 +236,7 @@ func closureGate(claim domain.Claim, cl *domain.IngressClosure, sc *domain.SinkC
 	if cl != nil && cl.Complete {
 		var unresolved, unsafe int
 		for _, it := range cl.Items {
-			if len(it.Reaches) == 0 || domain.SafeOrigin(it.Origin) {
+			if domain.SafeOrigin(it.Origin) {
 				continue
 			}
 			if it.Origin == domain.OriginUnknown || it.Origin == "" {
@@ -240,7 +252,7 @@ func closureGate(claim domain.Claim, cl *domain.IngressClosure, sc *domain.SinkC
 			}
 		}
 		claim.Explanation += fmt.Sprintf(
-			"; ingress closure complete but %d reaching item(s) unresolved and %d potentially attacker-reachable: %s",
+			"; ingress closure complete but %d item(s) unresolved and %d potentially attacker-reachable: %s",
 			unresolved, unsafe, strings.Join(open, "; "))
 	} else if cl != nil {
 		claim.Explanation += "; ingress closure incomplete — boundary inventory cannot be trusted as closed"
@@ -257,20 +269,15 @@ func closureGate(claim domain.Claim, cl *domain.IngressClosure, sc *domain.SinkC
 }
 
 // ingressVerified reports whether the ingress-closure record confirms
-// the FALSE candidate: complete inventory and every item that can reach
-// a condition subject resolved to a safe origin. The returned note is
-// the audit line for the claim's limitations.
+// the FALSE candidate: complete inventory and every item resolved to a
+// safe origin. The returned note is the audit line for the claim's limitations.
 func ingressVerified(cl *domain.IngressClosure, coneInternal int) (string, bool) {
 	if cl == nil || !cl.Complete {
 		return "", false
 	}
-	var unresolved, unsafe, excluded int
+	var unresolved, unsafe int
 	var open []string
 	for _, it := range cl.Items {
-		if len(it.Reaches) == 0 {
-			excluded++
-			continue
-		}
 		if domain.SafeOrigin(it.Origin) {
 			continue
 		}
@@ -290,8 +297,8 @@ func ingressVerified(cl *domain.IngressClosure, coneInternal int) (string, bool)
 		return "", false
 	}
 	return fmt.Sprintf(
-		"ingress closure verified complete: %d item(s), %d excluded by call-graph evidence",
-		len(cl.Items), excluded), true
+		"ingress closure verified complete: all %d inventoried item(s) have safe origins",
+		len(cl.Items)), true
 }
 
 // sinkVerified reports whether the sink-closure record confirms the

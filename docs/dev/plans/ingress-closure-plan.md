@@ -6,24 +6,28 @@
 
 ## Выбор стратегии
 
-Спека допускает одну из двух стратегий полноты. Реализованы обе:
+Спека допускает одну из двух стратегий полноты. Реализованы обе
+энумерации; production-негатив пока опирается на ingress closure:
 
 - **ingress closure** — полный inventory всех входов в reachable
   dependency cone, без обязательной полноты sink set. Доказательство:
   если ни один вход в cone (аргумент/receiver/object state на product
   boundary, callback result, автономный source внутри cone) не может
   нести attacker-данные, то ни один sink в cone их не получит.
-- **sink closure** — контракт полноты sink set из advisory
-  (`imports[].symbols`): перечисляются все call site'ы заявленных
+- **sink closure** — перечисляются все call site'ы заявленных
   sink-символов (product + dep + iface/func-value dispatch), у каждого
   live-сайта payload-позиция (аргумент/receiver/object state по
   `arg_index` условия) трейсится до терминального origin. Любые
   автономные источники вне доказанного payload-flow (напр. `detrand`
   внутри protobuf) closure не блокируют — ingress-семантика остаётся
-  строгой и для protojson не закрывается by design.
+  строгой и для protojson не закрывается by design. `imports[].symbols`
+  задаёт только `KNOWN_ONLY`, а не контракт полноты. Production-пайплайн
+  не выставляет `Complete` для sink closure до реализации отдельного
+  проверенного completeness artifact (§5.2); низкоуровневая энумерация
+  с явным basis остаётся доступна для проверки механизма.
 
 Правило выбора в evaluator (`closureGate`): FALSE-кандидат выживает,
-если верифицирована **либо** ingress closure (complete, все reaching
+если верифицирована **либо** ingress closure (complete, все inventoried
 items safe), **либо** sink closure (complete, все live payload-позиции
 не-внешние). Невыполнение обеих → UNKNOWN; записи closure только
 ослабляют claim, ничего не доказывая «само по себе отсутствие».
@@ -47,9 +51,11 @@ complete-флаг, items, blockers.
 
 ## Полнота (complete=false блокирует FALSE)
 
-Blockers:
+Blockers и непроверенные входы:
 
 - escape ссылки на функции модуля вне call-позиции (func values);
+- переназначения и escapes package-level func variables — target set
+  остаётся открытым, даже если найдены несколько статических targets;
 - вызовы внутри cone без разрешимого callee (func value, funclit-var);
 - `reflect.Value.Call/CallSlice/Method/MethodByName` в cone;
 - `plugin`/`unsafe` импорты? — unsafe не вводит новых источников данных и
@@ -62,6 +68,11 @@ Blockers:
   (`&v` вне LHS) → UNKNOWN; origin = merge writes' RHS classify;
 - var из другого dep-модуля → UNKNOWN; stdlib var → только KB SourceVars.
 
+Каждый `init()` и исполняемый package initializer linked-пакета
+инвентаризируются отдельно. Unmodeled stdlib вызов, callback-capable
+форматирование и `recover()` сохраняют UNKNOWN; `reflect.Indirect`
+переносит origin аргумента, а `complex` мерджит origins операндов.
+
 Interface dispatch внутри cone: narrowing `dispatchImpls`+instantiated;
 impls внутри модуля → edges; вне модуля (product impls) → cone_source
 UNKNOWN (callback). Сайт с пустым impl-set → мёртвый вызов, не блокер.
@@ -72,9 +83,8 @@ UNKNOWN (callback). Сайт с пустым impl-set → мёртвый выз�
    dep-subject'ами → `Source.IngressInventory(module, subjects, hops)` →
    closure в EvidenceGraph + summary evidence.
 2. `ArgumentOrigin.Evaluate`: при наличии closure она гейтует FALSE:
-   external boundary item с reach до subject → TRUE; deploy-dependent/
-   unknown reaching → UNKNOWN; cone_source с небезопасным origin →
-   UNKNOWN; complete && все items safe/excluded → FALSE + falsifier.
+   deploy-dependent/unknown input → UNKNOWN; cone_source с небезопасным origin →
+   UNKNOWN; complete && все items safe → FALSE + falsifier.
    Для sink closure: все live-сайты заявленного sink set с non-external
    payload-позициями → FALSE + falsifier. Когда closure-записей нет и
    нет dep-internal flows к поглощению — claim стоит на per-site
@@ -82,22 +92,25 @@ UNKNOWN (callback). Сайт с пустым impl-set → мёртвый выз�
 3. `verifyInputFalse`: falsifier == constant-or-generated-input и closure
    есть → пересчёт inventory на verifyHops; воспроизведённый complete
    coverage → VERIFIED; новые blockers/unsafe → INSUFFICIENT_SCOPE;
-   external source/reaching boundary → CONTRADICTED. При провале
+   external source/boundary → CONTRADICTED. При провале
    ingress-верификации — `verifySink`: повторная энумерация сайтов и
    re-trace payload-позиций на verifyHops=16.
 
 ## Границы
 
-- sink closure принимает контракт полноты sink set только из явного
-  advisory-списка (`imports[].symbols`); отсутствие декларации →
-  closure не вычисляется, гейт не ослабляется;
+- sink closure требует отдельного доказательства полноты, привязанного
+  к advisory, версии и mandatory condition; advisory-список сам по себе
+  не разрешает отрицательный вывод;
+- пустой `Reaches` не исключает ingress item: неполный call graph не
+  является доказательством nonpayload. Все inventoried inputs обязаны
+  иметь безопасный origin;
 - mutations внутри контейнеров dep-модуля (карты/struct поля через dep
   API) считаются dep-internal data — boundary inventory покрывает
   product-side регистрации; writes вне модуля не видны → var-правило
   консервативно;
 - stdlib вызовы внутри cone классифицируются по KB (source_funcs,
-  args_merge_funcs и пр.); незарегистрированные stdlib-источники —
-  известная граница KB;
+  args_merge_funcs и пр.); непроверенная семантика вызова сохраняет
+  UNKNOWN и не разрешает объявить inventory безопасным;
 - channel-receive (`<-x`) — origin UNKNOWN (send-сайты не
   инвентаризируются); element-writes (`m[k] = e`, `b[i] ^= e`,
   `x.f = e`) мержат RHS в origin контейнера.
@@ -115,22 +128,30 @@ UNKNOWN (callback). Сайт с пустым impl-set → мёртвый выз�
   (`maxExtraImportClosure`=2500 — каждый retained root держит types-граф
   своего import-замыкания, ~200-400МБ на aws-scale пакет); при эвикции
   очищаются все кэши, удерживающие AST/types-ссылки;
+- advisory-module pin действует только во время конкретной closure
+  query и снимается при выходе; новый load не эвиктится, пока вызывающий
+  код его использует;
 - `txBuf` (записи трансформаций) — dedup + cap: один трейс по
   aws-конусу накапливал миллионы `CallSite` append'ов (2.2GB flat в
   профиле — реальная причина «утечки»);
 - `capWhy` на всех границах evaluator (classify / classifyCallEval /
   evalCalleeExpr / cache-stores) и `maxWhyLen`=1024 — строки `why`
   композятся вверх рекурсивно и без кэпа растут экспоненциально;
-- `evalBudget`=300k на каждую trace-сессию (per-arg TraceArgument,
-  per-position sink closure): fan-out трейса по dep-конусу в принципе
+- `evalBudget`=300k на аргумент TraceArgument, 1.2M на payload-позицию
+  sink closure: fan-out трейса по dep-конусу в принципе
   экспоненциален; исчерпание → UNKNOWN, без unsafe-выводов;
 - memguard форсит `debug.FreeOSMemory()` при пересечении бюджета —
   HeapSys иначе учитывает освобождённые, но зарезервированные спаны
   как «удерживаемую» память.
 
-Результат: `real-getter-const` завершается за ~40-80с в ≤1GiB
+Исторический замер: `real-getter-const` завершался за ~40-80с в ≤1GiB
 (INCONCLUSIVE — честно: C-ROUNDTRIP не разрешается), ранее процесс
 достигал ~13GiB и убивался watchdog'ом.
+
+Эти замеры не задают верхнюю границу времени. Бюджет выражений не
+ограничивает число payload-позиций и AST-сканирование reachability.
+Для методов вне reflect-marshaling API scan literal reflect lookup
+пропускается: они и так остаются потенциально вызываемыми.
 
 ## Cross-universe типы и терминированность
 
@@ -142,8 +163,10 @@ UNKNOWN (callback). Сайт с пустым impl-set → мёртвый выз�
   type-checker runs не identical по указателю. Receiver-as-arg0
   fallback в `traceReceiver` сравнивает типы по package path + object
   name с сохранением pointer-глубины (`*T` ≠ `T`). Без этого все
-  receiver-позиции `unmarshal(d, m)`-формы падали в UNKNOWN —
-  `real-protojson-const` регрессировал до INCONCLUSIVE.
+  receiver-позиции `unmarshal(d, m)`-формы падали в UNKNOWN.
+  Разрешённый receiver-origin сам по себе не закрывает sink set:
+  после проверки контракта полноты `real-protojson-const` остаётся
+  INCONCLUSIVE без отдельного completeness artifact.
 - **callAt self-heal**: сайт, записанный под эвиктнутым load-инстансом,
   не находится в памяти — `callAt` догружает пакет по `file=`-запросу
   и пересканирует. Иначе verify падал на dead fuzz-harness сайтах
@@ -155,7 +178,8 @@ UNKNOWN (callback). Сайт с пустым impl-set → мёртвый выз�
   145с, ≤1.3GiB). Вложенная недогруженность помечает candidate-set
   open → UNKNOWN, без unsafe-выводов.
 
-Итог корпуса `corpus-real.json` (33 кейса): `real-protojson-const`
-→ NO_EXPLOIT_PATH_FOUND, http-пары EXPLOITABLE, getter-const
-INCONCLUSIVE, micro-xds честный INCONCLUSIVE за 145с,
-`signal-cleared=5/23`, `reachable-cleared=3/17`, `false-safe=0`.
+Итог корпуса `corpus-real.json` (33 кейса) обновляется в
+[`eval/README.md`](../../../eval/README.md). `real-protojson-const`
+и YAML-константы остаются INCONCLUSIVE: advisory symbols не объявляют
+полноту sink set, а непроверенная семантика входов не исключается по
+пустому `Reaches`. B26 открыт до выполнения контракта §5.2.

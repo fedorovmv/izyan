@@ -279,13 +279,6 @@ func (ix *Index) loadExtra(ctx context.Context, patterns ...string) ([]*packages
 	if err != nil {
 		return nil, err
 	}
-	if os.Getenv("VA_LOAD_DEBUG") != "" {
-		files := 0
-		for _, p := range pkgs {
-			files += len(p.GoFiles)
-		}
-		fmt.Fprintf(os.Stderr, "loadExtra %q -> %d pkgs %d files\n", key, len(pkgs), files)
-	}
 	if ix.extraPkgs == nil {
 		ix.extraPkgs = map[string][]*packages.Package{}
 	}
@@ -307,6 +300,8 @@ func (ix *Index) loadExtra(ctx context.Context, patterns ...string) ([]*packages
 	ix.extraWeight[key] = w
 	ix.evictExtra()
 	ix.extrasGen++
+	ix.classifyCache = nil
+	ix.paramCache = nil
 	return pkgs, nil
 }
 
@@ -357,13 +352,17 @@ func (ix *Index) evictExtra() {
 	if !over() {
 		return
 	}
+	newest := ""
+	if len(ix.extraOrder) > 0 {
+		newest = ix.extraOrder[len(ix.extraOrder)-1]
+	}
 	evicted := false
 	// Pinned victims rotate to the back instead of deleting — the spin
 	// bound keeps the loop finite when every candidate is pinned.
 	for spins := 0; len(ix.extraOrder) > 1 && over() && spins <= len(ix.extraOrder); {
 		victim := ix.extraOrder[0]
 		ix.extraOrder = ix.extraOrder[1:]
-		if ix.extraPinned[victim] {
+		if ix.extraPinned[victim] || victim == newest {
 			ix.extraOrder = append(ix.extraOrder, victim)
 			spins++
 			continue
@@ -427,6 +426,16 @@ func (ix *Index) pinExtra(pattern string) {
 		ix.extraPinned = map[string]bool{}
 	}
 	ix.extraPinned[pattern] = true
+}
+
+func (ix *Index) pinExtraScoped(pattern string) func() {
+	wasPinned := ix.extraPinned[pattern]
+	ix.pinExtra(pattern)
+	return func() {
+		if !wasPinned {
+			delete(ix.extraPinned, pattern)
+		}
+	}
 }
 
 // extrasFor returns cached dependency packages matching pkgPath (loaded
@@ -689,10 +698,7 @@ type CallSiteRef struct {
 	call      *ast.CallExpr
 	enclosing *ast.FuncDecl
 	pkg       *packages.Package
-	// possible marks a site whose func-value callee could not be fully
-	// resolved: the call may dispatch to the traced symbol, so it counts
-	// as a caller, but its arguments are not worth tracing — the
-	// unresolvable dispatch already contributes UNKNOWN either way.
+	// possible marks a caller site whose target set may be incomplete.
 	possible bool
 }
 
@@ -1158,6 +1164,7 @@ type cachedCallers struct {
 // without this every hop re-walked every loaded package's syntax.
 func (ix *Index) callersOf(pkg *packages.Package, ref domain.SymbolRef) []CallSiteRef {
 	dep := !ix.isProductPkg(pkg)
+	gen := ix.extrasGen
 	key := callerKey{ref: ref, dep: dep}
 	if c, ok := ix.callerCache[key]; ok && (!dep || c.gen == ix.extrasGen) {
 		return c.refs
@@ -1202,6 +1209,15 @@ func (ix *Index) callersOf(pkg *packages.Package, ref domain.SymbolRef) []CallSi
 		}
 	}
 	delete(ix.callersIn, key)
+	if ix.extrasGen != gen {
+		if len(refs) == 0 {
+			return []CallSiteRef{{possible: true}}
+		}
+		for i := range refs {
+			refs[i].possible = true
+		}
+		return refs
+	}
 	if ix.callerCache == nil {
 		ix.callerCache = map[callerKey]cachedCallers{}
 	}
@@ -1210,7 +1226,7 @@ func (ix *Index) callersOf(pkg *packages.Package, ref domain.SymbolRef) []CallSi
 		// not an optimization.
 		ix.callerCache = map[callerKey]cachedCallers{}
 	}
-	ix.callerCache[key] = cachedCallers{gen: ix.extrasGen, refs: refs}
+	ix.callerCache[key] = cachedCallers{gen: gen, refs: refs}
 	return refs
 }
 

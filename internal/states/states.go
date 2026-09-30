@@ -758,15 +758,10 @@ func (h CollectEvidence) collectIngress(ctx context.Context, c *domain.AnalysisC
 }
 
 // collectSinkClosure records the sink-closure coverage for a
-// provenance-kind condition: every live call site of each declared sink
+// provenance-kind condition: every live call site of each known sink
 // (the condition's subjects) with the resolved origin of its payload
-// input. The sink set carries a completeness contract only when all
-// subjects come from the advisory's declared affected-symbol set — the
-// OSV imports.symbols list is the authoritative vulnerable-symbol set
-// for the module's version range (the same completeness govulncheck
-// relies on for applicability). Subjects injected from other provenance
-// leave the set KNOWN_ONLY: the closure is still recorded, never
-// complete.
+// input. Subjects remain KNOWN_ONLY until a separately verified
+// completeness contract is available.
 func (h CollectEvidence) collectSinkClosure(ctx context.Context, c *domain.AnalysisCase, cond domain.Condition, subjects []domain.SymbolRef) {
 	if c.Vulnerability.Module == "" || len(subjects) == 0 {
 		return
@@ -774,15 +769,7 @@ func (h CollectEvidence) collectSinkClosure(ctx context.Context, c *domain.Analy
 	if isStdlibModule(c.Vulnerability.Module) {
 		return
 	}
-	basis := ""
-	if domain.SymbolsDeclared(subjects, c.Vulnerability.AffectedSymbols) {
-		basis = fmt.Sprintf("advisory %s affected-symbol set (OSV imports.symbols) declares the vulnerable symbols for %s in the analyzed version range",
-			c.Vulnerability.ID, c.Vulnerability.Module)
-		if c.GovulncheckCoverage == "covered" {
-			basis += "; govulncheck coverage confirms the DB entry"
-		}
-	}
-	closure, evs, err := h.Source.SinkClosure(ctx, cond.ID, c.Vulnerability.Module, basis,
+	closure, evs, err := h.Source.SinkClosure(ctx, cond.ID, c.Vulnerability.Module, "",
 		subjects, cond.ArgIndex, sinkClosureHops)
 	if err != nil {
 		c.EvidenceGraph.AddToolLimitation(fmt.Sprintf(

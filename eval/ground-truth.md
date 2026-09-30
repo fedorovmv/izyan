@@ -74,8 +74,14 @@ govulncheck допустим, только когда все субъекты о
 frame-min negotiation (`openTune`/`pick`→`negotiateFrameSize`), а
 фактический cap `headerSize≤FrameSize` в `recvContent` пришёл в v1.13.0
 другим изменением — root cause по fix-diff формально корректен, но
-неполон. Вердикт это не меняет: `openTune` тоже исполняется на каждом
-`Dial`.
+неполон. Истину это не меняет: уязвимый `recvContent` исполняется при
+доставке сообщений. Текущий анализатор связывает fix-subjects
+`openTune`/`pick` с вызовами продукта, но не доказывает payload от
+peer-controlled header/body до `recvContent`. Поэтому INCONCLUSIVE
+консервативно приемлем в `expect`; EXPLOITABLE остаётся ground truth.
+Аналогично для xwwf: после удаления args-only происхождения opaque
+`pick` peer-controlled tune value остаётся недоказанным. Возвращать
+TRUE по одной достижимости функции или аргументам opaque вызова нельзя.
 
 ### GHSA-j497 → INCONCLUSIVE (re-pin с EXPLOITABLE)
 

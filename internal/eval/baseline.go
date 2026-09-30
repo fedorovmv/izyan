@@ -16,10 +16,11 @@ import (
 // Baseline outcome labels, recorded on Result.Baseline.
 const (
 	BaselineReachable    = "reachable"     // finding with a function-level trace
-	BaselinePackageLevel = "package-level" // advisory reported, no symbol trace
-	BaselineSilent       = "silent"        // advisory in the DB, no finding emitted
-	BaselineNotInDB      = "not-in-db"     // advisory absent from the DB snapshot
-	BaselineError        = "error"         // govulncheck did not run cleanly
+	BaselinePackageLevel = "package-level" // imported package, no symbol trace
+	BaselineModuleLevel  = "module-level"
+	BaselineSilent       = "silent"    // advisory in the DB, no finding emitted
+	BaselineNotInDB      = "not-in-db" // advisory absent from the DB snapshot
+	BaselineError        = "error"     // govulncheck did not run cleanly
 )
 
 // Baseline runs standalone govulncheck on dir and classifies what it
@@ -35,15 +36,22 @@ func Baseline(ctx context.Context, r goanalysis.Runner, dir string, v domain.Vul
 		return fmt.Sprintf("%s: %v", BaselineError, err)
 	}
 	fs := res.ForVulnerability(v)
+	packageLevel := false
 	for _, f := range fs {
 		for _, fr := range f.Trace {
 			if fr.Function != "" {
 				return BaselineReachable
 			}
+			if fr.Package != "" {
+				packageLevel = true
+			}
 		}
 	}
-	if len(fs) > 0 {
+	if packageLevel {
 		return BaselinePackageLevel
+	}
+	if len(fs) > 0 {
+		return BaselineModuleLevel
 	}
 	if res.Covers(v) {
 		return BaselineSilent
