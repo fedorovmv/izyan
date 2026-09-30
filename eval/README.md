@@ -87,7 +87,11 @@ jwt-auth — missing-call гейт. Второй NEPF — `real-micro-plain-6443
 review-контрпример с переименованной переменной это ловит). Для символов
 без defect-site anchor'а модуль порождает `ProposedNonLocus` —
 draft-исключения с записанным наблюдением, не участвующие в вердикте;
-эксперт утверждает их переносом в `non_locus`. При
+эксперт утверждает их переносом в `non_locus`. Отчёт дополнительно
+печатает **proposed falsifier**: если все proposal'ы утверждены и
+оставшиеся пакеты L отсутствуют в `go list -deps` графе, следует
+`NO_EXPLOIT_PATH_FOUND` — эксперт отвечает на вопрос уровня advisory
+(дефект ограничен этими пакетами?), аудит кода продукта не требуется. При
 исключении transport-символов `L={RouteAndProcess}` — faulting индекс
 `authority[0]` по fix PR9365; единственный locus-пакет отсутствует в
 `go list -deps` графе продукта — код дефекта физически не слинкован.
@@ -99,7 +103,16 @@ EXPLOITABLE (локус в трейсе/внутримодульной цепо�
 pkg-present-func-absent даёт INCONCLUSIVE — наличие пакета в графе не
 доказывает недостижимость функции. Boundary-контроли (неполная fix
 series, rename, два независимых дефекта, upstream-only fix) покрыты
-юнит-тестами на `testdata/locuslib`.
+юнит-тестами на `testdata/locuslib`. Условие `C-LOCUS` не зависит от
+наличия fix-diff: при падении fetch `L` = declared set − basis и
+аннотации/proposals просто отсутствуют (ранее гейт молча снимался).
+Отдельная граница falsifier'а — покрытие build-вариантов: файлы
+продукта, исключённые записанным контекстом (`//go:build`,
+GOOS/GOARCH-суффиксы, cgo), но импортирующие пакет локуса, переводят
+negative verification в INSUFFICIENT_SCOPE (контроль `gated-scope` в
+`corpus.json`: вызов `vuln.Parse` за `//go:build special` — отсутствие
+пакета в дефолтном `go list -deps` не доказывает отсутствие при другой
+конфигурации).
 Цель B23 — поднять долю честных cleared
 за счёт falsifier-доказательств, не объявляя недоказанное безопасным.
 
