@@ -642,3 +642,80 @@ git status --short
 выполнено, исследовательский итог, открытые обязательства, реальные
 команды проверок и ограничения. Не утверждать automatic dismissal без
 соответствующего persisted machine proof.
+
+## Задача 6. Срез defect-locus: контракт отрицательного доказательства
+
+**Spec:** §8 `llm-dismissal-research-spec.md` — контракт необходимости
+локуса + отсутствия кода в build graph. Прочитать до исполнения; задача
+реализует ровно один класс основания (`GATE-FEATURE`/`SYM-ABSENT` по
+build graph), не общий ingress closure.
+
+**Read дополнительно:** `docs/agent-rules/coding.md`, `evaluators.md`,
+`provenance-and-bounds.md`, `generality.md`, `docs-sync.md`.
+
+**Отличие constraints от задач 0–5:** этот срез разрешает изменения в
+`internal/` — ровно в объёме checker'а контракта §8 и его evidence-
+типов. Запрещено: case-specific правила под `GO-2026-6443`, расширение
+sink closure, снятие `UnresolvedSubjects` ради негативного результата.
+
+### Шаг 6.1. Нейтральный пул (публичные dep'ы, `grpc-go`)
+
+Все варианты на уязвимой версии `google.golang.org/grpc` с сопоставимым
+govulncheck `reachable` baseline (символ `http2Server.HandleStreams`
+достижим в любом grpc-сервере):
+
+| Вариант | Продукт | Ожидание по контракту |
+|---|---|---|
+| mode-off | `products/micro-plain` (plain `grpc.NewServer`) | `internal/xds/server` вне build graph → NEPF |
+| mode-on | `products/micro-xds` (`xds.NewGRPCServer`) | трейс через `RouteAndProcess` → не негатив |
+| wrapper | новый `products/micro-xds-wrap` — включение режима через func value/factory/callback | пакет в графе → call-site-проверка дала бы ложный негатив; контракт обязан сохранить сигнал |
+| pkg-present | новый `products/micro-xds-pkg` — пакет локуса импортирован (в графе), функция не вызывается | пакет в графе ≠ достижимость → INCONCLUSIVE, не NEPF |
+
+- [ ] Скопировать публичный advisory `GO-2026-6443.json` в
+  `eval/advisories/real/` (источник — Go vuln DB, данные публичные).
+- [ ] Создать `micro-xds-wrap` и `micro-xds-pkg`; gofmt.
+- [ ] Добавить 4 кейса в `eval/corpus-real.json` (формат как у
+  `real-micro-xds`); `expect` пиннить только после зафиксированного
+  ground truth в `eval/ground-truth/`.
+- [ ] Снять govulncheck baseline каждого варианта:
+  `govulncheck -C eval/.gen/<id> -json -mode source -scan symbol
+  -test=false ./...`; подтвердить `reachable` и наличие/отсутствие
+  `RouteAndProcess` в трейсе. Записать версию Go и govulncheck.
+
+### Шаг 6.2. Замкнуть necessity для GO-2026-6443
+
+- [ ] Якорь 1 — advisory symbols: `internal/xds/server.RouteAndProcess`.
+- [ ] Якорь 2 — fix-diff `pull/9365`: различить defect site (guard
+  `len(authority)==0` в `RouteAndProcess`, дефект — `authority[0]`) от
+  enabler (`operateHeaders` отклоняет запрос без authority).
+- [ ] Якорь 3 — regression/repro: публичный контроль на уязвимой версии
+  (panic на xDS-сервере, отсутствие panic на plain-сервере при том же
+  malformed request).
+- [ ] Задокументировать в `eval/ground-truth/` почему ни один путь
+  модуля не достигает дефекта, минуя `L`; открытые части — `OPEN`.
+
+### Шаг 6.3. Checker контракта
+
+- [ ] Новый falsifier-кандидат: пакет локуса отсутствует в полном build
+  graph снапшота (`go list -deps` или эквивалент с фактическими
+  GOOS/GOARCH/build tags; vendored — после проверки согласованности
+  vendor с `go.mod`).
+- [ ] UNKNOWN-границы: ошибка загрузки, неразрешённый symbol, падение
+  `go list`, несогласованный vendor → не отсутствие.
+- [ ] NEPF только если falsifier покрывает всё `L` и necessity замкнута;
+  иначе `INCONCLUSIVE` с названными обязательствами.
+- [ ] Тесты: mode-off → NEPF; mode-on/wrapper → сигнал сохранён;
+  pkg-present → INCONCLUSIVE; load-error → не NEPF.
+
+### Шаг 6.4. Верификация и оценка
+
+- [ ] `gofmt`, `go vet ./...`, `go test ./...`; corpus 18/18,
+  corpus-real 33+4, live corpus 11/11 — `false-safe=0` везде.
+- [ ] Прогон на реальном снапшоте из внешнего реестра: GO-2026-6443
+  из `INCONCLUSIVE` в NEPF только при замкнутом контракте.
+- [ ] Второй независимый advisory класса (кандидат из реестра —
+  `GO-2026-4762`, `grpc/authz`) проверяет переносимость.
+- [ ] Оценка: сравнить с `govulncheck + LLM + исходники` маршрутом —
+  зафиксировать, какое доказательство собственный механизм даёт, а тот
+  нет. Обновить `eval/README.md` и backlog-строку B30 фактическим
+  результатом.
