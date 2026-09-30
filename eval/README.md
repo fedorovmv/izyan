@@ -54,7 +54,8 @@ Baseline-таблица govulncheck-vs-analyzer (последний прогон
 | real-micro-xds | INCONCLUSIVE | package-level | нет — dep-internal registry (`httpfilter.Register`) + watcher callbacks (B24) |
 | real-micro-xds-fixed | NOT_AFFECTED | silent | **да — deterministic** |
 | real-micro-plain | NOT_AFFECTED | module-level | **да — rbac-пакет не в build graph; govulncheck также не сообщает уязвимый пакет** |
-| real-micro-plain-6443 | NO_EXPLOIT_PATH_FOUND | reachable | **да — locus-package-absent: единственный дефектный локус `internal/xds/server.RouteAndProcess` (fix-guarded fault site) вне build graph (B30, spec §8)** |
+| real-micro-plain-6443 | EXPLOITABLE | reachable | нет — без basis весь declared set в L; HandleStreams в трейсе → `C-LOCUS` TRUE (машина не сужает L) |
+| real-micro-plain-6443x | NO_EXPLOIT_PATH_FOUND | reachable | **да — locus-package-absent: expert `non_locus` на transport-символы → L={RouteAndProcess}, xds-пакет вне build graph (B30, spec §8)** |
 | real-micro-xds-6443 | EXPLOITABLE | reachable | нет — xDS-режим включён, локус в govulncheck-трейсе |
 | real-micro-wrap-6443 | EXPLOITABLE | reachable | нет — xDS через factory-обёртку; module-internal chain доказывает локус достижимым |
 | real-micro-pkg-6443 | INCONCLUSIVE | reachable | нет — xds-пакет в build graph, но `RouteAndProcess` не вызывается; package-absence falsifier не применим, function-unreachability не доказана |
@@ -78,20 +79,24 @@ module-only finding govulncheck) и два verified-негатива NEPF:
 не выносится (`productReferenceable` гейт), а dep-internal invocation
 учитывается transitively (`depSiteLive`): ssh-keyparse и dns-marshal в
 INCONCLUSIVE — их прежний NEPF стоял на vacuous «zero product refs»;
-jwt-auth — missing-call гейт. Второй NEPF — `real-micro-plain-6443`
-по контракту defect-locus (B30, spec §8): fix PR9365 гардит faulting
-индекс `authority[0]` только в `internal/xds/server.RouteAndProcess`
-(advisory-declared ∩ fix-changed ∩ faulting-site), а `operateHeaders` —
-upstream-enabler, исключён из L после body-проверки `SymbolFaultingUse`;
-единственный locus-пакет отсутствует в `go list -deps` графе продукта —
-код дефекта физически не слинкован. Парные контроли: mode-on и
-factory-обёртка дают EXPLOITABLE (локус в трейсе/внутримодульной цепочке),
+jwt-auth — missing-call гейт. Второй NEPF — `real-micro-plain-6443x`
+по контракту defect-locus (B30, spec §8): `L` = advisory-declared set
+минус записанные экспертные non-locus решения (`non_locus` в кейсе —
+основание с authority; автоматическое исключение запрещено — текстовое
+несовпадение означает «соответствие не установлено», а не чистое тело;
+review-контрпример с переименованной переменной это ловит). При
+исключении transport-символов `L={RouteAndProcess}` — faulting индекс
+`authority[0]` по fix PR9365; единственный locus-пакет отсутствует в
+`go list -deps` графе продукта — код дефекта физически не слинкован.
+Парные контроли: `real-micro-plain-6443` без basis даёт EXPLOITABLE
+(necessity машиной не замкнута — declared символ в трейсе → `C-LOCUS`
+TRUE, консервативный позитив совпадает с govulncheck), mode-on и
+factory-обёртка дают
+EXPLOITABLE (локус в трейсе/внутримодульной цепочке),
 pkg-present-func-absent даёт INCONCLUSIVE — наличие пакета в графе не
-доказывает недостижимость функции. Necessity замыкается по
-declared-множеству: символ, не тронутый fix-diff'ом, исключается из L
-только при доказанно чистом body-scan по operand-семейству патча —
-boundary-контроли (неполная fix series, два независимых дефекта,
-upstream-only fix) покрыты юнит-тестами на `testdata/locuslib`.
+доказывает недостижимость функции. Boundary-контроли (неполная fix
+series, rename, два независимых дефекта, upstream-only fix) покрыты
+юнит-тестами на `testdata/locuslib`.
 Цель B23 — поднять долю честных cleared
 за счёт falsifier-доказательств, не объявляя недоказанное безопасным.
 
@@ -99,21 +104,21 @@ upstream-only fix) покрыты юнит-тестами на `testdata/locusli
 **signal-cleared rate = 2/26** на этом прогоне. Знаменатель — кейсы,
 где govulncheck сообщил `reachable` или `package-level`; числитель —
 verified-негатив анализатора при таком сигнале (`real-unix-stat`,
-`real-micro-plain-6443`).
-Разбивка: **1/21** при `reachable`, **1/5** при `package-level`.
+`real-micro-plain-6443x`).
 Finding только с модулем учитывается отдельно (`module-level`), без
 приписывания ему присутствующего уязвимого пакета. Остальные cleared
 имеют `govulncheck: silent` или `module-level`.
 
 Эта метрика частично доказывает дополнительную пользу относительно
-govulncheck: `real-micro-plain-6443` — первое reachable-отклонение,
+govulncheck: `real-micro-plain-6443x` — первое reachable-отклонение,
 которое standalone govulncheck не выносит (он сообщает трейс до
 `HandleStreams` и останавливается — OR-семантика declared symbols не
-различает defect locus). `real-unix-stat` добавляет negative
+различает defect locus); получено через записанное экспертное основание,
+не автоматическим исключением. `real-unix-stat` добавляет negative
 verification к package-level информации. Двух кейсов недостаточно
 для вывода о надёжности или экономии ручного triage; необходимость
-локуса опирается на полноту fix-diff (дефектный сайт вне патча
-невидим — см. spec §8), а переносимость на другие классы дефектов
+локуса опирается на полноту declared set и корректность экспертных
+исключений (см. spec §8), а переносимость на другие классы дефектов
 не проверена. `false-safe=0` означает совпадение с разметкой,
 не независимую верификацию самой разметки.
 
