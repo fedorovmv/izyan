@@ -10,3 +10,4 @@
 /analyzer
 # generated-manifest products materialized by `vuln-analyzer eval`
 eval/.gen/
+tmp/*
