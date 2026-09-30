@@ -36,7 +36,7 @@
 
 | # | Пункт | Зачем | Done-критерий |
 |---|-------|-------|----------------|
-
+| B27 | LLM-assisted локальное основание отклонения (исследование) | Проверить дополнительную ценность поверх govulncheck без расширения production-анализатора; [спецификация](../specs/llm-dismissal-research-spec.md), [план](../plans/llm-dismissal-research-plan.md) | Четыре jose2go-контроля (`[]byte`, `string`, callback, deployment-dependent key), source audit necessity/coverage, воспроизводимые тесты и свежий govulncheck baseline; deterministic/LLM результаты либо явно NOT_RUN; досье с итогом «checker / эксперт / гипотеза опровергнута», без подмены ручного audit машинным VERIFIED и без изменения прежних expect |
 
 ### P2 — глубина покрытия
 
@@ -57,7 +57,6 @@
 | B21 | Missing-call модель (остаток) | False-safe закрыт гейтом: `DepInvocationState`+`checkDepInvocation` — мёртвый субъект + живой sibling-пайплайн → INSUFFICIENT_SCOPE (real-jwt-auth → INCONCLUSIVE). Остаток: модель «should-call» не представлена — условие «валидация обязана выполняться на пути» не выводится из advisory, поэтому missing-call кейс навсегда INCONCLUSIVE, а не EXPLOITABLE/NEPF | Условие `should-call`: receiver-пайплайн доказанно жив И субъект доказанно не вызывается внутри него (все вызовы enclosing-цепочки просмотрены) → mandatory-условие TRUE (дефект подтверждён), а не только блок NEPF; регресс-e2e: jwt-auth → EXPLOITABLE с named evidence |
 | B24 | Dep-internal opaque dispatch (function-регистрации, watcher/goroutine-ребра) | grpc xds: sink `rbac.builder.ParseFilterConfig` достигается через `httpfilter.Register(builder{})` (запись в registry — вызов функции, не map-literal) + watcher-колбэки из pump-горутины xdsclient → govulncheck даёт только package-level, наш moduleEdges тоже обрывается; real-micro-xds истина EXPLOITABLE, анализатор INCONCLUSIVE. Соседний дефект (vacuous «zero product refs» для internal/unexported субъектов) исправлен — гейт `productReferenceable` в negative.go | Рёбра через registry-регистраторы вида `pkg.Register(v)` и watcher-callback интерфейсы в dep-графе, либо честный `incomplete-scope` evidence-гейт; e2e: real-micro-xds не INCONCLUSIVE-молчит, а несёт точный limitation «registry/callback dispatch unproven» или резолвится |
 | B25 | Вызовы между вложенными модулями | `ModuleUsage` атрибутирует callee по реальному модулю; вызов API nested-модуля не доказывает использование родителя, но может вызвать его транзитивно и поэтому блокирует FALSE-кандидат. Done: проверять рёбра child→parent по полному import/call graph; тесты с таким ребром и без него; UNKNOWN при неполном графе, без false-safe |
-| B26 | Constant input на границе product→dependency | `real-yaml3-const` (один exported `Unmarshal`) уже NEPF; `real-yaml-const` и `real-protojson-const` остаются INCONCLUSIVE: grouped sink'и смешивают продуктовый API с внутренними dep-сайтами, `arg_index=-1` включает выходные аргументы; const payload сам по себе не замыкает все пути к sink | Универсальная проверка всех product→dependency входов, способных достичь affected sink; provenance только входных payload-аргументов; неизвестный origin → INSUFFICIENT_SCOPE; opaque/динамический путь → UNKNOWN; оба оставшихся constant-кейса → NEPF, парные HTTP-кейсы остаются EXPLOITABLE, false-safe=0 |
 
 ### P3 — deferred by design
 

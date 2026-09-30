@@ -33,12 +33,15 @@
 |---|---|---|
 | [`dev/specs/governing-spec.md`](dev/specs/governing-spec.md) | актуальный | Главная спецификация системы |
 | [`dev/specs/analyzer-agent-spec.md`](dev/specs/analyzer-agent-spec.md) | актуальный | Контракт поведения Analyzer Agent |
+| [`dev/specs/incremental-analysis-value-spec.md`](dev/specs/incremental-analysis-value-spec.md) | reviewed draft | Контракт дополнительной ценности поверх govulncheck; первый срез — полное доказательство mandatory input condition; готов к плану реализации |
+| [`dev/specs/llm-dismissal-research-spec.md`](dev/specs/llm-dismissal-research-spec.md) | исследовательская спецификация | LLM-assisted отклонение, экспертное досье, deployment и контекстная критичность; гипотезы не подтверждены |
 | [`dev/decisions/architecture-decisions.md`](dev/decisions/architecture-decisions.md) | актуальный | Ключевые архитектурные решения и запреты |
 | [`dev/decisions/reference-projects-analysis.md`](dev/decisions/reference-projects-analysis.md) | актуальный | Разбор VEX Toolset/VulnReach/amihit/govulncheck — обоснование решений |
 | [`dev/current/analysis-internals.md`](dev/current/analysis-internals.md) | актуальный | Механика реализации: evaluators, NV, pattern library, toolchain, audit |
 | [`dev/current/implementation-status.md`](dev/current/implementation-status.md) | живой | Статус срезов MVP, что сделано/что дальше |
 | [`dev/current/gap-analysis.md`](dev/current/gap-analysis.md) | актуальный | Gap analysis спека↔код + канонический бэклог (§2) |
 | [`dev/plans/mvp-implementation-plan.md`](dev/plans/mvp-implementation-plan.md) | актуальный | Порядок реализации и milestones |
+| [`dev/plans/llm-dismissal-research-plan.md`](dev/plans/llm-dismissal-research-plan.md) | план исследования | Пошаговая проверка локального type gate в jose2go: четыре контрольных продукта, baseline, LLM-прогоны и досье; не production-checker |
 | [`dev/plans/pattern-library-plan.md`](dev/plans/pattern-library-plan.md) | done | Exploit Pattern Library: classify → patterns → conditions |
 | [`dev/plans/exposure-facts-plan.md`](dev/plans/exposure-facts-plan.md) | done | Deployment/exposure facts: listeners, dial-sites, `C-EXPOSURE` |
 | [`dev/plans/negative-coverage-plan.md`](dev/plans/negative-coverage-plan.md) | done | NV scope: build-tag-excluded files + interface dispatch |
@@ -51,6 +54,7 @@
 | [`dev/plans/typed-tools-plan.md`](dev/plans/typed-tools-plan.md) | done | Все 17 typed tools §17; exec-gate `--allow-exec` |
 | [`dev/plans/knowledge-base-plan.md`](dev/plans/knowledge-base-plan.md) | done | Knowledge-base таблицы → данные (`--knowledge` JSON); бэклог B12 |
 | [`dev/plans/corpus-expansion-plan.md`](dev/plans/corpus-expansion-plan.md) | plan | Расширение доказательной базы: generated-manifest продукты, baseline vs govulncheck; бэклог B13 |
+| [`dev/plans/ingress-closure-plan.md`](dev/plans/ingress-closure-plan.md) | in progress | Ingress closure: полный inventory входов в reachable dep cone; falsifier `constant-or-generated-input`; бэклог B26 |
 | [`dev/plans/llm-advisory-plan.md`](dev/plans/llm-advisory-plan.md) | spec-draft | LLM advisory-контур (D16): параллельная оценка, llm_assessment.json; бэклог B17 |
 | [`dev/history/go-skeleton-state-machine.md`](dev/history/go-skeleton-state-machine.md) | исторический | Bootstrap-каркас: Go-интерфейсы/структуры до реализации (истина теперь — `internal/`) |
 | [`dev/history/01-initial-architecture.md`](dev/history/01-initial-architecture.md) | исторический | Исходная архитектура до разбора OSS |

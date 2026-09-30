@@ -1,9 +1,12 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "language": "go",
   "name": "builtin",
-  "labels": ["builtin", "upstream"],
-  "data_version": "2026-09-29",
+  "labels": [
+    "builtin",
+    "upstream"
+  ],
+  "data_version": "2026-09-30",
   "source_funcs": {
     "os.Getenv": "CONFIGURATION",
     "os.ReadFile": "CONFIGURATION",
@@ -14,6 +17,8 @@
     "flag.Parse": "CONFIGURATION",
     "fmt.Sscanf": "UNKNOWN",
     "os.Open": "CONFIGURATION",
+    "math.NaN": "CONSTANT",
+    "math.Inf": "CONSTANT",
     "net/http.Get": "EXTERNAL_UNTRUSTED",
     "net/http.Post": "EXTERNAL_UNTRUSTED",
     "net/http.ReadRequest": "EXTERNAL_UNTRUSTED",
@@ -34,7 +39,135 @@
     "net/http.NewRequest": 1,
     "net/http.NewRequestWithContext": 2,
     "net/url.Parse": 0,
-    "net/url.ParseQuery": 0
+    "net/url.ParseQuery": 0,
+    "regexp.MustCompile": 0,
+    "regexp.Compile": 0,
+    "errors.New": 0
+  },
+  "args_merge_funcs": {
+    "errors.Join": true,
+    "fmt.Errorf": true,
+    "fmt.Sprint": true,
+    "fmt.Sprintf": true,
+    "fmt.Sprintln": true,
+    "bytes.Count": true,
+    "bytes.Index": true,
+    "bytes.IndexByte": true,
+    "bytes.LastIndex": true,
+    "bytes.LastIndexByte": true,
+    "bytes.Contains": true,
+    "bytes.ContainsAny": true,
+    "bytes.Compare": true,
+    "bytes.Equal": true,
+    "bytes.EqualFold": true,
+    "bytes.HasPrefix": true,
+    "bytes.HasSuffix": true,
+    "bytes.Repeat": true,
+    "bytes.Replace": true,
+    "bytes.ReplaceAll": true,
+    "bytes.Join": true,
+    "bytes.ToLower": true,
+    "bytes.ToUpper": true,
+    "bytes.Trim": true,
+    "bytes.TrimSpace": true,
+    "bytes.TrimPrefix": true,
+    "bytes.TrimSuffix": true,
+    "bytes.Title": true,
+    "bytes.Fields": true,
+    "bytes.Split": true,
+    "strings.Count": true,
+    "strings.Index": true,
+    "strings.IndexByte": true,
+    "strings.LastIndex": true,
+    "strings.LastIndexByte": true,
+    "strings.IndexAny": true,
+    "strings.LastIndexAny": true,
+    "strings.Contains": true,
+    "strings.ContainsAny": true,
+    "strings.Compare": true,
+    "strings.EqualFold": true,
+    "strings.HasPrefix": true,
+    "strings.HasSuffix": true,
+    "strings.Repeat": true,
+    "strings.Replace": true,
+    "strings.ReplaceAll": true,
+    "strings.Join": true,
+    "strings.ToLower": true,
+    "strings.ToUpper": true,
+    "strings.ToTitle": true,
+    "strings.Title": true,
+    "strings.Trim": true,
+    "strings.TrimSpace": true,
+    "strings.TrimPrefix": true,
+    "strings.TrimSuffix": true,
+    "strings.TrimLeft": true,
+    "strings.TrimRight": true,
+    "strings.Fields": true,
+    "strings.Split": true,
+    "strings.SplitN": true,
+    "strings.FieldsFunc": true,
+    "strings.Cut": true,
+    "strings.CutPrefix": true,
+    "strings.CutSuffix": true,
+    "unicode/utf8.RuneCount": true,
+    "unicode/utf8.RuneCountInString": true,
+    "unicode/utf8.RuneLen": true,
+    "unicode/utf8.RuneStart": true,
+    "unicode/utf8.Valid": true,
+    "unicode/utf8.ValidString": true,
+    "unicode/utf8.FullRune": true,
+    "unicode/utf8.FullRuneInString": true,
+    "unicode/utf8.DecodeRune": true,
+    "unicode/utf8.DecodeRuneInString": true,
+    "unicode/utf8.DecodeLastRune": true,
+    "unicode/utf8.DecodeLastRuneInString": true,
+    "unicode/utf8.EncodeRune": true,
+    "unicode.IsSpace": true,
+    "unicode.IsDigit": true,
+    "unicode.IsLetter": true,
+    "unicode.IsNumber": true,
+    "unicode.IsUpper": true,
+    "unicode.IsLower": true,
+    "unicode.IsControl": true,
+    "unicode.IsPunct": true,
+    "unicode.IsGraphic": true,
+    "unicode.IsPrint": true,
+    "unicode.IsOneOf": true,
+    "unicode.In": true,
+    "strconv.Itoa": true,
+    "strconv.Atoi": true,
+    "strconv.ParseInt": true,
+    "strconv.ParseUint": true,
+    "strconv.ParseFloat": true,
+    "strconv.ParseBool": true,
+    "strconv.ParseComplex": true,
+    "strconv.Quote": true,
+    "strconv.QuoteRune": true,
+    "strconv.Unquote": true,
+    "strconv.FormatInt": true,
+    "strconv.FormatUint": true,
+    "strconv.FormatFloat": true,
+    "strconv.FormatBool": true,
+    "strconv.FormatComplex": true,
+    "strconv.AppendInt": true,
+    "strconv.AppendUint": true,
+    "strconv.AppendFloat": true,
+    "strconv.AppendQuote": true,
+    "strconv.CanBackquote": true,
+    "strconv.IsPrint": true,
+    "strconv.QuotedPrefix": true,
+    "strconv.UnquoteChar": true,
+    "encoding/hex.DecodeString": true,
+    "encoding/hex.EncodeToString": true,
+    "encoding/hex.Decode": true,
+    "encoding/hex.Encode": true,
+    "sort.StringsAreSorted": true,
+    "sort.IntsAreSorted": true,
+    "unicode/utf16.DecodeRune": true,
+    "unicode/utf16.IsSurrogate": true,
+    "unicode/utf16.EncodeRune": true,
+    "unicode/utf16.Encode": true,
+    "unicode/utf16.Decode": true
   },
   "passthrough_methods": {
     "Text": true,
@@ -42,10 +175,22 @@
     "String": true
   },
   "slice_populate_funcs": {
-    "io.ReadFull": [1, 0],
-    "io.ReadAtLeast": [1, 0],
-    "binary.Read": [2, 0],
-    "io.Copy": [0, 1]
+    "io.ReadFull": [
+      1,
+      0
+    ],
+    "io.ReadAtLeast": [
+      1,
+      0
+    ],
+    "binary.Read": [
+      2,
+      0
+    ],
+    "io.Copy": [
+      0,
+      1
+    ]
   },
   "read_into_methods": {
     "Read": true,
@@ -71,7 +216,13 @@
     "DecodeValues": true,
     "Read": true
   },
-  "config_tag_keys": ["mapstructure", "env", "envconfig", "toml", "ini"],
+  "config_tag_keys": [
+    "mapstructure",
+    "env",
+    "envconfig",
+    "toml",
+    "ini"
+  ],
   "auth_call_names": {
     "SetBasicAuth": true,
     "BasicAuth": true,
@@ -84,26 +235,70 @@
     "ReuseTokenSource": true,
     "SetToken": true
   },
-  "db_pkgs": ["database/sql"],
-  "db_pkg_hints": [
-    "sqlx", "gorm", "pgx", "mongo", "redis", "etcd", "gocql", "elasticsearch"
+  "db_pkgs": [
+    "database/sql"
   ],
-  "service_call_pkg_hints": ["google.golang.org/grpc"],
+  "db_pkg_hints": [
+    "sqlx",
+    "gorm",
+    "pgx",
+    "mongo",
+    "redis",
+    "etcd",
+    "gocql",
+    "elasticsearch"
+  ],
+  "service_call_pkg_hints": [
+    "google.golang.org/grpc"
+  ],
   "http_client_pkgs": {
     "net/http": true
   },
   "listener_primitives": [
-    {"package": "net", "symbol": "Listen"},
-    {"package": "net", "symbol": "ListenTCP"},
-    {"package": "net", "symbol": "ListenUDP"},
-    {"package": "net", "symbol": "Listener.Accept"},
-    {"package": "net/http", "symbol": "ListenAndServe"},
-    {"package": "net/http", "symbol": "ListenAndServeTLS"},
-    {"package": "net/http", "symbol": "Server.Serve"},
-    {"package": "net/http", "symbol": "Server.ListenAndServe"},
-    {"package": "google.golang.org/grpc", "symbol": "NewServer"},
-    {"package": "google.golang.org/grpc", "symbol": "Server.Serve"},
-    {"package": "google.golang.org/grpc", "symbol": "Server.ServeHTTP"}
+    {
+      "package": "net",
+      "symbol": "Listen"
+    },
+    {
+      "package": "net",
+      "symbol": "ListenTCP"
+    },
+    {
+      "package": "net",
+      "symbol": "ListenUDP"
+    },
+    {
+      "package": "net",
+      "symbol": "Listener.Accept"
+    },
+    {
+      "package": "net/http",
+      "symbol": "ListenAndServe"
+    },
+    {
+      "package": "net/http",
+      "symbol": "ListenAndServeTLS"
+    },
+    {
+      "package": "net/http",
+      "symbol": "Server.Serve"
+    },
+    {
+      "package": "net/http",
+      "symbol": "Server.ListenAndServe"
+    },
+    {
+      "package": "google.golang.org/grpc",
+      "symbol": "NewServer"
+    },
+    {
+      "package": "google.golang.org/grpc",
+      "symbol": "Server.Serve"
+    },
+    {
+      "package": "google.golang.org/grpc",
+      "symbol": "Server.ServeHTTP"
+    }
   ],
   "listen_addr_arg": {
     "net.Listen": 1,

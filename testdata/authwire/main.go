@@ -7,9 +7,9 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-func authMw(h http.Handler) http.Handler { return h }
+func authMw(h http.Handler) http.Handler       { return h }
 func sessionCheck(h http.Handler) http.Handler { return h }
-func plain(h http.Handler) http.Handler { return h }
+func plain(h http.Handler) http.Handler        { return h }
 
 // Server wiring sits behind two auth-marked middlewares and one
 // unrelated wrapper — only the auth-named ones must be reported.

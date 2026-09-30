@@ -60,7 +60,7 @@ func TestDefaultKnowledgeEmbedded(t *testing.T) {
 // that contributed.
 func TestKnowledgeProvenance(t *testing.T) {
 	base := DefaultKnowledge()
-	if !slices.Contains(base.Sources, "builtin@2026-09-29") {
+	if !slices.Contains(base.Sources, "builtin@2026-09-30") {
 		t.Fatalf("sources=%v", base.Sources)
 	}
 	d1 := base.Digest()
@@ -138,7 +138,7 @@ func TestKnowledgeFileValidation(t *testing.T) {
 		{"future version", `{"schema_version": 99}`, "unsupported knowledge schema version"},
 		// A newer schema's fields must surface as a version error, not
 		// a misleading unknown-field one.
-		{"future schema fields", `{"schema_version": 3, "java": {}}`, "unsupported knowledge schema version"},
+		{"future schema fields", `{"schema_version": 4, "java": {}}`, "unsupported knowledge schema version"},
 		{"negative version", `{"schema_version": -1}`, "unsupported knowledge schema version"},
 		{"wrong language", `{"language": "java"}`, `targets language "java"`},
 		{"bad origin", `{"source_funcs": {"x.Y": "TRUSTED"}}`, "unknown data origin"},

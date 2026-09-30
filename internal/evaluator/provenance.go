@@ -36,7 +36,8 @@ func (ArgumentOrigin) Evaluate(cond domain.Condition, c *domain.AnalysisCase) do
 			"no argument-provenance data flows recorded for this condition")
 		return claim
 	}
-	var safe, external, unknown, deployDependent int
+	module := c.Vulnerability.Module
+	var safe, external, unknown, deployDependent, coneInternal int
 	for _, f := range flows {
 		switch f.Origin {
 		case domain.OriginExternalUntrusted, domain.OriginExternalAuthenticated:
@@ -45,12 +46,18 @@ func (ArgumentOrigin) Evaluate(cond domain.Condition, c *domain.AnalysisCase) do
 			// Deployment-controlled sources: trust boundary is a deployment
 			// property — we cannot prove the value is not attacker-influenced.
 			deployDependent++
-		case domain.OriginUnknown, "":
-			unknown++
 		case domain.OriginConstant, domain.OriginGenerated:
 			safe++
 		default:
-			unknown++
+			// Unresolvable argument inside the vulnerable module's cone:
+			// the value is dependency-internal, so its provenance is
+			// decided by the ingress closure, not by call-site tracing —
+			// a complete closure with all-safe reaching items absorbs it.
+			if module != "" && domain.PackageInModule(f.Sink.Package, module) {
+				coneInternal++
+			} else {
+				unknown++
+			}
 		}
 	}
 	for _, e := range c.EvidenceGraph.Evidence {
@@ -149,8 +156,181 @@ func (ArgumentOrigin) Evaluate(cond domain.Condition, c *domain.AnalysisCase) do
 		claim.Limitations = append(claim.Limitations,
 			"FALSE is a candidate: provenance coverage is limited to direct call sites")
 	}
+	return closureGate(claim, c.EvidenceGraph.IngressClosureFor(cond.ID),
+		c.EvidenceGraph.SinkClosureFor(cond.ID), coneInternal)
+}
+
+// closureGate applies the dependency completeness records to a claim —
+// the two negative-verdict strategies the spec allows. The records can
+// only weaken a claim: a FALSE candidate survives when EITHER the
+// ingress closure is complete with every reaching item safe, OR the
+// sink closure is complete (the declared sink set is enumerable and
+// every live site's payload input resolved non-external). Ingress items
+// with no recorded path to a subject and dead sink sites are excluded
+// by call-graph evidence and listed in limitations for auditability.
+// Incomplete inventories, unresolved reaching items and unsafe reaching
+// sources demote FALSE to UNKNOWN; nothing here promotes a claim.
+// coneInternal counts traced sinks inside the module cone whose argument
+// provenance was unresolvable — they are absorbed only by a verified
+// complete closure; without one they keep the claim UNKNOWN.
+func closureGate(claim domain.Claim, cl *domain.IngressClosure, sc *domain.SinkClosure, coneInternal int) domain.Claim {
+	if cl != nil && len(cl.Blockers) > 0 {
+		notes := cl.Blockers
+		if len(notes) > 5 {
+			notes = notes[:5]
+		}
+		claim.Limitations = append(claim.Limitations, fmt.Sprintf(
+			"ingress closure has %d blocker(s): %s",
+			len(cl.Blockers), strings.Join(notes, "; ")))
+	}
+	if sc != nil && len(sc.Blockers) > 0 {
+		notes := sc.Blockers
+		if len(notes) > 5 {
+			notes = notes[:5]
+		}
+		claim.Limitations = append(claim.Limitations, fmt.Sprintf(
+			"sink closure has %d blocker(s): %s",
+			len(sc.Blockers), strings.Join(notes, "; ")))
+	}
+	if claim.Result != domain.ClaimFalse {
+		return claim
+	}
+	// Nothing recorded and nothing to absorb: the candidate stands on
+	// its direct call-site traces alone (verification decides VERIFIED).
+	if cl == nil && sc == nil && coneInternal == 0 {
+		return claim
+	}
+	if note, ok := ingressVerified(cl, coneInternal); ok {
+		claim.Limitations = append(claim.Limitations, note)
+		if coneInternal > 0 {
+			claim.Limitations = append(claim.Limitations, fmt.Sprintf(
+				"%d dep-internal sink arg(s) with unresolvable provenance absorbed by the complete ingress closure",
+				coneInternal))
+		}
+		return claim
+	}
+	if note, ok := sinkVerified(sc, coneInternal); ok {
+		claim.Limitations = append(claim.Limitations, note)
+		if coneInternal > 0 {
+			claim.Limitations = append(claim.Limitations, fmt.Sprintf(
+				"%d dep-internal sink arg(s) with unresolvable provenance absorbed by the complete sink closure",
+				coneInternal))
+		}
+		return claim
+	}
+	claim.Result = domain.ClaimUnknown
+	claim.Falsifier = ""
+	var open []string
+	if cl != nil && cl.Complete {
+		var unresolved, unsafe int
+		for _, it := range cl.Items {
+			if len(it.Reaches) == 0 || domain.SafeOrigin(it.Origin) {
+				continue
+			}
+			if it.Origin == domain.OriginUnknown || it.Origin == "" {
+				unresolved++
+				if len(open) < 5 {
+					open = append(open, ingressItemLabel(it)+" (unresolved origin)")
+				}
+				continue
+			}
+			unsafe++
+			if len(open) < 5 {
+				open = append(open, ingressItemLabel(it)+" ("+string(it.Origin)+")")
+			}
+		}
+		claim.Explanation += fmt.Sprintf(
+			"; ingress closure complete but %d reaching item(s) unresolved and %d potentially attacker-reachable: %s",
+			unresolved, unsafe, strings.Join(open, "; "))
+	} else if cl != nil {
+		claim.Explanation += "; ingress closure incomplete — boundary inventory cannot be trusted as closed"
+	} else if coneInternal > 0 {
+		claim.Explanation += fmt.Sprintf(
+			"; %d dep-internal sink arg(s) unresolvable and no closure recorded to absorb them", coneInternal)
+	}
+	if sc != nil && !sc.Complete {
+		claim.Explanation += "; sink closure incomplete — sink-site payload inputs cannot be trusted as closed"
+	}
+	claim.Limitations = append(claim.Limitations,
+		"unresolved dependency inputs remain UNKNOWN: origins could not be proven non-external")
 	return claim
 }
+
+// ingressVerified reports whether the ingress-closure record confirms
+// the FALSE candidate: complete inventory and every item that can reach
+// a condition subject resolved to a safe origin. The returned note is
+// the audit line for the claim's limitations.
+func ingressVerified(cl *domain.IngressClosure, coneInternal int) (string, bool) {
+	if cl == nil || !cl.Complete {
+		return "", false
+	}
+	var unresolved, unsafe, excluded int
+	var open []string
+	for _, it := range cl.Items {
+		if len(it.Reaches) == 0 {
+			excluded++
+			continue
+		}
+		if domain.SafeOrigin(it.Origin) {
+			continue
+		}
+		if it.Origin == domain.OriginUnknown || it.Origin == "" {
+			unresolved++
+			if len(open) < 5 {
+				open = append(open, ingressItemLabel(it)+" (unresolved origin)")
+			}
+			continue
+		}
+		unsafe++
+		if len(open) < 5 {
+			open = append(open, ingressItemLabel(it)+" ("+string(it.Origin)+")")
+		}
+	}
+	if unresolved+unsafe > 0 {
+		return "", false
+	}
+	return fmt.Sprintf(
+		"ingress closure verified complete: %d item(s), %d excluded by call-graph evidence",
+		len(cl.Items), excluded), true
+}
+
+// sinkVerified reports whether the sink-closure record confirms the
+// FALSE candidate: the declared sink set was enumerable and every live
+// site's payload input resolved to a non-external origin. Dead sites
+// excluded by call-graph evidence are counted for the audit note.
+func sinkVerified(sc *domain.SinkClosure, coneInternal int) (string, bool) {
+	if sc == nil || !sc.Complete {
+		return "", false
+	}
+	var live, dead int
+	for _, s := range sc.Sites {
+		if s.Live {
+			live++
+		} else {
+			dead++
+		}
+	}
+	return fmt.Sprintf(
+		"sink closure verified complete: %d live payload position(s) across declared sinks all non-external, %d dead site(s) excluded by call-graph evidence; basis: %s",
+		live, dead, sc.Basis), true
+}
+
+func ingressItemLabel(it domain.IngressItem) string {
+	where := it.File
+	if where != "" && it.Line > 0 {
+		where += ":" + itoa(it.Line)
+	}
+	label := string(it.Kind) + " " + it.Detail
+	if it.Callee != "" {
+		label = string(it.Kind) + " " + it.Callee
+	}
+	if where != "" {
+		label += " @" + where
+	}
+	return label
+}
+
+func itoa(n int) string { return strconv.Itoa(n) }
 
 // boundTerm is one disjunct of a declared violating constraint, e.g.
 // `prefetchCount < 0` inside "prefetchCount < 0 or prefetchSize < 0".

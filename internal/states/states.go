@@ -701,9 +701,105 @@ func (h CollectEvidence) runSourceAnalysis(ctx context.Context, c *domain.Analys
 			for _, subj := range dedupSubjects(subjects) {
 				h.collectProvenance(ctx, c, cond, subj)
 			}
+			subs := dedupSubjects(subjects)
+			h.collectIngress(ctx, c, cond, subs)
+			h.collectSinkClosure(ctx, c, cond, subs)
 		}
 	}
 }
+
+// collectIngress records the dependency ingress closure for a
+// provenance-kind condition: every input at the product→module boundary
+// plus every autonomous source inside the product-reachable dependency
+// cone. The record carries completeness blockers and per-item origins —
+// the evaluator consults it before accepting a constant-input falsifier.
+// A failed inventory records a limitation, not silence: the condition's
+// negative claim then cannot be verified.
+func (h CollectEvidence) collectIngress(ctx context.Context, c *domain.AnalysisCase, cond domain.Condition, subjects []domain.SymbolRef) {
+	if c.Vulnerability.Module == "" || len(subjects) == 0 {
+		return
+	}
+	// stdlib advisories span many packages without a single module tree —
+	// the inventory is module-scoped.
+	if isStdlibModule(c.Vulnerability.Module) {
+		return
+	}
+	closure, evs, err := h.Source.IngressInventory(ctx, c.Vulnerability.Module, subjects, 0)
+	if err != nil {
+		c.EvidenceGraph.AddToolLimitation(fmt.Sprintf(
+			"ingress inventory %s (cond %s): %v", c.Vulnerability.Module, cond.ID, err))
+		return
+	}
+	for _, e := range evs {
+		c.EvidenceGraph.AddEvidence(e)
+	}
+	closure.ConditionID = cond.ID
+	var safe, unsafe, unresolved int
+	for _, it := range closure.Items {
+		switch {
+		case domain.SafeOrigin(it.Origin):
+			safe++
+		case it.Origin == domain.OriginUnknown || it.Origin == "":
+			unresolved++
+		default:
+			unsafe++
+		}
+	}
+	c.EvidenceGraph.AddEvidence(domain.Evidence{
+		Kind:    domain.EvidenceDataFlow,
+		Quality: domain.QualityDeterministic,
+		Source:  "dependency ingress-closure inventory " + c.Vulnerability.Module,
+		Tool:    "goanalysis.Index.IngressInventory",
+		Content: fmt.Sprintf("cond=%s module=%s items=%d (safe=%d unsafe=%d unresolved=%d) blockers=%d complete=%v",
+			cond.ID, c.Vulnerability.Module, len(closure.Items), safe, unsafe, unresolved,
+			len(closure.Blockers), closure.Complete),
+	})
+	c.EvidenceGraph.AddIngressClosure(closure)
+}
+
+// collectSinkClosure records the sink-closure coverage for a
+// provenance-kind condition: every live call site of each declared sink
+// (the condition's subjects) with the resolved origin of its payload
+// input. The sink set carries a completeness contract only when all
+// subjects come from the advisory's declared affected-symbol set — the
+// OSV imports.symbols list is the authoritative vulnerable-symbol set
+// for the module's version range (the same completeness govulncheck
+// relies on for applicability). Subjects injected from other provenance
+// leave the set KNOWN_ONLY: the closure is still recorded, never
+// complete.
+func (h CollectEvidence) collectSinkClosure(ctx context.Context, c *domain.AnalysisCase, cond domain.Condition, subjects []domain.SymbolRef) {
+	if c.Vulnerability.Module == "" || len(subjects) == 0 {
+		return
+	}
+	if isStdlibModule(c.Vulnerability.Module) {
+		return
+	}
+	basis := ""
+	if domain.SymbolsDeclared(subjects, c.Vulnerability.AffectedSymbols) {
+		basis = fmt.Sprintf("advisory %s affected-symbol set (OSV imports.symbols) declares the vulnerable symbols for %s in the analyzed version range",
+			c.Vulnerability.ID, c.Vulnerability.Module)
+		if c.GovulncheckCoverage == "covered" {
+			basis += "; govulncheck coverage confirms the DB entry"
+		}
+	}
+	closure, evs, err := h.Source.SinkClosure(ctx, cond.ID, c.Vulnerability.Module, basis,
+		subjects, cond.ArgIndex, sinkClosureHops)
+	if err != nil {
+		c.EvidenceGraph.AddToolLimitation(fmt.Sprintf(
+			"sink-closure inventory %s (cond %s): %v", c.Vulnerability.Module, cond.ID, err))
+		return
+	}
+	for _, e := range evs {
+		c.EvidenceGraph.AddEvidence(e)
+	}
+	c.EvidenceGraph.AddSinkClosure(closure)
+}
+
+// sinkClosureHops matches the negative-verification trace budget so the
+// collected closure is reproducible at verification depth — a shallower
+// collection would leave origins unresolved that the verifier later
+// resolves differently.
+const sinkClosureHops = 16
 
 func dedupSubjects(in []domain.SymbolRef) []domain.SymbolRef {
 	seen := map[string]bool{}

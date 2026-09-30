@@ -33,6 +33,10 @@ type Knowledge struct {
 	// PassthroughFuncs maps "pkgpath.Func" to the argument index whose
 	// origin the call result carries (io.ReadAll → arg0).
 	PassthroughFuncs map[string]int
+	// ArgsMergeFuncs names "pkgpath.Func" combinators whose result merges
+	// the provenance of every argument — formatting/joining constructors
+	// like fmt.Sprintf or errors.Join that introduce no data of their own.
+	ArgsMergeFuncs map[string]bool
 	// PassthroughMethods names accessor methods whose result carries the
 	// receiver's origin (scanner.Text(), buf.Bytes(), builder.String()).
 	PassthroughMethods map[string]bool
@@ -122,6 +126,7 @@ func (k *Knowledge) AsFile() KnowledgeFile {
 		Language:            knowledgeLanguage,
 		SourceFuncs:         originStrings(k.SourceFuncs),
 		PassthroughFuncs:    k.PassthroughFuncs,
+		ArgsMergeFuncs:      k.ArgsMergeFuncs,
 		PassthroughMethods:  k.PassthroughMethods,
 		SlicePopulateFuncs:  k.SlicePopulateFuncs,
 		ReadIntoMethods:     k.ReadIntoMethods,
@@ -161,8 +166,9 @@ func (ix *Index) Knowledge() *Knowledge {
 // newest it accepts: files without schema_version read as v1, files
 // above it fail to load rather than misparse a schema they predate.
 // Bump it when the format changes (e.g. new top-level sections like
-// v2's string_semantics, per-language sections for non-Go analyzers).
-const KnowledgeSchemaVersion = 2
+// v2's string_semantics, v3's args_merge_funcs, per-language sections
+// for non-Go analyzers).
+const KnowledgeSchemaVersion = 3
 
 // knowledgeLanguage tags files for this analyzer family — a file
 // declaring another language is rejected instead of merging keys the
@@ -190,6 +196,7 @@ type KnowledgeFile struct {
 	DataVersion         string             `json:"data_version,omitempty"`
 	SourceFuncs         map[string]string  `json:"source_funcs"`
 	PassthroughFuncs    map[string]int     `json:"passthrough_funcs"`
+	ArgsMergeFuncs      map[string]bool    `json:"args_merge_funcs"`
 	PassthroughMethods  map[string]bool    `json:"passthrough_methods"`
 	SlicePopulateFuncs  map[string][2]int  `json:"slice_populate_funcs"`
 	ReadIntoMethods     map[string]bool    `json:"read_into_methods"`
@@ -285,6 +292,7 @@ func (f KnowledgeFile) validate() error {
 		}
 	}
 	for field, m := range map[string]map[string]bool{
+		"args_merge_funcs":    f.ArgsMergeFuncs,
 		"passthrough_methods": f.PassthroughMethods,
 		"read_into_methods":   f.ReadIntoMethods,
 		"recv_mutate_methods": f.RecvMutateMethods,
@@ -337,6 +345,9 @@ func (k *Knowledge) Merge(f KnowledgeFile) error {
 		return err
 	}
 	if err := join("passthrough_funcs", mergeMap(k.PassthroughFuncs, f.PassthroughFuncs)); err != nil {
+		return err
+	}
+	if err := join("args_merge_funcs", mergeMap(k.ArgsMergeFuncs, f.ArgsMergeFuncs)); err != nil {
 		return err
 	}
 	if err := join("slice_populate_funcs", mergeMap(k.SlicePopulateFuncs, f.SlicePopulateFuncs)); err != nil {
@@ -417,6 +428,9 @@ func (k *Knowledge) init() {
 	}
 	if k.PassthroughFuncs == nil {
 		k.PassthroughFuncs = map[string]int{}
+	}
+	if k.ArgsMergeFuncs == nil {
+		k.ArgsMergeFuncs = map[string]bool{}
 	}
 	if k.SlicePopulateFuncs == nil {
 		k.SlicePopulateFuncs = map[string][2]int{}

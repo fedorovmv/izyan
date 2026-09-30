@@ -11,9 +11,11 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/tools/go/packages"
 
@@ -39,8 +41,12 @@ type Index struct {
 	// TraceArgumentBound call; 0 = maxTraceHops.
 	hopLimit int
 	// txBuf, when non-nil during TraceArgument, accumulates the calls a
-	// traced value passes through (DataFlow.Transformations). Guarded by mu.
-	txBuf *[]domain.CallSite
+	// traced value passes through (DataFlow.Transformations). txSeen
+	// dedups it — a dep-cone trace otherwise appends one entry per
+	// evaluated call (millions of entries on aws-scale cones).
+	// Guarded by mu.
+	txBuf  *[]domain.CallSite
+	txSeen map[domain.CallSite]bool
 	// traceSeen, when non-nil during TraceArgument, marks local vars whose
 	// assignment merge is in progress — breaks self-referential cycles
 	// (x = x + n re-entering x's assignments).
@@ -50,6 +56,24 @@ type Index struct {
 	// owned by the callee evaluator so the cycle guard holds on every
 	// entry path.
 	calleeEvalSeen map[types.Object]bool
+	// calleeTraceIn marks functions whose body trace is in progress —
+	// breaks recursive callee chains (f → … → f) that would otherwise
+	// re-scan the whole body exponentially until the eval budget dies.
+	calleeTraceIn map[string]bool
+	// paramSeen marks (function, argument-slot) resolutions in progress
+	// inside traceParam/traceReceiver — recursive self-calls that re-feed
+	// the same slot contribute no new origin and are cut here instead of
+	// unrolling to the hop bound.
+	paramSeen map[string]bool
+	// paramCache memoizes completed (function, argument-slot) resolutions:
+	// sibling branches of a caller merge would otherwise re-descend the
+	// same caller chain at ever-greater depth and hit the hop bound.
+	paramCache map[string]classifyResult
+	// linkedSet/linkedGen cache the program's import closure (product
+	// roots + transitively imported packages) for callerReachable's
+	// dead-package exclusion — invalidated like callerCache on extras.
+	linkedSet map[string]bool
+	linkedGen int
 	// activeCtx is the context of the currently executing public query —
 	// internal helpers (loadExtra, findSymbol, dep-package loads) pick it
 	// up so cancellation reaches subprocess loads without threading ctx
@@ -65,6 +89,11 @@ type Index struct {
 	// function. Both hold AST pointers — bounded like the other caches.
 	assignCache   map[assignKey][]ast.Expr
 	callListCache map[*ast.FuncDecl][]*ast.CallExpr
+	// fieldOwners memoizes the declaring named type ("pkg.T") of struct
+	// field vars — "" for anonymous declaring structs. Write-site
+	// matching uses it to disambiguate same-named fields sharing a
+	// types.Id across different structs in one package.
+	fieldOwners map[*types.Var]string
 	// coneCache memoizes depCone per module path: the set of module
 	// functions reachable from the product's calls into it — used to
 	// restrict dep-internal caller merges to product-driven paths.
@@ -84,17 +113,66 @@ type Index struct {
 	// code). hops() bounds caller climbs; this bounds AST nesting —
 	// beyond it the origin is UNKNOWN, not a stack overflow.
 	exprDepth int
-	mu        sync.Mutex // serializes queries; shared across cases in scan mode
-	pkgs      []*packages.Package
+	// evalBudget bounds total callee-frame expression evaluations within
+	// one analysis session: dep-internal caller fan-out is exponential in
+	// principle — past the budget the origin degrades to UNKNOWN rather
+	// than burning unbounded time. 0 = inactive.
+	evalBudget int
+	// funcDeclCache memoizes function-declaration lookups — uncached,
+	// each dep-internal call trace re-walks every file of the callee's
+	// package.
+	funcDeclCache map[string]funcDeclResult
+	// fieldTagCache memoizes fieldConfigTagged scans — each field's tag
+	// lookup re-walks the owner package's syntax; pointer key because
+	// types.Var.Id() collides for same-named fields of different structs.
+	fieldTagCache map[*types.Var]bool
+	// fieldWritesCache memoizes fieldWriteSites scans; fieldOriginCache
+	// memoizes resolved field origins by (field, remaining depth). Both
+	// carry the extras generation — a freshly loaded dep package may
+	// hold additional writes.
+	fieldWritesCache map[*types.Var]cachedFieldWrites
+	fieldOriginCache map[fieldOriginKey]cachedFieldOrigin
+	mu               sync.Mutex // serializes queries; shared across cases in scan mode
+	pkgs             []*packages.Package
 	// extraPkgs caches dependency packages loaded on demand via loadExtra
 	// (keyed by package path), so dep-internal scans (call sites, provenance)
-	// can reuse their syntax without re-running packages.Load.
-	extraPkgs map[string][]*packages.Package
+	// can reuse their syntax without re-running packages.Load. extraOrder
+	// is the insertion order — the eviction LRU for evictExtra.
+	extraPkgs  map[string][]*packages.Package
+	extraOrder []string
+	// extraWeight memoizes each retained pattern's imported-types
+	// closure size (importClosureSize of its roots) — the weight evictExtra
+	// budgets against, since package count alone misses the transitively
+	// imported types graph every root drags behind it.
+	extraWeight map[string]int
+	// extraPinned exempts a load pattern from eviction — the advisory
+	// module under active closure verification must stay resident or its
+	// callers vanish mid-trace (mid-verify eviction once turned every
+	// resolved protojson sink position UNKNOWN).
+	extraPinned map[string]bool
 	// callerCache memoizes caller scans by (symbol, scope). Dependency
 	// scopes grow as loadExtra pulls more packages in, so dep entries are
 	// tagged with the extras generation and refreshed on a miss.
-	callerCache  map[callerKey]cachedCallers
-	extrasGen    int
+	callerCache map[callerKey]cachedCallers
+	// funcValsCache memoizes resolved function-value candidates per
+	// variable; gen tracks extrasGen like callerCache.
+	funcValsCache map[*types.Var]funcValEntry
+	funcValsIn    map[*types.Var]bool
+	// fvIdx caches per-package func-value call indexes; fvIdxGen drops
+	// the map when the extras generation turns over. fvBuildDepth counts
+	// in-progress index builds: nested candidate resolution consults
+	// existing indexes only — starting another package's build mid-build
+	// recurses across the package graph (grpc-scale cones never return).
+	fvIdx        map[*packages.Package]*fvPkgIndex
+	fvIdxGen     int
+	fvBuildDepth int
+	// callersIn guards against recursive caller scans — a scan for the
+	// same key mid-flight returns empty rather than looping.
+	callersIn map[callerKey]bool
+	extrasGen int
+	// lastFreeOS throttles the post-eviction FreeOSMemory sweep — it is
+	// a full GC plus madvise, far too expensive to run per load.
+	lastFreeOS   time.Time
 	fset         *token.FileSet
 	loaded       bool
 	loadErr      error
@@ -104,6 +182,10 @@ type Index struct {
 	// closure for depSiteLive's cross-module-caller bound (lazily built,
 	// no syntax — import edges only).
 	importers map[string][]depImporter
+	// pkgModules maps every package path of the full dependency closure
+	// to its owning module path ("" = stdlib) — built in the same "all"
+	// load as importers.
+	pkgModules map[string]string
 }
 
 // buildEnv derives GOOS/GOARCH/CGO env for tool invocations.
@@ -119,15 +201,17 @@ func buildEnv(build domain.ProductSnapshot) []string {
 	return env
 }
 
-// loadMode deliberately excludes NeedDeps: with it, every load pulls the
-// full AST+types tree of the transitive dependency graph — that is what
-// OOM-killed the host on large modules (go-getter → aws-sdk-scale trees).
-// Without it, roots still get syntax+types and dependencies resolve
-// through export data, which is all the analysis needs: dependency
-// syntax is loaded only for packages named by a loadExtra pattern.
+// loadMode deliberately excludes NeedDeps and NeedImports: NeedDeps pulls
+// the full AST+types tree of the transitive dependency graph, and
+// NeedImports retains that graph as import stubs behind every loaded
+// package — ~1 stub tree per retained package is what OOM-killed the host
+// on large dep trees (go-getter → aws-sdk-scale). Without them roots still
+// get syntax+types, dependencies resolve through export data, and the
+// import graph is still reachable via pkg.Types.Imports() — which is all
+// the analysis needs: dependency syntax is loaded only for packages named
+// by a loadExtra pattern.
 const loadMode = packages.NeedName | packages.NeedFiles | packages.NeedSyntax |
-	packages.NeedTypes | packages.NeedTypesInfo | packages.NeedImports |
-	packages.NeedModule
+	packages.NeedTypes | packages.NeedTypesInfo | packages.NeedModule
 
 func (ix *Index) load(ctx context.Context) error {
 	if ctx != nil {
@@ -195,25 +279,154 @@ func (ix *Index) loadExtra(ctx context.Context, patterns ...string) ([]*packages
 	if err != nil {
 		return nil, err
 	}
+	if os.Getenv("VA_LOAD_DEBUG") != "" {
+		files := 0
+		for _, p := range pkgs {
+			files += len(p.GoFiles)
+		}
+		fmt.Fprintf(os.Stderr, "loadExtra %q -> %d pkgs %d files\n", key, len(pkgs), files)
+	}
 	if ix.extraPkgs == nil {
 		ix.extraPkgs = map[string][]*packages.Package{}
 	}
 	// Bound retained dependency graphs: each entry holds a full AST+types
-	// tree, so accumulating patterns is what blew the host's memory on
-	// large modules. Extras are reloadable — flush all and let callers
+	// tree plus the types graph of its transitively imported packages,
+	// so accumulating packages is what blew the host's memory on large
+	// dep trees (go-getter → aws-sdk-scale import closures). Extras are
+	// reloadable — evict the oldest patterns over budget and let callers
 	// re-load the ones they still need.
-	if len(ix.extraPkgs) >= maxExtraLoads {
-		ix.extraPkgs = map[string][]*packages.Package{}
-		ix.extrasGen++
+	ix.extraPkgs[key] = pkgs
+	ix.extraOrder = append(ix.extraOrder, key)
+	if ix.extraWeight == nil {
+		ix.extraWeight = map[string]int{}
+	}
+	w := 0
+	for _, p := range pkgs {
+		w += importClosureSize(p.Types)
+	}
+	ix.extraWeight[key] = w
+	ix.evictExtra()
+	ix.extrasGen++
+	return pkgs, nil
+}
+
+// importClosureSize counts the types packages transitively imported by
+// tp — the retained memory a loaded package drags behind it via
+// types.Package.Imports(). tp=nil weighs 0.
+func importClosureSize(tp *types.Package) int {
+	if tp == nil {
+		return 0
+	}
+	seen := map[*types.Package]bool{tp: true}
+	stack := []*types.Package{tp}
+	n := 0
+	for len(stack) > 0 {
+		p := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		for _, imp := range p.Imports() {
+			if imp != nil && !seen[imp] {
+				seen[imp] = true
+				stack = append(stack, imp)
+				n++
+			}
+		}
+	}
+	return n
+}
+
+// evictExtra drops the oldest loaded patterns until the retained package
+// count fits the budget — never the newest entry, which the caller is
+// about to use. Dep-caller scans cover only retained extras, so an
+// evicted package simply shrinks later scans (conservative direction:
+// fewer sites resolved, more UNKNOWN).
+func (ix *Index) evictExtra() {
+	total, files, imports := 0, 0, 0
+	for _, pkgs := range ix.extraPkgs {
+		total += len(pkgs)
+		for _, p := range pkgs {
+			files += len(p.GoFiles)
+		}
+	}
+	for _, w := range ix.extraWeight {
+		imports += w
+	}
+	over := func() bool {
+		return total > maxExtraPkgs || files > maxExtraFiles ||
+			imports > maxExtraImportClosure || len(ix.extraPkgs) > maxExtraLoads
+	}
+	if !over() {
+		return
+	}
+	evicted := false
+	// Pinned victims rotate to the back instead of deleting — the spin
+	// bound keeps the loop finite when every candidate is pinned.
+	for spins := 0; len(ix.extraOrder) > 1 && over() && spins <= len(ix.extraOrder); {
+		victim := ix.extraOrder[0]
+		ix.extraOrder = ix.extraOrder[1:]
+		if ix.extraPinned[victim] {
+			ix.extraOrder = append(ix.extraOrder, victim)
+			spins++
+			continue
+		}
+		vpkgs, ok := ix.extraPkgs[victim]
+		if !ok {
+			continue
+		}
+		total -= len(vpkgs)
+		for _, p := range vpkgs {
+			files -= len(p.GoFiles)
+		}
+		imports -= ix.extraWeight[victim]
+		delete(ix.extraWeight, victim)
+		delete(ix.extraPkgs, victim)
+		evicted = true
+	}
+	if evicted {
 		for k := range ix.callerCache {
 			if k.dep {
 				delete(ix.callerCache, k) // entries point at evicted ASTs
 			}
 		}
+		// Every cache that retains AST/package references must drop —
+		// otherwise evicted packages stay alive through map entries and
+		// the budget bounds nothing.
+		ix.funcDeclCache = nil
+		ix.assignCache = nil
+		ix.callListCache = nil
+		ix.fieldTagCache = nil
+		ix.fieldWritesCache = nil
+		ix.fieldOriginCache = nil
+		ix.fieldOwners = nil
+		ix.funcValsCache = nil
+		ix.fvIdx = nil
+		ix.classifyCache = nil
+		// The runtime holds freed heap for reuse until SetMemoryLimit
+		// pressure forces scavenging — under a watchdog that counts
+		// HeapSys, idle garbage looks like retained memory. Hand it back
+		// once the heap is large; throttle — FreeOSMemory is a full GC.
+		var m runtime.MemStats
+		runtime.ReadMemStats(&m)
+		if m.HeapSys > 1<<30 && time.Since(ix.lastFreeOS) > time.Second {
+			debug.FreeOSMemory()
+			ix.lastFreeOS = time.Now()
+		}
 	}
-	ix.extraPkgs[key] = pkgs
-	ix.extrasGen++
-	return pkgs, nil
+}
+
+// pinExtra exempts a retained load pattern from eviction — used for the
+// advisory module a closure is actively verifying. Only reasonably sized
+// patterns can pin: an aws-scale module pinned behind the memory budget
+// would defeat it, so huge patterns stay evictable (their closure stays
+// UNKNOWN — conservative).
+func (ix *Index) pinExtra(pattern string) {
+	pkgs, ok := ix.extraPkgs[pattern]
+	if !ok || len(pkgs) > maxExtraPkgs {
+		return
+	}
+	if ix.extraPinned == nil {
+		ix.extraPinned = map[string]bool{}
+	}
+	ix.extraPinned[pattern] = true
 }
 
 // extrasFor returns cached dependency packages matching pkgPath (loaded
@@ -476,6 +689,11 @@ type CallSiteRef struct {
 	call      *ast.CallExpr
 	enclosing *ast.FuncDecl
 	pkg       *packages.Package
+	// possible marks a site whose func-value callee could not be fully
+	// resolved: the call may dispatch to the traced symbol, so it counts
+	// as a caller, but its arguments are not worth tracing — the
+	// unresolvable dispatch already contributes UNKNOWN either way.
+	possible bool
 }
 
 // FindCallers returns statically resolved call sites of the symbol inside
@@ -823,17 +1041,30 @@ func (ix *Index) depImporters(ctx context.Context) (map[string][]depImporter, er
 		return nil, err
 	}
 	m := map[string][]depImporter{}
+	pm := map[string]string{}
 	for _, p := range pkgs {
 		mod := ""
 		if p.Module != nil {
 			mod = p.Module.Path
 		}
+		pm[p.PkgPath] = mod
 		for imp := range p.Imports {
 			m[imp] = append(m[imp], depImporter{path: p.PkgPath, module: mod})
 		}
 	}
 	ix.importers = m
+	ix.pkgModules = pm
 	return m, nil
+}
+
+// depModuleOf returns the module a package belongs to, loading the
+// reverse-import index lazily when provenance tracing runs before the
+// ingress inventory. "" means product/stdlib/unresolvable.
+func (ix *Index) depModuleOf(pkgPath string) string {
+	if ix.pkgModules == nil {
+		_, _ = ix.depImporters(ix.ctxOr(context.Background()))
+	}
+	return ix.pkgModules[pkgPath]
 }
 
 // importedByOtherModule reports whether pkgPath is imported by a
@@ -867,12 +1098,24 @@ func (ix *Index) callerScope(pkg *packages.Package) []*packages.Package {
 }
 
 // maxExtraLoads bounds how many dependency-load patterns the index
-// retains at once; maxCallerCache bounds memoized caller scans.
+// retains at once; maxExtraPkgs bounds the retained package count;
+// maxExtraFiles bounds the retained file count; maxExtraImportClosure
+// bounds the total transitively-imported types packages held behind
+// retained roots — the dominant hidden mass (every load re-creates the
+// types graph of its whole import closure, so an aws-scale root can cost
+// hundreds of MB in imported types while counting as one package).
+// maxCallerCache bounds memoized caller scans.
 const (
-	maxExtraLoads    = 64
-	maxCallerCache   = 8192
-	maxClassifyCache = 65536
-	maxAuxCache      = 16384
+	maxExtraLoads         = 64
+	maxExtraPkgs          = 40
+	maxExtraFiles         = 500
+	maxExtraImportClosure = 2500
+	maxCallerCache        = 8192
+	maxClassifyCache      = 65536
+	maxAuxCache           = 16384
+	// maxTxBuf caps the transformation records one trace accumulates —
+	// audit detail, not correctness input.
+	maxTxBuf = 8192
 )
 
 // callerKey identifies one caller scan: the symbol looked up and which
@@ -919,6 +1162,13 @@ func (ix *Index) callersOf(pkg *packages.Package, ref domain.SymbolRef) []CallSi
 	if c, ok := ix.callerCache[key]; ok && (!dep || c.gen == ix.extrasGen) {
 		return c.refs
 	}
+	if ix.callersIn == nil {
+		ix.callersIn = map[callerKey]bool{}
+	}
+	if ix.callersIn[key] {
+		return nil
+	}
+	ix.callersIn[key] = true
 	scope := ix.callerScope(pkg)
 	refs := ix.findCallSitesIn(scope, ref)
 	// A caller of an interface method is a caller of every implementation:
@@ -942,6 +1192,16 @@ func (ix *Index) callersOf(pkg *packages.Package, ref domain.SymbolRef) []CallSi
 			}
 		}
 	}
+	// Function-value dispatch sites: `f(...)` where f is a func-typed
+	// variable — invisible to the name-based scans above. Sites whose
+	// candidate set contains ref, or whose set is incomplete while the
+	// signature matches, count as callers (may-dispatch is a writer).
+	for _, r := range ix.funcValueCallSites(scope, ref, ix.funcSigOfRef(ref)) {
+		if !dupCallSite(refs, r) {
+			refs = append(refs, r)
+		}
+	}
+	delete(ix.callersIn, key)
 	if ix.callerCache == nil {
 		ix.callerCache = map[callerKey]cachedCallers{}
 	}
@@ -1446,10 +1706,7 @@ func (ix *Index) ModuleUsage(ctx context.Context, module string) ([]domain.CallS
 				if p != module && !strings.HasPrefix(p, module+"/") {
 					return true
 				}
-				owner := ""
-				if imported := pkg.Imports[p]; imported != nil && imported.Module != nil {
-					owner = imported.Module.Path
-				}
+				owner := ix.depModuleOf(p)
 				site := ix.siteOf(pkg, enc, call)
 				site.Callee = p + "." + fn.Name()
 				site.ModuleOwner = owner

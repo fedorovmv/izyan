@@ -1850,9 +1850,9 @@ func TestE2ETransformationChainRecorded(t *testing.T) {
 	if !flagged {
 		t.Fatalf("security-relevant transform not flagged; limitations=%v", input.Limitations)
 	}
-	// An opaque transform honestly breaks the trace: EscapeString's body is
-	// not a proven passthrough, so the origin is UNKNOWN — the recorded
-	// chain makes that UNKNOWN auditable instead of silent.
+	// An opaque transform honestly breaks the trace: mask() reads a channel
+	// (send sites are not inventoried), so the origin is UNKNOWN — the
+	// recorded chain makes that UNKNOWN auditable instead of silent.
 	if input.Result != domain.ClaimUnknown {
 		t.Fatalf("C-INPUT=%s want UNKNOWN (opaque transform)", input.Result)
 	}

@@ -230,6 +230,33 @@ const (
 	OriginUnknown               DataOrigin = "UNKNOWN"
 )
 
+// SymbolsDeclared reports whether every subject under evaluation is part
+// of the advisory's declared affected-symbol set — the condition for the
+// set to carry a sink-completeness contract.
+func SymbolsDeclared(subjects, declared []SymbolRef) bool {
+	if len(declared) == 0 {
+		return false
+	}
+	set := map[string]bool{}
+	for _, s := range declared {
+		set[s.Package+"."+s.Symbol] = true
+	}
+	for _, s := range subjects {
+		if !set[s.Package+"."+s.Symbol] {
+			return false
+		}
+	}
+	return true
+}
+
+// SafeOrigin reports whether a provenance origin is proven non-external —
+// the value is a compile-time constant or a generated value whose inputs
+// are all safe. Everything else is either attacker-capable,
+// deployment-dependent, or unknown and cannot ground a negative claim.
+func SafeOrigin(o DataOrigin) bool {
+	return o == OriginConstant || o == OriginGenerated
+}
+
 // Condition param keys — declarative hints emitted by exploit patterns and
 // consumed by evaluators. Unknown params are ignored, so patterns stay
 // declarative: a param never asserts a verdict, it only narrows what to
@@ -537,6 +564,92 @@ type ConfigItem struct {
 	Evidence EvidenceID `json:"evidence_id,omitempty"`
 }
 
+// Ingress-item kinds: which slot of the product→dependency boundary (or
+// which spot inside the reachable dependency cone) an inventoried input
+// occupies.
+const (
+	IngressBoundaryArg      = "boundary_arg"      // call argument at a boundary entry
+	IngressBoundaryReceiver = "boundary_receiver" // receiver object of a method entry
+	IngressObjectState      = "object_state"      // writable state of an object passed at the boundary
+	IngressConeSource       = "cone_source"       // autonomous source inside the reachable dep cone
+	IngressIntermediateDep  = "intermediate_dep"  // product call into another dep module that can reach this one
+)
+
+// IngressItem is one element of an ingress-closure inventory: an input
+// crossing the product→dependency boundary or an autonomous source
+// inside the product-reachable dependency cone.
+type IngressItem struct {
+	CallSite
+	Kind string `json:"kind"`
+	// Callee names the invoked boundary symbol or the source-producing
+	// call inside the cone.
+	Callee string     `json:"callee,omitempty"`
+	Arg    int        `json:"arg"` // argument index; -1 = receiver/object state
+	Origin DataOrigin `json:"origin,omitempty"`
+	// Reaches lists condition subject keys ("pkg.Symbol") provably
+	// reachable from this item's boundary entry inside the module cone.
+	Reaches []string `json:"reaches,omitempty"`
+	Detail  string   `json:"detail,omitempty"`
+}
+
+// IngressClosure is the coverage record of the ingress-closure
+// completeness strategy: every input at the product→module boundary plus
+// every autonomous source inside the product-reachable dependency cone.
+// Complete means the inventory itself is closed — no unseen entries,
+// sources or dispatch opacity; element origins then decide the claim.
+type IngressClosure struct {
+	ConditionID ConditionID   `json:"condition_id"`
+	Module      string        `json:"module"`
+	Complete    bool          `json:"complete"`
+	Items       []IngressItem `json:"items,omitempty"`
+	// Blockers explain why the inventory cannot be proven complete
+	// (opaque dispatch, function-value escapes, unresolved scope).
+	Blockers []string `json:"blockers,omitempty"`
+}
+
+// SinkSite is one payload-input position of one sink in the
+// completeness-declared sink set: the call site, the position carrying
+// payload (argument index, or -1 for receiver/object state), whether
+// the enclosing caller is live in the effective build, and the resolved
+// terminal origin of the input.
+type SinkSite struct {
+	CallSite
+	// Sink names the subject key "pkg.Symbol" the site invokes.
+	Sink string `json:"sink"`
+	// Arg is the payload position: an argument index, or -1 for
+	// receiver/object state.
+	Arg int `json:"arg"`
+	// Live is false only with positive unreachable evidence — an
+	// unlinked package or a caller the build cannot invoke.
+	Live   bool       `json:"live"`
+	Origin DataOrigin `json:"origin,omitempty"`
+	Detail string     `json:"detail,omitempty"`
+}
+
+// SinkClosure is the coverage record of the sink-closure completeness
+// strategy: the condition's declared-complete sink set (Basis holds the
+// completeness contract with provenance) plus every call site found in
+// the product and the reachable dependency cone with the resolved
+// origin of its payload input. Complete means every live site's payload
+// input resolved to a non-external origin and no enumeration gap was
+// found; dead sites are excluded by call-graph evidence and recorded
+// for audit.
+type SinkClosure struct {
+	ConditionID ConditionID `json:"condition_id"`
+	Module      string      `json:"module"`
+	// Basis is the completeness contract for the sink set — which
+	// authoritative declaration makes it exhaustive, bound to the
+	// vulnerability, module and analyzed version. Without a basis the
+	// set is KNOWN_ONLY and the closure cannot be complete.
+	Basis    string     `json:"basis,omitempty"`
+	Complete bool       `json:"complete"`
+	Sites    []SinkSite `json:"sites,omitempty"`
+	// Blockers explain enumeration gaps — callers in dependency modules
+	// outside the loaded cone, unresolvable dispatch, or a declared sink
+	// absent from the analyzed version.
+	Blockers []string `json:"blockers,omitempty"`
+}
+
 // ConfigAssignment is a product-code assignment to a configuration knob
 // (a Type.Field subject): composite-literal keys and x.Field = value
 // assignments, with the assigned value resolved to a literal/const when
@@ -582,9 +695,17 @@ type EvidenceGraph struct {
 	// ("bool", "string", …) — enables Go zero-value reasoning when the
 	// knob is never assigned.
 	ConfigFieldKinds map[string]string `json:"config_field_kinds,omitempty"`
-	Validations      []Validation      `json:"validations,omitempty"`
-	Configuration    []ConfigItem      `json:"configuration,omitempty"`
-	Runtime          []EvidenceID      `json:"runtime,omitempty"`
+	// IngressClosures records the coverage set of the ingress-closure
+	// completeness strategy per input condition: boundary items plus
+	// autonomous sources inside the reachable dependency cone.
+	IngressClosures []IngressClosure `json:"ingress_closures,omitempty"`
+	// SinkClosures records the coverage set of the sink-closure
+	// completeness strategy per input condition: the declared sink set
+	// and per-site payload-input origins.
+	SinkClosures  []SinkClosure `json:"sink_closures,omitempty"`
+	Validations   []Validation  `json:"validations,omitempty"`
+	Configuration []ConfigItem  `json:"configuration,omitempty"`
+	Runtime       []EvidenceID  `json:"runtime,omitempty"`
 	// ToolExecutions is the audit trail of external tool invocations
 	// (spec §22): which tool ran, with what arguments, exit code and
 	// output hashes — so every claim can be traced to a concrete run.
@@ -824,6 +945,60 @@ func (g *EvidenceGraph) ConfigItems() []ConfigItem {
 	out := make([]ConfigItem, len(g.Configuration))
 	copy(out, g.Configuration)
 	return out
+}
+
+// AddIngressClosure appends or replaces the closure record for the same
+// (condition, module) — a recomputed inventory supersedes the earlier one.
+func (g *EvidenceGraph) AddIngressClosure(cl IngressClosure) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for i, ex := range g.IngressClosures {
+		if ex.ConditionID == cl.ConditionID && ex.Module == cl.Module {
+			g.IngressClosures[i] = cl
+			return
+		}
+	}
+	g.IngressClosures = append(g.IngressClosures, cl)
+}
+
+// IngressClosureFor returns the recorded closure for a condition, or nil
+// when the inventory was not run for it.
+func (g *EvidenceGraph) IngressClosureFor(id ConditionID) *IngressClosure {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for i := range g.IngressClosures {
+		if g.IngressClosures[i].ConditionID == id {
+			return &g.IngressClosures[i]
+		}
+	}
+	return nil
+}
+
+// AddSinkClosure appends or replaces the closure record for the same
+// (condition, module) — a recomputed inventory supersedes the earlier one.
+func (g *EvidenceGraph) AddSinkClosure(cl SinkClosure) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for i, ex := range g.SinkClosures {
+		if ex.ConditionID == cl.ConditionID && ex.Module == cl.Module {
+			g.SinkClosures[i] = cl
+			return
+		}
+	}
+	g.SinkClosures = append(g.SinkClosures, cl)
+}
+
+// SinkClosureFor returns the recorded closure for a condition, or nil
+// when the inventory was not run for it.
+func (g *EvidenceGraph) SinkClosureFor(id ConditionID) *SinkClosure {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for i := range g.SinkClosures {
+		if g.SinkClosures[i].ConditionID == id {
+			return &g.SinkClosures[i]
+		}
+	}
+	return nil
 }
 
 // AddExposure records a resolved exposure fact.

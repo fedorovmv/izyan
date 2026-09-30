@@ -466,6 +466,7 @@ func (v Verifier) verifyInputFalse(ctx context.Context, c *domain.AnalysisCase, 
 	nv *domain.NegativeVerification, subjects []domain.SymbolRef, argIndex int) domain.Claim {
 
 	totalCallers := 0
+	absorbed := 0
 	mods := caseModules(c)
 	for _, subj := range subjects {
 		callers, err := v.Source.FindCallers(ctx, subj)
@@ -519,6 +520,16 @@ func (v Verifier) verifyInputFalse(ctx context.Context, c *domain.AnalysisCase, 
 						site.Function, flow.Origin, flow.Summary)
 					return setNeg(claim, nv)
 				case domain.NegativeInsufficientScope:
+					// A sink inside the vulnerable module's cone passes a
+					// dependency-internal value — its provenance is the
+					// ingress closure's job, not call-site tracing. The
+					// verifyIngress pass below must confirm the closure is
+					// complete and all-reaching-safe, or it fails there.
+					if c.Vulnerability.Module != "" &&
+						domain.PackageInModule(site.Package, c.Vulnerability.Module) {
+						absorbed++
+						continue
+					}
 					// Absence of evidence is not a contradiction: the
 					// verifier could not resolve this argument — scope
 					// insufficient to confirm the FALSE, not disproven.
@@ -535,9 +546,156 @@ func (v Verifier) verifyInputFalse(ctx context.Context, c *domain.AnalysisCase, 
 		nv.Notes = "no direct call sites found for any subject; indirect invocation possible"
 		return setNeg(claim, nv)
 	}
-	nv.Notes = fmt.Sprintf("all %d call site(s) across %d subject(s) pass non-external input",
-		totalCallers, len(subjects))
+	// A complete closure — either strategy the spec allows — discharges
+	// the dep-internal arguments the per-site trace could not resolve.
+	ingressNote := v.verifyIngress(ctx, c, nv, subjects)
+	if ingressNote == "" {
+		nv.Notes = fmt.Sprintf("all %d call site(s) across %d subject(s) pass non-external input",
+			totalCallers, len(subjects))
+		if absorbed > 0 {
+			nv.Notes += fmt.Sprintf("; %d dep-internal sink arg(s) absorbed by verified ingress closure", absorbed)
+		}
+		return setNeg(claim, nv)
+	}
+	if note := v.verifySinkClosure(ctx, c, claim, nv, subjects, argIndex); note == "" {
+		nv.Status = domain.NegativeVerified
+		nv.Notes = fmt.Sprintf("all %d call site(s) across %d subject(s) pass non-external input",
+			totalCallers, len(subjects))
+		if absorbed > 0 {
+			nv.Notes += fmt.Sprintf("; %d dep-internal sink arg(s) absorbed by verified sink closure", absorbed)
+		}
+		nv.Notes += "; ingress closure could not verify: " + ingressNote
+		return setNeg(claim, nv)
+	}
 	return setNeg(claim, nv)
+}
+
+// verifySinkClosure re-runs the sink-closure enumeration at the
+// verification budget: every live call site of every declared sink must
+// still resolve its payload input to a non-external origin. A live site
+// receiving external input contradicts the falsifier outright;
+// enumeration gaps or unresolvable inputs are insufficient scope, not
+// contradictions. nv is mutated; "" means the closure confirms the
+// FALSE candidate.
+func (v Verifier) verifySinkClosure(ctx context.Context, c *domain.AnalysisCase, claim domain.Claim,
+	nv *domain.NegativeVerification, subjects []domain.SymbolRef, argIndex int) string {
+
+	module := c.Vulnerability.Module
+	if module == "" || len(subjects) == 0 {
+		return "no module/subjects for sink closure"
+	}
+	basis := ""
+	if domain.SymbolsDeclared(subjects, c.Vulnerability.AffectedSymbols) {
+		basis = fmt.Sprintf("advisory %s affected-symbol set (OSV imports.symbols) declares the vulnerable symbols for %s in the analyzed version range",
+			c.Vulnerability.ID, module)
+		if c.GovulncheckCoverage == "covered" {
+			basis += "; govulncheck coverage confirms the DB entry"
+		}
+	}
+	cl, evs, err := v.Source.SinkClosure(ctx, claim.ConditionID, module, basis, subjects, argIndex, verifyHops)
+	if err != nil {
+		nv.Status = domain.NegativeInsufficientScope
+		nv.Notes = "sink-closure inventory failed: " + err.Error()
+		return nv.Notes
+	}
+	for _, e := range evs {
+		nv.EvidenceIDs = append(nv.EvidenceIDs, c.EvidenceGraph.AddEvidence(e))
+	}
+	c.EvidenceGraph.AddSinkClosure(cl)
+	if !cl.Complete {
+		var unsafe *domain.SinkSite
+		var dead int
+		for i := range cl.Sites {
+			s := &cl.Sites[i]
+			if !s.Live {
+				dead++
+				continue
+			}
+			if s.Origin == domain.OriginExternalUntrusted || s.Origin == domain.OriginExternalAuthenticated {
+				unsafe = s
+			}
+		}
+		if unsafe != nil {
+			nv.Status = domain.NegativeContradicted
+			nv.Notes = fmt.Sprintf("live sink site %s:%d (%s) receives %s input; FALSE contradicted",
+				unsafe.File, unsafe.Line, unsafe.Sink, unsafe.Origin)
+			return nv.Notes
+		}
+		nv.Status = domain.NegativeInsufficientScope
+		nv.Notes = fmt.Sprintf("sink closure incomplete at verification depth: %d blocker(s), %d dead site(s) excluded",
+			len(cl.Blockers), dead)
+		return nv.Notes
+	}
+	return ""
+}
+
+// verifyIngress re-runs the dependency ingress-closure inventory at the
+// deeper verification budget and re-checks what the evaluator's gate
+// relied on: the inventory must still be complete, and every item that
+// can reach a condition subject must resolve to a safe origin. A clearly
+// external reaching item contradicts the falsifier; anything else that
+// cannot be proven safe — unresolved origins, deployment-dependent
+// sources, an incomplete closure — is insufficient scope, not a
+// contradiction. nv is mutated; the return value is a short status note
+// ("" when the closure confirms the FALSE candidate).
+func (v Verifier) verifyIngress(ctx context.Context, c *domain.AnalysisCase,
+	nv *domain.NegativeVerification, subjects []domain.SymbolRef) string {
+
+	module := c.Vulnerability.Module
+	if module == "" || len(subjects) == 0 {
+		return ""
+	}
+	closure, evs, err := v.Source.IngressInventory(ctx, module, subjects, verifyHops)
+	if err != nil {
+		nv.Status = domain.NegativeInsufficientScope
+		nv.Notes = "ingress inventory failed: " + err.Error()
+		return nv.Notes
+	}
+	for _, e := range evs {
+		nv.EvidenceIDs = append(nv.EvidenceIDs, c.EvidenceGraph.AddEvidence(e))
+	}
+	if !closure.Complete {
+		nv.Status = domain.NegativeInsufficientScope
+		nv.Notes = fmt.Sprintf("ingress closure incomplete at verification depth: %d blocker(s)",
+			len(closure.Blockers))
+		return nv.Notes
+	}
+	var unresolved, reaching int
+	var external domain.IngressItem
+	found := false
+	for _, it := range closure.Items {
+		if len(it.Reaches) == 0 {
+			continue
+		}
+		reaching++
+		switch it.Origin {
+		case domain.OriginConstant, domain.OriginGenerated:
+		case domain.OriginExternalUntrusted, domain.OriginExternalAuthenticated:
+			external, found = it, true
+		default:
+			unresolved++
+		}
+	}
+	if found {
+		nv.Status = domain.NegativeContradicted
+		nv.Notes = fmt.Sprintf("ingress item %s %s at %s:%d has origin %s and reaches %v; FALSE contradicted",
+			external.Kind, external.Callee, external.File, external.Line, external.Origin, external.Reaches)
+		return nv.Notes
+	}
+	if unresolved > 0 {
+		nv.Status = domain.NegativeInsufficientScope
+		nv.Notes = fmt.Sprintf("ingress closure complete but %d of %d reaching item(s) have unproven origin",
+			unresolved, reaching)
+		return nv.Notes
+	}
+	nv.EvidenceIDs = append(nv.EvidenceIDs, c.EvidenceGraph.AddEvidence(domain.Evidence{
+		Kind:    domain.EvidenceDataFlow,
+		Quality: domain.QualityDeterministic,
+		Source:  "ingress-closure verification " + module,
+		Tool:    "goanalysis.Index.IngressInventory",
+		Content: fmt.Sprintf("complete=%v items=%d reaching=%d all-safe", closure.Complete, len(closure.Items), reaching),
+	}))
+	return ""
 }
 
 func inputOriginVerification(origin domain.DataOrigin) domain.NegativeVerificationStatus {

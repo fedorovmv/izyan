@@ -40,6 +40,7 @@ func applyMemoryLimit(ctx context.Context, budget int64) (context.Context, conte
 		t := time.NewTicker(200 * time.Millisecond)
 		defer t.Stop()
 		overBudget := 0
+		var lastFree time.Time
 		for {
 			select {
 			case <-done:
@@ -65,6 +66,15 @@ func applyMemoryLimit(ctx context.Context, budget int64) (context.Context, conte
 				case used > budget:
 					overBudget = 0
 					cancel()
+					// HeapSys counts spans the runtime keeps mapped for
+					// reuse — collectable garbage can look like retained
+					// memory under this metric. Force a scavenge sweep so
+					// the next sample reflects live heap; a truly live
+					// hold does not shrink and still hits the 150% abort.
+					if time.Since(lastFree) > time.Second {
+						debug.FreeOSMemory()
+						lastFree = time.Now()
+					}
 				default:
 					overBudget = 0
 				}

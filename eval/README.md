@@ -37,11 +37,11 @@ Baseline-таблица govulncheck-vs-analyzer (последний прогон
 | real-dns-zone | EXPLOITABLE | reachable | нет |
 | real-getter-file | INCONCLUSIVE | reachable | нет — dispatch-key const `file`, eval-полнота не дожимает |
 | real-getter-fixed | NOT_AFFECTED | silent | **да — deterministic** |
-| real-yaml-const | INCONCLUSIVE | reachable | нет — внутренние dep-call sites неразрешены; const payload не замыкает все пути к sink |
+| real-yaml-const | NO_EXPLOIT_PATH_FOUND | reachable | **да — ingress closure verified: все входы в cone разрешены safe; NV VERIFIED** |
 | real-yaml3-http | EXPLOITABLE | reachable | нет |
 | real-yaml3-const | NO_EXPLOIT_PATH_FOUND | reachable | **да — единственный `Unmarshal` получает build-time constant; NV VERIFIED** |
 | real-protojson-http | EXPLOITABLE | reachable | нет |
-| real-protojson-const | INCONCLUSIVE | reachable | нет — grouped sinks не позволяют изолировать input arg и замкнуть все пути к sink |
+| real-protojson-const | NO_EXPLOIT_PATH_FOUND | reachable | **да — sink closure verified: advisory sink set полный, все live payload-позиции non-external; NV VERIFIED** |
 | real-protojson-fixed | NOT_AFFECTED | silent | **да — deterministic** |
 | real-dns-fixed | NOT_AFFECTED | silent | **да — deterministic** |
 | real-dns-marshal | INCONCLUSIVE | package-level | нет — sinks частично unexported; та же vacuous-refs проблема |
@@ -52,7 +52,7 @@ Baseline-таблица govulncheck-vs-analyzer (последний прогон
 | real-micro-xds | INCONCLUSIVE | package-level | нет — dep-internal registry (`httpfilter.Register`) + watcher callbacks (B24) |
 | real-micro-xds-fixed | NOT_AFFECTED | silent | **да — deterministic** |
 | real-micro-plain | NOT_AFFECTED | package-level | **да — rbac-пакет не в build graph** |
-| real-unix-access | INCONCLUSIVE | reachable | нет — Faccessat вызван, harm-условие deploy-зависимо |
+| real-unix-access | EXPLOITABLE | reachable | нет — `unix.Access` вызван на dep-пути, payload внешний |
 | real-unix-stat | NO_EXPLOIT_PATH_FOUND | package-level | **да — zero-refs + dep-internal caller `unix.Access` транзитивно мёртв (нет product refs, нет caller'ов в модуле, сторонних импортеров пакета нет)** |
 | real-unix-fixed | NOT_AFFECTED | silent | **да — deterministic** |
 | real-ssh-slowpesh | EXPLOITABLE | reachable | нет |
@@ -62,10 +62,12 @@ Baseline-таблица govulncheck-vs-analyzer (последний прогон
 `NOT_AFFECTED` (deterministic affected-chain) или `NO_EXPLOIT_PATH_FOUND`
 (VERIFIED falsifier на mandatory-условии). `EXPLOITABLE`, `INCONCLUSIVE` и
 `UNKNOWN` оставляют кейс на человеке — для triage «reachable» и
-«не доказали безопасность» эквивалентны. Текущий прогон: **13/33 cleared**:
+«не доказали безопасность» эквивалентны. Текущий прогон: **15/33 cleared**:
 11×NOT_AFFECTED deterministic (в том числе `real-micro-plain` при
-package-level сигнале govulncheck) и два NEPF: `real-yaml3-const`
-(constant input) и `real-unix-stat` — sound
+package-level сигнале govulncheck) и четыре NEPF: `real-yaml-const`,
+`real-yaml3-const` и `real-protojson-const` (constant input — yaml'ы
+через ingress-closure, protojson через sink-closure) плюс
+`real-unix-stat` — sound
 verified-негатив на real-кейсе: продукт не трогает `unix.Faccessat`,
 а единственный dep-internal caller `unix.Access` доказанно мёртв —
 нет product refs, нет caller'ов внутри `x/sys`, сторонних модулей,
@@ -77,22 +79,27 @@ jwt-auth — missing-call гейт. Цель B23 — поднять долю ч�
 за счёт falsifier-доказательств, не объявляя недоказанное безопасным.
 
 Для сравнения со standalone govulncheck важен более узкий показатель:
-**signal-cleared rate = 3/23** на этом прогоне. Знаменатель — кейсы,
+**signal-cleared rate = 5/23** на этом прогоне. Знаменатель — кейсы,
 где govulncheck сообщил `reachable` или `package-level`; числитель —
-доказанный негатив анализатора при таком сигнале (`real-yaml3-const`,
-`real-micro-plain`, `real-unix-stat`). Разбивка: **1/17** при `reachable`, **2/6** при
-`package-level`. Остальные 10 cleared имеют `govulncheck: silent` и не
+доказанный негатив анализатора при таком сигнале (`real-yaml-const`,
+`real-yaml3-const`, `real-protojson-const`, `real-micro-plain`,
+`real-unix-stat`). Разбивка: **3/17** при `reachable`, **2/6** при
+`package-level`. Остальные cleared имеют `govulncheck: silent` и не
 сокращают ручной triage относительно baseline. Значение описывает этот
 корпус, а не ожидаемую долю на произвольных CVE.
 
-Негативный exploit-claim теперь несёт именованный falsifier; финальный
+Негативный exploit-claim несёт именованный falsifier; финальный
 `NO_EXPLOIT_PATH_FOUND` требует и его, и `VERIFIED` negative verification.
 Неполное происхождение аргумента (включая пустой origin) остаётся
-`UNKNOWN`. Это закрывает обход инварианта, но пока не меняет два
-constant-input кейса: у `real-protojson-const` input arg не выделен
-из группового набора sink'ов, а у `real-yaml-const` внутренние dep-call
-sites остаются неразрешёнными. Их покрытие — отдельная работа по
-замыканию всех product→dependency входов на уязвимый путь.
+`UNKNOWN`. FALSE-кандидат верифицируется одной из двух closure-стратегий
+(спека §5.2): полный ingress-closure (все входы в product-reachable
+dependency cone) либо полный sink-closure (все live-сайты advisory
+sink set с non-external payload). `real-yaml-const` и `real-yaml3-const`
+закрываются ingress-closure; `real-protojson-const` — sink-closure:
+dependency cone содержит автономные источники (`detrand` читает
+/dev/urandom), поэтому ingress неполон в принципе, а sink-closure
+проверяет, что все 49 live payload-позиций declared sinks получают
+non-external значения.
 
 Дифференциация относительно standalone govulncheck:
 
@@ -160,11 +167,26 @@ linked-модулей не доказывает usage и блокирует вы
 
 Исторический OOM (`hashicorp/go-getter` съедал память хоста) закрыт:
 dep-syntax грузится только для пакетов из `loadExtra`-паттернов
-(`NeedDeps` убран), `extraPkgs`≤64, `callerCache`≤8192, per-trace
-`classifyCache` сворачивает экспоненциальный caller-fan-out
-(yaml-file 413s→8s), `why`-строки capped (md-render 6.5GiB→8s),
-`--mem-limit` watchdog с hard-exit >150% ~1s. Getter-кейс: 7-10s,
-INCONCLUSIVE, без троттлинга хоста.
+(`NeedDeps` убран), `extraPkgs`≤64 patterns/≤40 пакетов/≤500 файлов
+с LRU-эвикцией и очисткой AST-удерживающих кэшей, вес паттерна
+взвешивается и по транзитивному import-closure (≤2500 types-пакетов —
+один aws-scale пакет тащит сотни stub-типов через
+`types.Package.Imports()`); `NeedImports` убран (import-граф читается
+через `types.Package.Imports()` — иначе каждый retained-пакет удерживал
+транзитивные stub-деревья типов, ~12GiB на getter-const), `callerCache`
+≤8192, advisory-модуль пинится на время closure-верификации (крупные
+модули остаются эвиктируемыми — conservative), `callAt` догружает
+пакет сайта по `file=`-запросу, если его load-инстанс эвиктнут,
+per-trace `classifyCache` сворачивает экспоненциальный caller-fan-out
+(yaml-file 413s→8s), `why`-строки capped в точках композиции (md-render
+6.5GiB→8s), `txBuf` дедуплицируется и ограничен (миллионы CallSite-
+записей ≈2.2GiB — главная аллокация getter-const), `evalBudget`
+ограничивает fan-out одного трейса во всех trace-сессиях (getter-const
+>10min→80s), `--mem-limit` watchdog с hard-exit >150% ~1s и принудительным
+`debug.FreeOSMemory()` (HeapSys считает held-спаны, а не live heap).
+Эвикция всегда в безопасную сторону: меньше покрытия → UNKNOWN, а не
+ложное отсутствие. Getter-кейс: INCONCLUSIVE, память ограничена
+эвикцией.
 
 ## Статус: первый слой реализован
 
