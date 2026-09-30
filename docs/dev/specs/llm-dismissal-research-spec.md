@@ -419,6 +419,12 @@ source-mode на продуктовом снапшоте — `reachable` до `S
 - Fix-diff anchors (guarded-site / enabler-candidate / fix-changed /
   not-fix-changed) остаются машинными **аннотациями** для разбора
   экспертом — `SymbolFaultingUse` помечает кандидатов, но не сужает `L`.
+  Для каждого declared-символа без defect-site anchor'а модуль
+  **порождает предложение** (`ProposedNonLocus`, `Authority:
+  machine-proposal`) — draft исключения с записанным наблюдением
+  («enabler-candidate; fix adds a guard here but anchors no faulting
+  operation…»). Предложения рендерятся в отчёте и persisted, но **не
+  участвуют в вердикте**: утверждение — перенос в `non_locus` и перезапуск.
   Экспертное решение для символа вне declared set игнорируется с записью
   в limitations.
 - Обязательство задокументировано: почему ни один путь модуля не
