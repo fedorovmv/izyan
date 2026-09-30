@@ -75,6 +75,27 @@ func TestEvalLocusCorruptPackageListUnknown(t *testing.T) {
 	}
 }
 
+// Two independent defect sites in one advisory: L spans two packages and
+// only one is absent from the build graph — the falsifier cannot cover the
+// surviving site, so the claim stays UNKNOWN and no NEPF is possible.
+func TestEvalLocusTwoDefectsPartialCoverage(t *testing.T) {
+	twoLocus := domain.Condition{
+		ID:        "C-LOCUS",
+		Kind:      domain.ConditionSymbolReachable,
+		Mandatory: true,
+		Params:    map[string]string{domain.ParamCheck: domain.CheckLocus},
+		Subjects: []domain.SymbolRef{
+			{Package: "example.com/lib/internal/xds/server", Symbol: "RouteAndProcess"},
+			{Package: "example.com/lib/internal/transport", Symbol: "http2Server.legacyRoute"},
+		},
+	}
+	c := caseWithPackages("example.com/lib/internal/transport", "example.com/prod")
+	claim := (SymbolReachable{}).Evaluate(twoLocus, c)
+	if claim.Result != domain.ClaimUnknown {
+		t.Fatalf("partial package coverage must stay UNKNOWN, got %+v", claim)
+	}
+}
+
 // A govulncheck call path reaching a locus subject is a TRUE — mode-on and
 // wrapper variants cannot be argued away by package semantics.
 func TestEvalLocusCallPathTrue(t *testing.T) {

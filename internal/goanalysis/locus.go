@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"go/ast"
 	"go/printer"
+	"sort"
 	"strings"
 
 	"golang.org/x/tools/go/packages"
@@ -37,14 +38,8 @@ func (ix *Index) SymbolFaultingUse(ctx context.Context, ref domain.SymbolRef, op
 	if fn == nil {
 		return false, fmt.Errorf("function %s.%s not found in loaded source", ref.Package, ref.Symbol)
 	}
-	var rendered []string
-	for _, op := range operands {
-		op = normalizeExpr(op)
-		if op != "" {
-			rendered = append(rendered, op)
-		}
-	}
-	if len(rendered) == 0 {
+	set := ix.operandSet(ctx, fn, operands)
+	if len(set) == 0 {
 		return false, nil
 	}
 	base := func(e ast.Expr) string {
@@ -54,14 +49,68 @@ func (ix *Index) SymbolFaultingUse(ctx context.Context, ref domain.SymbolRef, op
 		}
 		return normalizeExpr(buf.String())
 	}
-	// Local aliases carry the guarded value: `a := mdata[k]` makes `a[i]`
-	// the same faulting index as `mdata[k][i]`. One fixpoint sweep over
-	// assignments binds them so a defect site aliased off the guard's
-	// spelling is not missed — a missed fault would wrongly classify the
-	// candidate as an enabler and shrink the falsifier's coverage.
+	fault := false
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		if fault {
+			return false
+		}
+		switch e := n.(type) {
+		case *ast.IndexExpr:
+			fault = fault || set[base(e.X)]
+		case *ast.SelectorExpr:
+			fault = fault || set[base(e.X)]
+		case *ast.CallExpr:
+			fault = fault || set[base(e.Fun)]
+		}
+		return !fault
+	})
+	return fault, nil
+}
+
+// OperandFamily expands guard operands through the guarding function's own
+// alias bindings: `authority := md.Get(":authority")` inside that body makes
+// the family {authority, md.Get(":authority")}. Locus derivation scans
+// declared-but-not-fix-changed symbols against the union family of all
+// guards in the patch, so a defect site spelling the guarded value
+// differently is not silently classified as a path symbol.
+func (ix *Index) OperandFamily(ctx context.Context, ref domain.SymbolRef, operands []string) ([]string, error) {
+	ix.mu.Lock()
+	defer ix.mu.Unlock()
+	if err := ix.load(ctx); err != nil {
+		return nil, err
+	}
+	typeName, meth := splitSymbol(ref.Symbol)
+	fn := ix.findFuncDecl(ctx, ref.Package, typeName, meth)
+	if fn == nil {
+		return nil, fmt.Errorf("function %s.%s not found in loaded source", ref.Package, ref.Symbol)
+	}
+	set := ix.operandSet(ctx, fn, operands)
+	var out []string
+	for op := range set {
+		out = append(out, op)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// operandSet renders operand expressions and closes over the function's
+// alias bindings: `a := mdata[k]` makes `a[i]` the same faulting index as
+// `mdata[k][i]`. The fixpoint sweep must not miss a real binding — a missed
+// fault would wrongly classify a defect site as an enabler or a path symbol
+// and shrink the falsifier's coverage obligation.
+func (ix *Index) operandSet(_ context.Context, fn *ast.FuncDecl, operands []string) map[string]bool {
+	base := func(e ast.Expr) string {
+		var buf bytes.Buffer
+		if err := printer.Fprint(&buf, ix.fset, e); err != nil {
+			return ""
+		}
+		return normalizeExpr(buf.String())
+	}
 	set := map[string]bool{}
-	for _, op := range rendered {
-		set[op] = true
+	for _, op := range operands {
+		if op = normalizeExpr(op); op != "" {
+			set[op] = true
+		}
 	}
 	for grew := true; grew; {
 		grew = false
@@ -82,22 +131,7 @@ func (ix *Index) SymbolFaultingUse(ctx context.Context, ref domain.SymbolRef, op
 			return true
 		})
 	}
-	fault := false
-	ast.Inspect(fn.Body, func(n ast.Node) bool {
-		if fault {
-			return false
-		}
-		switch e := n.(type) {
-		case *ast.IndexExpr:
-			fault = fault || set[base(e.X)]
-		case *ast.SelectorExpr:
-			fault = fault || set[base(e.X)]
-		case *ast.CallExpr:
-			fault = fault || set[base(e.Fun)]
-		}
-		return !fault
-	})
-	return fault, nil
+	return set
 }
 
 func normalizeExpr(s string) string {
