@@ -96,6 +96,18 @@ func Markdown(c *domain.AnalysisCase) string {
 		fmt.Fprintf(&b, "Impact: %s\n\n", c.Exploit.Impact)
 		writeConditions(&b, "Mandatory conditions", c.Exploit.MandatoryConditions)
 		writeConditions(&b, "Supporting factors", c.Exploit.SupportingFactors)
+		if len(c.Exploit.NonLocusBasis) > 0 {
+			b.WriteString("### Expert non-locus decisions\n\n")
+			b.WriteString("The falsifier's coverage is reduced by these expert-established exclusions — recorded basis, not machine evidence:\n\n")
+			for _, d := range c.Exploit.NonLocusBasis {
+				auth := d.Authority
+				if auth == "" {
+					auth = "expert"
+				}
+				fmt.Fprintf(&b, "- `%s.%s` — %s (%s)\n", d.Symbol.Package, d.Symbol.Symbol, d.Basis, auth)
+			}
+			b.WriteString("\n")
+		}
 	}
 	if exps := c.EvidenceGraph.ExposuresList(); len(exps) > 0 {
 		b.WriteString("## Exposure facts\n\n")

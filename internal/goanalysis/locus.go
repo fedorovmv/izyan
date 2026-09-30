@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"go/ast"
 	"go/printer"
-	"sort"
 	"strings"
 
 	"golang.org/x/tools/go/packages"
@@ -65,32 +64,6 @@ func (ix *Index) SymbolFaultingUse(ctx context.Context, ref domain.SymbolRef, op
 		return !fault
 	})
 	return fault, nil
-}
-
-// OperandFamily expands guard operands through the guarding function's own
-// alias bindings: `authority := md.Get(":authority")` inside that body makes
-// the family {authority, md.Get(":authority")}. Locus derivation scans
-// declared-but-not-fix-changed symbols against the union family of all
-// guards in the patch, so a defect site spelling the guarded value
-// differently is not silently classified as a path symbol.
-func (ix *Index) OperandFamily(ctx context.Context, ref domain.SymbolRef, operands []string) ([]string, error) {
-	ix.mu.Lock()
-	defer ix.mu.Unlock()
-	if err := ix.load(ctx); err != nil {
-		return nil, err
-	}
-	typeName, meth := splitSymbol(ref.Symbol)
-	fn := ix.findFuncDecl(ctx, ref.Package, typeName, meth)
-	if fn == nil {
-		return nil, fmt.Errorf("function %s.%s not found in loaded source", ref.Package, ref.Symbol)
-	}
-	set := ix.operandSet(ctx, fn, operands)
-	var out []string
-	for op := range set {
-		out = append(out, op)
-	}
-	sort.Strings(out)
-	return out, nil
 }
 
 // operandSet renders operand expressions and closes over the function's

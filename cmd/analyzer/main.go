@@ -105,6 +105,11 @@ type analyzeOpts struct {
 	// manualRC carries already-parsed root causes (eval corpus entries
 	// support the object form, which rootCauseArgs strings cannot express).
 	manualRC []domain.RootCause
+	// nonLocusBasis carries expert necessity decisions — declared symbols
+	// asserted not to be defect loci — into the case. Loaded from the
+	// -non-locus-basis JSON file or from an eval corpus entry.
+	nonLocusBasis []domain.LocusDecision
+	nonLocusFile  string
 	// toolchain is the resolved target Go toolchain; zero value = local.
 	toolchain toolchain.Toolchain
 	// tcLims carries resolution notes into the case's limitations.
@@ -133,6 +138,7 @@ func commonFlags(fs *flag.FlagSet, o *analyzeOpts) {
 	fs.StringVar(&o.llmEnv, "llm-env", "", "path to LLM .env file (default: .env in cwd or repo)")
 	fs.StringVar(&o.knowledge, "knowledge", "", "extend the ecosystem knowledge base with a JSON file (see internal/goanalysis/knowledge.go)")
 	fs.StringVar(&o.memLimit, "mem-limit", "4GiB", "analyzer memory ceiling (e.g. 4GiB, 512MiB; 0 disables) — real products can pull very large dependency graphs into the index")
+	fs.StringVar(&o.nonLocusFile, "non-locus-basis", "", "JSON file with expert non-locus decisions: [{\"symbol\":{\"package\":\"pkg\",\"symbol\":\"Type.Name\"},\"basis\":\"why it is not a defect site\",\"authority\":\"review ref\"}]")
 }
 
 // loadKnowledgeBase resolves the --knowledge extension: built-in
@@ -284,6 +290,16 @@ func analyzeCase(ctx context.Context, o analyzeOpts) (*domain.AnalysisCase, erro
 	c.EvidenceGraph.Version = "1"
 	if prior != nil {
 		c.PriorCase = prior.ID
+	}
+	c.NonLocusBasis = o.nonLocusBasis
+	if o.nonLocusFile != "" {
+		b, err := os.ReadFile(o.nonLocusFile)
+		if err != nil {
+			return nil, fmt.Errorf("read non-locus basis: %w", err)
+		}
+		if err := json.Unmarshal(b, &c.NonLocusBasis); err != nil {
+			return nil, fmt.Errorf("non-locus basis file is invalid: %w", err)
+		}
 	}
 	if err := store.Create(ctx, c); err != nil {
 		return nil, err

@@ -176,6 +176,7 @@ func runEval(args []string) error {
 		for _, rc := range c.RootCauses {
 			co.manualRC = append(co.manualRC, rc.RootCause)
 		}
+		co.nonLocusBasis = c.NonLocus
 		var productDir string
 		switch {
 		case c.Product != "" && c.Repo != "":

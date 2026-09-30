@@ -60,6 +60,15 @@ func (v Verifier) verifyLocusAbsent(c *domain.AnalysisCase, claim domain.Claim,
 		"all %d defect-locus package(s) absent from the go list -deps build graph", len(subjects))
 	nv.Limitations = append(nv.Limitations,
 		"absence verified under the build context the package list was produced with (GOOS/GOARCH/tags); other configurations may link the package")
+	if c.Exploit != nil && len(c.Exploit.NonLocusBasis) > 0 {
+		var names []string
+		for _, d := range c.Exploit.NonLocusBasis {
+			names = append(names, d.Symbol.Package+"."+d.Symbol.Symbol)
+		}
+		nv.Limitations = append(nv.Limitations, fmt.Sprintf(
+			"locus coverage reduced by expert non-locus decisions (not machine evidence): %s",
+			strings.Join(names, ", ")))
+	}
 	return setNeg(claim, nv)
 }
 

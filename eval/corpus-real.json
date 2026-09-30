@@ -407,10 +407,42 @@
    "deps": {
     "google.golang.org/grpc": "v1.83.0"
    },
-   "_note": "mode-off: plain grpc.NewServer, internal/xds/server absent from build graph — :authority panic locus unreachable; spec §8 contract",
+   "_note": "mode-off: plain grpc.NewServer, xds locus package absent from build graph but no expert basis — all declared symbols stay in L; HandleStreams is reachable in trace → C-LOCUS TRUE → EXPLOITABLE (conservative: machine cannot shrink L)",
+   "expect": [
+    "EXPLOITABLE"
+   ]
+  },
+  {
+   "id": "real-micro-plain-6443x",
+   "vuln": "GO-2026-6443",
+   "vuln_file": "advisories/real/GO-2026-6443.json",
+   "product": "products/micro-plain",
+   "module": "example.com/micro-plain",
+   "deps": {
+    "google.golang.org/grpc": "v1.83.0"
+   },
+   "_note": "mode-off + expert non-locus basis: HandleStreams (dispatcher, no :authority consumption) and operateHeaders (enabler — patch adds upstream rejection; faulting index authority[0] lives in RouteAndProcess) excluded by recorded expert decisions → L={RouteAndProcess} → NEPF expected",
    "expect": [
     "NO_EXPLOIT_PATH_FOUND",
     "INCONCLUSIVE"
+   ],
+   "non_locus": [
+    {
+     "symbol": {
+      "package": "google.golang.org/grpc/internal/transport",
+      "symbol": "http2Server.HandleStreams"
+     },
+     "basis": "dispatcher: body forwards streams; never consumes the :authority value in a faulting position",
+     "authority": "expert"
+    },
+    {
+     "symbol": {
+      "package": "google.golang.org/grpc/internal/transport",
+      "symbol": "http2Server.operateHeaders"
+     },
+     "basis": "enabler: PR9365 adds upstream rejection of missing :authority; the faulting index authority[0] is in internal/xds/server.RouteAndProcess",
+     "authority": "expert"
+    }
    ]
   },
   {
@@ -452,9 +484,27 @@
    "deps": {
     "google.golang.org/grpc": "v1.83.0"
    },
-   "_note": "pkg-present: xds package imported but RouteAndProcess never invoked — package presence != locus reachability; contract must not give NEPF",
+   "_note": "pkg-present boundary: xds package in build graph but RouteAndProcess not called by product; expert basis narrows L to RouteAndProcess → C-LOCUS UNKNOWN (package-absent falsifier not applicable) → INCONCLUSIVE required",
    "expect": [
     "INCONCLUSIVE"
+   ],
+   "non_locus": [
+    {
+     "symbol": {
+      "package": "google.golang.org/grpc/internal/transport",
+      "symbol": "http2Server.HandleStreams"
+     },
+     "basis": "dispatcher: body forwards streams; never consumes the :authority value in a faulting position",
+     "authority": "expert"
+    },
+    {
+     "symbol": {
+      "package": "google.golang.org/grpc/internal/transport",
+      "symbol": "http2Server.operateHeaders"
+     },
+     "basis": "enabler: PR9365 adds upstream rejection of missing :authority; the faulting index authority[0] is in internal/xds/server.RouteAndProcess",
+     "authority": "expert"
+    }
    ]
   },
   {

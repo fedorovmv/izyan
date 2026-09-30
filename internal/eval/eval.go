@@ -36,6 +36,11 @@ type Case struct {
 	// cannot split package path from symbol name.
 	RootCauses   []RootCauseRef `json:"root_causes,omitempty"`
 	ExploitModel string         `json:"exploit_model,omitempty"`
+	// NonLocus supplies expert necessity decisions for the defect-locus
+	// contract: declared symbols asserted not to be defect sites, with the
+	// recorded justification. The falsifier's coverage shrinks only by
+	// these recorded decisions — never by an unproven textual scan.
+	NonLocus []domain.LocusDecision `json:"non_locus,omitempty"`
 	// GoVersion requests the target toolchain ("1.21.13" or "go1.21.13") —
 	// the version the release was built with. Resolved via SDK/GOTOOLCHAIN;
 	// unavailability records a limitation, never a silent wrong-version run.

@@ -367,15 +367,32 @@ type ExploitModel struct {
 	// FALSE on the grouped reachability condition still grounds
 	// NO_EXPLOIT_PATH_FOUND because it covers every declared symbol.
 	UnresolvedSubjects []SymbolRef `json:"unresolved_subjects,omitempty"`
-	// LocusSubjects names the defect-locus set: advisory-declared symbols
-	// the fix diff changes AND whose function performs the faulting
-	// operation on the guarded value (per spec §8 necessity anchors —
-	// distinct from fix-touched enabler functions that only validate
-	// upstream). A mandatory locus-reachability condition is built over
-	// them; a verified locus-package-absent falsifier proves the defect
-	// cannot trigger even when generic enabler sinks are reachable.
-	LocusSubjects []SymbolRef  `json:"locus_subjects,omitempty"`
-	EvidenceIDs   []EvidenceID `json:"evidence_ids,omitempty"`
+	// LocusSubjects names the defect-locus set L: advisory-declared symbols
+	// whose package membership the locus-package-absent falsifier must
+	// cover (spec §8). The machine never proves a declared symbol is not a
+	// defect site — cross-function operand correspondence is not
+	// textually decidable — so L defaults to the whole declared set and
+	// shrinks only via recorded expert decisions (NonLocusBasis). Fix-diff
+	// anchors (guarded site vs enabler candidate) annotate the set for the
+	// expert but do not remove members.
+	LocusSubjects []SymbolRef `json:"locus_subjects,omitempty"`
+	// NonLocusBasis records expert-established exclusions from L: each
+	// entry asserts the named declared symbol is not a defect locus, with
+	// the justification kept verbatim. These decisions are expert input,
+	// not machine evidence — verification may check the falsifier's
+	// package coverage, never the truth of the basis itself.
+	NonLocusBasis []LocusDecision `json:"non_locus_basis,omitempty"`
+	EvidenceIDs   []EvidenceID    `json:"evidence_ids,omitempty"`
+}
+
+// LocusDecision is one expert necessity decision: declared symbol S is
+// asserted not to be a defect locus for this advisory. Basis is the
+// recorded justification; Authority names who established it (e.g.
+// "expert", a ticket id, a review ref).
+type LocusDecision struct {
+	Symbol    SymbolRef `json:"symbol"`
+	Basis     string    `json:"basis"`
+	Authority string    `json:"authority,omitempty"`
 }
 
 type NegativeVerificationStatus string
@@ -1143,6 +1160,11 @@ type AnalysisCase struct {
 	// govulncheck DB | "not_in_db" it was never evaluated — silence is not
 	// evidence of no path.
 	GovulncheckCoverage string `json:"govulncheck_coverage,omitempty"`
+	// NonLocusBasis carries expert necessity decisions for this case:
+	// declared symbols asserted not to be defect loci, with justifications.
+	// Expert input — it participates in the locus falsifier's coverage
+	// obligation but is never treated as machine-verified evidence.
+	NonLocusBasis []LocusDecision `json:"non_locus_basis,omitempty"`
 	// PriorCase references the previous stored run of the same
 	// vulnerability/repository pair — the reproducibility-diff baseline.
 	PriorCase CaseID         `json:"prior_case,omitempty"`
