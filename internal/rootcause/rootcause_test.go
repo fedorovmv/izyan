@@ -119,6 +119,27 @@ func TestVerifierDropsUnknown(t *testing.T) {
 	if len(m.Alternatives) != 1 || m.Alternatives[0].Symbol != "Nope" {
 		t.Fatalf("alternatives=%+v", m.Alternatives)
 	}
+	if len(m.Unverified) != 1 || m.Unverified[0].Symbol != "Nope" {
+		t.Fatalf("unverified=%+v — in-scope candidate that failed resolution must be flagged", m.Unverified)
+	}
+}
+
+// A candidate outside the advisory's affected packages is an alternative,
+// not an unverified in-scope sink — it must not block the exploit model.
+func TestVerifierOutOfScopeNotUnverified(t *testing.T) {
+	abs, _ := filepath.Abs(filepath.Join("..", "..", "testdata", "constprod"))
+	vf := Verifier{Source: &goanalysis.Index{Dir: abs}}
+	m := &domain.RootCauseModel{
+		Status: domain.RootCauseResolved,
+		RootCauses: []domain.RootCause{
+			{Package: "example.com/dep/vuln", Symbol: "Parse", Role: domain.RootCauseSink},
+			{Package: "example.com/dep/other", Symbol: "Fn", Role: domain.RootCauseSink},
+		},
+	}
+	vf.Verify(context.Background(), m, depVuln())
+	if len(m.Unverified) != 0 {
+		t.Fatalf("unverified=%+v — out-of-scope drop is not a verification failure", m.Unverified)
+	}
 }
 
 func TestVerifierRejectsForeignPackage(t *testing.T) {

@@ -13,6 +13,10 @@ func TestPatchURL(t *testing.T) {
 		{"https://go.googlesource.com/net/+/abc123",
 			"https://go.googlesource.com/net/+/abc123^!/?format=TEXT"},
 		{"https://example.com/x/y.patch", "https://example.com/x/y.patch"},
+		{"https://github.com/grpc/grpc-go/pull/9365",
+			"https://github.com/grpc/grpc-go/pull/9365.diff"},
+		{"https://github.com/grpc/grpc-go/pull/9365/",
+			"https://github.com/grpc/grpc-go/pull/9365.diff"},
 	}
 	for _, c := range cases {
 		got, err := patchURL(c.in)
@@ -43,6 +47,21 @@ func TestResolveFixRefs(t *testing.T) {
 	}
 	if refs[0].Versions[0] != "v0.33.0" {
 		t.Fatalf("versions=%v", refs[0].Versions)
+	}
+}
+
+// GO-2026-6443-style FIX references point at a pull request, not a commit —
+// the resolver must recognize them so the fix diff can narrow root causes.
+func TestResolveFixRefsPullRequest(t *testing.T) {
+	v := domain.Vulnerability{
+		References: []domain.Reference{
+			{Type: "FIX", URL: "https://github.com/grpc/grpc-go/pull/9365"},
+			{Type: "WEB", URL: "https://gitlab.com/o/r/-/merge_requests/1"},
+		},
+	}
+	refs := Resolver{}.Resolve(v)
+	if len(refs) != 1 || refs[0].URL != "https://github.com/grpc/grpc-go/pull/9365" {
+		t.Fatalf("refs=%+v", refs)
 	}
 }
 

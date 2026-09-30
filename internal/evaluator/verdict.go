@@ -71,6 +71,14 @@ func (VerdictEvaluator) Evaluate(affected domain.AffectedResult, model domain.Ex
 		if claim.Result == domain.ClaimFalse {
 			allTrue = false
 			if claim.Falsifier != "" && claim.NegativeVerification != nil && claim.NegativeVerification.Status == domain.NegativeVerified {
+				// On an incomplete model a falsifier grounds NEPF only when
+				// it covers the unmodeled sinks too: grouped reachability
+				// evaluates the union of all advisory symbols, while
+				// input/constraint/pair falsifiers bind just the resolved
+				// subjects.
+				if len(model.UnresolvedSubjects) > 0 && !coversAllDeclared(claim.Falsifier) {
+					continue
+				}
 				return domain.VerdictResult{
 					Verdict:      domain.VerdictNoExploitPathFound,
 					Reason:       "mandatory exploit condition is proven false",
@@ -81,10 +89,21 @@ func (VerdictEvaluator) Evaluate(affected domain.AffectedResult, model domain.Ex
 		}
 	}
 
-	if allTrue {
+	if allTrue && len(model.UnresolvedSubjects) == 0 {
 		return domain.VerdictResult{
 			Verdict: domain.VerdictExploitable,
 			Reason:  "all mandatory exploit conditions are satisfied",
+		}
+	}
+	if allTrue {
+		var names []string
+		for _, s := range model.UnresolvedSubjects {
+			names = append(names, s.Package+"."+s.Symbol)
+		}
+		return domain.VerdictResult{
+			Verdict: domain.VerdictInconclusive,
+			Reason: fmt.Sprintf("all modeled mandatory conditions are satisfied, but %d advisory-declared sink(s) failed source resolution (%s): the exploit model is incomplete and cannot ground a positive verdict",
+				len(model.UnresolvedSubjects), strings.Join(names, ", ")),
 		}
 	}
 
@@ -103,6 +122,22 @@ func (VerdictEvaluator) Evaluate(affected domain.AffectedResult, model domain.Ex
 		Verdict: domain.VerdictInconclusive,
 		Reason:  reason,
 	}
+}
+
+// coversAllDeclared reports whether a falsifier's FALSE claim spans every
+// advisory-declared symbol — required to ground NEPF when the exploit model
+// is incomplete (UnresolvedSubjects non-empty). The grouped reachability
+// falsifiers evaluate the union of declared symbols; falsifiers bound to
+// resolved-sink arguments, readers or pair members leave the unmodeled
+// sink's exploit shape unconstrained.
+func coversAllDeclared(falsifier string) bool {
+	switch falsifier {
+	case domain.FalsifierGovulncheckSilence,
+		domain.FalsifierNoModuleUsage,
+		domain.FalsifierUnreachedExportedSubject:
+		return true
+	}
+	return false
 }
 
 func joinPaths(paths []string) string {

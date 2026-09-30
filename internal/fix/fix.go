@@ -54,6 +54,7 @@ func isFixReference(typ, raw string) bool {
 	p := strings.ToLower(u.Path)
 	return strings.Contains(p, "/commit/") ||
 		strings.Contains(p, "/commits/") ||
+		(u.Host == "github.com" && strings.Contains(p, "/pull/")) ||
 		(strings.Contains(u.Host, "googlesource.com") && strings.Contains(p, "/+/")) ||
 		strings.HasSuffix(p, ".patch") || strings.HasSuffix(p, ".diff")
 }

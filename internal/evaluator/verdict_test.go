@@ -73,6 +73,69 @@ func TestVerdictNoExploitPathFoundRequiresVerification(t *testing.T) {
 	}
 }
 
+// An advisory-declared sink that failed source resolution narrows the
+// modeled mandatory set — EXPLOITABLE on a partial model would claim
+// completeness the pipeline did not prove.
+func TestVerdictExploitableBlockedByUnresolvedSubjects(t *testing.T) {
+	model := domain.ExploitModel{
+		MandatoryConditions: []domain.Condition{{ID: "C1"}},
+		UnresolvedSubjects: []domain.SymbolRef{
+			{Package: "example.com/dep/internal/mode", Symbol: "RouteAndProcess"},
+		},
+	}
+	claims := []domain.Claim{{ConditionID: "C1", Result: domain.ClaimTrue}}
+	got := VerdictEvaluator{}.Evaluate(affectedAllTrue(), model, claims)
+	if got.Verdict != domain.VerdictInconclusive {
+		t.Fatalf("got %s, want INCONCLUSIVE", got.Verdict)
+	}
+	if !strings.Contains(got.Reason, "RouteAndProcess") {
+		t.Fatalf("reason must name the unresolved sink: %q", got.Reason)
+	}
+}
+
+// A verified FALSE on the grouped reachability falsifier covers every
+// advisory-declared symbol — including the unresolved one — so NEPF stays
+// sound on an incomplete model.
+func TestVerdictNepfAllowedForCoveringFalsifier(t *testing.T) {
+	model := domain.ExploitModel{
+		MandatoryConditions: []domain.Condition{{ID: "C1", Kind: domain.ConditionSymbolReachable}},
+		UnresolvedSubjects:  []domain.SymbolRef{{Package: "example.com/dep/internal/mode", Symbol: "RouteAndProcess"}},
+	}
+	claims := []domain.Claim{{
+		ConditionID: "C1",
+		Result:      domain.ClaimFalse,
+		Falsifier:   domain.FalsifierGovulncheckSilence,
+		NegativeVerification: &domain.NegativeVerification{
+			Status: domain.NegativeVerified,
+		},
+	}}
+	got := VerdictEvaluator{}.Evaluate(affectedAllTrue(), model, claims)
+	if got.Verdict != domain.VerdictNoExploitPathFound {
+		t.Fatalf("got %s, want NO_EXPLOIT_PATH_FOUND", got.Verdict)
+	}
+}
+
+// A verified FALSE bound to the resolved sinks' arguments leaves the
+// unresolved sink's exploit shape unconstrained — no NEPF.
+func TestVerdictNepfBlockedForNarrowFalsifier(t *testing.T) {
+	model := domain.ExploitModel{
+		MandatoryConditions: []domain.Condition{{ID: "C1", Kind: domain.ConditionInputConstraint}},
+		UnresolvedSubjects:  []domain.SymbolRef{{Package: "example.com/dep/internal/mode", Symbol: "RouteAndProcess"}},
+	}
+	claims := []domain.Claim{{
+		ConditionID: "C1",
+		Result:      domain.ClaimFalse,
+		Falsifier:   domain.FalsifierConstantOrGeneratedInput,
+		NegativeVerification: &domain.NegativeVerification{
+			Status: domain.NegativeVerified,
+		},
+	}}
+	got := VerdictEvaluator{}.Evaluate(affectedAllTrue(), model, claims)
+	if got.Verdict != domain.VerdictInconclusive {
+		t.Fatalf("got %s, want INCONCLUSIVE", got.Verdict)
+	}
+}
+
 func TestVerdictInconclusiveOnUnknown(t *testing.T) {
 	model := domain.ExploitModel{
 		MandatoryConditions: []domain.Condition{{ID: "C1"}},

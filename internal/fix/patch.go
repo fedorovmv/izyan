@@ -20,6 +20,7 @@ type Provider interface {
 
 // HTTPProvider resolves patch URLs for common VCS layouts:
 //   - github.com/<org>/<repo>/commit/<sha>        -> +".patch"
+//   - github.com/<org>/<repo>/pull/<n>            -> +".diff" (aggregate diff)
 //   - *.googlesource.com/<repo>/+/<sha>           -> "^!/?format=TEXT" (base64)
 //   - URLs already ending in .patch / .diff       -> as-is
 type HTTPProvider struct {
@@ -85,6 +86,10 @@ func patchURL(raw string) (string, error) {
 		return "https://go-review.googlesource.com/changes/" + id + "/revisions/current/patch?download", nil
 	case strings.Contains(u.Host, "googlesource.com") && strings.Contains(u.Path, "/+/"):
 		return strings.TrimSuffix(raw, "/") + "^!/?format=TEXT", nil
+	case u.Host == "github.com" && strings.Contains(u.Path, "/pull/"):
+		// Pull-request references carry the aggregate diff at .diff; the
+		// .patch variant is per-commit mbox noise.
+		return strings.TrimSuffix(raw, "/") + ".diff", nil
 	case strings.Contains(u.Path, "/commit/"), strings.Contains(u.Path, "/commits/"):
 		u.Path = strings.TrimSuffix(u.Path, "/") + ".patch"
 		return u.String(), nil

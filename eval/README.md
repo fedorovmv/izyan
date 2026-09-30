@@ -110,6 +110,15 @@ unix-access его содержит и получает EXPLOITABLE/reachable. �
 не исключает источник: отсутствие найденного пути не доказывает
 невозможность стать payload.
 
+Полнота модели (B30): advisory-declared sink, не прошедший source-
+resolution (символ в affected package не найден в dep source — vendored
+без пакета, internal-ветка не в сборке), попадает в
+`ExploitModel.UnresolvedSubjects`. Любой такой субъект блокирует
+`EXPLOITABLE` (модель не покрывает его exploit shape) и ограничивает NEPF
+фальсификаторами, покрывающими весь declared set (`govulncheck-silence`,
+`no-module-usage`, `unreached-exported-subject`); falsifier на аргументах
+resolved-sink'ов при непустом UnresolvedSubjects NEPF не даёт.
+
 Альтернативная sink-closure стратегия спеки §5.2 требует отдельного
 проверенного контракта полноты, привязанного к advisory, версии и
 mandatory condition. `OSV imports.symbols` задаёт только `KNOWN_ONLY`;

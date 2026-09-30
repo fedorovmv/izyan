@@ -701,6 +701,58 @@ func TestE2EAutoExploitModel(t *testing.T) {
 	}
 }
 
+// B30 regression — the GO-2026-6443 shape: the advisory declares a sink
+// in a feature-gated package absent from the product's dependency source
+// (like grpc's internal/xds/server in a build without xDS). Verification
+// drops it, but the exploit model must not claim completeness: the
+// remaining sinks satisfy their conditions yet the verdict is
+// INCONCLUSIVE, not EXPLOITABLE.
+func TestE2EUnresolvedSinkBlocksExploitable(t *testing.T) {
+	repo := initRepoFrom(t, "extprod")
+	dir := t.TempDir()
+	vulnPath := filepath.Join(dir, "vuln.json")
+	osv := `{"id":"GO-TEST-GATE","summary":"mode-gated defect",
+ "affected":[{"package":{"name":"example.com/dep","ecosystem":"Go"},
+  "ranges":[{"type":"SEMVER","events":[{"introduced":"0"},{"fixed":"1.0.1"}]}],
+  "ecosystem_specific":{"imports":[
+   {"path":"example.com/dep/vuln","symbols":["Parse"]},
+   {"path":"example.com/dep/mode","symbols":["RouteAndProcess"]}]}}],
+ "references":[{"type":"ADVISORY","url":"https://example.com/adv"}]}`
+	if err := os.WriteFile(vulnPath, []byte(osv), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	caseDir := filepath.Join(dir, "cases")
+
+	gv := `{"protocol_version":"v1.0.0"}
+{"finding":{"osv":"GO-TEST-GATE","fixed_version":"v1.0.1","trace":[
+ {"module":"example.com/extprod","package":"example.com/extprod","function":"main","position":{"filename":"main.go","line":10}},
+ {"module":"example.com/dep","package":"example.com/dep/vuln","function":"Parse","position":{"filename":"vuln.go","line":4}}
+]}}`
+
+	c := runEngine(t, engineDeps{
+		RepoPath: repo,
+		VulnSrc:  vulnerability.FileSource{Path: vulnPath},
+		VulnID:   "GO-TEST-GATE",
+		Resolver: stubResolver{},
+		CaseDir:  caseDir,
+		// no ManualRC, no Model — both derived automatically
+		Govulncheck: fakeGovulncheck{out: []byte(gv)},
+		UseSource:   true,
+	})
+
+	if c.Workflow.State != domain.StateCompleted {
+		t.Fatalf("state=%s reason=%s", c.Workflow.State, c.Workflow.Reason)
+	}
+	if c.Exploit == nil || len(c.Exploit.UnresolvedSubjects) != 1 ||
+		c.Exploit.UnresolvedSubjects[0].Symbol != "RouteAndProcess" {
+		t.Fatalf("unresolved=%+v — dropped in-scope sink must surface on the model",
+			c.Exploit.UnresolvedSubjects)
+	}
+	if c.Verdict == nil || c.Verdict.Verdict != domain.VerdictInconclusive {
+		t.Fatalf("verdict=%+v want INCONCLUSIVE — incomplete model must not claim EXPLOITABLE", c.Verdict)
+	}
+}
+
 func TestReviewDemotesUnsupportedTrue(t *testing.T) {
 	c := &domain.AnalysisCase{
 		Exploit: &domain.ExploitModel{

@@ -199,7 +199,13 @@ type RootCauseModel struct {
 	Status       RootCauseStatus `json:"status"`
 	RootCauses   []RootCause     `json:"root_causes"`
 	Alternatives []RootCause     `json:"alternatives,omitempty"`
-	Limitations  []string        `json:"limitations,omitempty"`
+	// Unverified lists in-scope candidates (advisory-declared affected
+	// packages) that failed source verification — the dependency source
+	// does not contain the symbol. Unlike out-of-scope Alternatives these
+	// narrow the modeled exploit space silently if dropped, so they are
+	// surfaced to block positive verdicts on an incomplete model.
+	Unverified  []RootCause `json:"unverified,omitempty"`
+	Limitations []string    `json:"limitations,omitempty"`
 }
 
 type ConditionKind string
@@ -341,12 +347,19 @@ type ExploitModel struct {
 	// Class is the inferred vulnerability class (INFO_LEAK, URI_CONFUSION,
 	// ...) that selected the exploit pattern; "UNKNOWN" for the generic
 	// fallback model.
-	Class               string       `json:"class,omitempty"`
-	Impact              string       `json:"impact"`
-	RootCauses          []SymbolRef  `json:"root_causes"`
-	MandatoryConditions []Condition  `json:"mandatory_conditions"`
-	SupportingFactors   []Condition  `json:"supporting_factors,omitempty"`
-	EvidenceIDs         []EvidenceID `json:"evidence_ids,omitempty"`
+	Class               string      `json:"class,omitempty"`
+	Impact              string      `json:"impact"`
+	RootCauses          []SymbolRef `json:"root_causes"`
+	MandatoryConditions []Condition `json:"mandatory_conditions"`
+	SupportingFactors   []Condition `json:"supporting_factors,omitempty"`
+	// UnresolvedSubjects are advisory-declared sinks that failed source
+	// verification — the modeled conditions cover only the resolved sinks,
+	// so EXPLOITABLE would overclaim completeness. A non-empty list turns
+	// the verdict INCONCLUSIVE with the missing subjects named; a verified
+	// FALSE on the grouped reachability condition still grounds
+	// NO_EXPLOIT_PATH_FOUND because it covers every declared symbol.
+	UnresolvedSubjects []SymbolRef  `json:"unresolved_subjects,omitempty"`
+	EvidenceIDs        []EvidenceID `json:"evidence_ids,omitempty"`
 }
 
 type NegativeVerificationStatus string

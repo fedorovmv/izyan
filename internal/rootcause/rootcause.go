@@ -153,6 +153,7 @@ func (vf Verifier) Verify(ctx context.Context, m *domain.RootCauseModel, v domai
 			limitations = append(limitations,
 				fmt.Sprintf("candidate %s.%s not found in source: %v", rc.Package, rc.Symbol, err))
 			m.Alternatives = append(m.Alternatives, rc)
+			m.Unverified = append(m.Unverified, rc)
 			continue
 		}
 		verified = append(verified, rc)
