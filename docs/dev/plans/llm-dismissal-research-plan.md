@@ -671,51 +671,71 @@ govulncheck `reachable` baseline (символ `http2Server.HandleStreams`
 | wrapper | новый `products/micro-xds-wrap` — включение режима через func value/factory/callback | пакет в графе → call-site-проверка дала бы ложный негатив; контракт обязан сохранить сигнал |
 | pkg-present | новый `products/micro-xds-pkg` — пакет локуса импортирован (в графе), функция не вызывается | пакет в графе ≠ достижимость → INCONCLUSIVE, не NEPF |
 
-- [ ] Скопировать публичный advisory `GO-2026-6443.json` в
+- [x] Скопировать публичный advisory `GO-2026-6443.json` в
   `eval/advisories/real/` (источник — Go vuln DB, данные публичные).
-- [ ] Создать `micro-xds-wrap` и `micro-xds-pkg`; gofmt.
-- [ ] Добавить 4 кейса в `eval/corpus-real.json` (формат как у
+- [x] Создать `micro-xds-wrap` и `micro-xds-pkg`; gofmt.
+- [x] Добавить 4 кейса в `eval/corpus-real.json` (формат как у
   `real-micro-xds`); `expect` пиннить только после зафиксированного
   ground truth в `eval/ground-truth/`.
-- [ ] Снять govulncheck baseline каждого варианта:
-  `govulncheck -C eval/.gen/<id> -json -mode source -scan symbol
-  -test=false ./...`; подтвердить `reachable` и наличие/отсутствие
-  `RouteAndProcess` в трейсе. Записать версию Go и govulncheck.
+- [x] Снять govulncheck baseline каждого варианта:
+  подтверждено — все четыре `reachable`; `RouteAndProcess` в трейсе
+  только при включённом режиме (mode-on, wrapper); micro-plain и
+  micro-xds-pkg — трейс до `HandleStreams`. Go devel + govulncheck
+  (версии из прогона зафиксированы в логах tmp/xds-pool).
 
 ### Шаг 6.2. Замкнуть necessity для GO-2026-6443
 
-- [ ] Якорь 1 — advisory symbols: `internal/xds/server.RouteAndProcess`.
-- [ ] Якорь 2 — fix-diff `pull/9365`: различить defect site (guard
+- [x] Якорь 1 — advisory symbols: `internal/xds/server.RouteAndProcess`.
+- [x] Якорь 2 — fix-diff `pull/9365`: различить defect site (guard
   `len(authority)==0` в `RouteAndProcess`, дефект — `authority[0]`) от
-  enabler (`operateHeaders` отклоняет запрос без authority).
-- [ ] Якорь 3 — regression/repro: публичный контроль на уязвимой версии
-  (panic на xDS-сервере, отсутствие panic на plain-сервере при том же
-  malformed request).
+  enabler (`operateHeaders` отклоняет запрос без authority). Реализовано:
+  `fix.File.GuardedSymbols`/`GuardOperands` (hunk-уровень) +
+  `goanalysis.SymbolFaultingUse` (body-уровень, faulting use операнда или
+  его локальных алиасов) — enabler исключается только при доказанном
+  отсутствии faulting use.
+- [x] Якорь 3 — regression/repro: govulncheck-контроль на v1.83.0 —
+  `RouteAndProcess` появляется в трейсе только при включённом xDS
+  (mode-on, wrapper); `fix.diff` добавляет guard именно в дефектную
+  функцию и regression-test `TestRouteAndProcess_MissingAuthority`.
 - [ ] Задокументировать в `eval/ground-truth/` почему ни один путь
   модуля не достигает дефекта, минуя `L`; открытые части — `OPEN`.
+  (Перенесено в spec §8: полнота L опирается на полноту fix-diff —
+  дефектный сайт вне патча не детектируется; limitation в модели.)
 
 ### Шаг 6.3. Checker контракта
 
-- [ ] Новый falsifier-кандидат: пакет локуса отсутствует в полном build
-  graph снапшота (`go list -deps` или эквивалент с фактическими
-  GOOS/GOARCH/build tags; vendored — после проверки согласованности
-  vendor с `go.mod`).
-- [ ] UNKNOWN-границы: ошибка загрузки, неразрешённый symbol, падение
-  `go list`, несогласованный vendor → не отсутствие.
-- [ ] NEPF только если falsifier покрывает всё `L` и necessity замкнута;
-  иначе `INCONCLUSIVE` с названными обязательствами.
-- [ ] Тесты: mode-off → NEPF; mode-on/wrapper → сигнал сохранён;
-  pkg-present → INCONCLUSIVE; load-error → не NEPF.
+- [x] Новый falsifier `locus-package-absent`: все пакеты L отсутствуют
+  в `go list -deps` графе из persisted `EV-PACKAGE-LIST` evidence
+  (`evaluator/locus.go`, `affected.PackageImportPaths`); vendored —
+  тот же `go list` в vendor-режиме продукта.
+- [x] UNKNOWN-границы: отсутствие/повреждение package-list evidence,
+  locus-пакет в графе, ошибка верификации → UNKNOWN/INSUFFICIENT_SCOPE,
+  не отсутствие (`goanalysis/locusverify.go`).
+- [x] NEPF только если falsifier VERIFIED и покрывает всё `L`;
+  `UnresolvedSubjects` покрываются только по членству в L
+  (`locusCoversUnresolved` в verdict.go); иначе `INCONCLUSIVE`.
+- [x] Тесты: `patch_locus_test.go` (defect site vs enabler, методы,
+  nil-guard), `locus_test.go` (eval: absent→FALSE, present→UNKNOWN,
+  no-evidence→UNKNOWN, trace→TRUE), `locusverify_test.go` (VERIFIED/
+  CONTRADICTED/INSUFFICIENT_SCOPE), `exploit/locus_test.go` (вывод L,
+  conservative-включение без Source), `verdict_test.go` (NEPF-гейт
+  для unresolved ∈/∉ L). e2e-корпус: mode-off→NEPF, mode-on/wrapper→
+  EXPLOITABLE, pkg-present→INCONCLUSIVE — см. §8.4.
 
 ### Шаг 6.4. Верификация и оценка
 
-- [ ] `gofmt`, `go vet ./...`, `go test ./...`; corpus 18/18,
-  corpus-real 33+4, live corpus 11/11 — `false-safe=0` везде.
-- [ ] Прогон на реальном снапшоте из внешнего реестра: GO-2026-6443
-  из `INCONCLUSIVE` в NEPF только при замкнутом контракте.
-- [ ] Второй независимый advisory класса (кандидат из реестра —
-  `GO-2026-4762`, `grpc/authz`) проверяет переносимость.
-- [ ] Оценка: сравнить с `govulncheck + LLM + исходники` маршрутом —
-  зафиксировать, какое доказательство собственный механизм даёт, а тот
-  нет. Обновить `eval/README.md` и backlog-строку B30 фактическим
-  результатом.
+- [x] `gofmt`, `go vet ./...`, `go test ./...`; corpus 18/18,
+  corpus-real 37/37, live corpus 11/11 — `false-safe=0` везде.
+- [x] Прогон на реальном снапшоте из внешнего реестра: GO-2026-6443
+  EXPLOITABLE → INCONCLUSIVE (B30) → **NO_EXPLOIT_PATH_FOUND** (контракт;
+  unresolved `RouteAndProcess` покрыт членством в L).
+- [x] Второй независимый advisory: проверен `GO-2026-6061` (xDS RBAC +
+  transport, два дефекта) — boundary: fix-changed transport-символы в L,
+  пакет слинкован всегда → falsifier не покрывает → корректный отказ
+  от негатива. `GO-2026-4762` отклонён: локус в корневом пакете grpc —
+  всегда слинкован. Второй положительный перенос не найден — зафиксировано
+  как открытое в spec §8.4 и B30.
+- [x] Оценка: сравнение с `govulncheck + LLM + исходники` записано в
+  spec §8.4 «Результат среза» — контракт даёт persisted VERIFIED-запись
+  недоступную call-path-анализу; один класс/одно основание — вывод о
+  регулярной пользе открыт. `eval/README.md` и B30 обновлены фактически.

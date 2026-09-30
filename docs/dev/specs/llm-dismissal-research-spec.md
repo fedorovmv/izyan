@@ -416,6 +416,39 @@ govulncheck `reachable` baseline во всех вариантах:
 `govulncheck + LLM + исходники`: собственный механизм оправдан, только
 если даёт доказательство, которого тот маршрут воспроизводимо не даёт.
 
+#### Результат среза (GO-2026-6443, прогон после реализации)
+
+Нейтральный пул `eval/corpus-real.json` — все четыре варианта прошли
+по контракту:
+
+| Вариант | analyzer | govulncheck | Контракт |
+|---|---|---|---|
+| real-micro-plain-6443 | **NO_EXPLOIT_PATH_FOUND** | reachable (`HandleStreams`) | `C-LOCUS` FALSE + `locus-package-absent` VERIFIED: `internal/xds/server` вне `go list -deps` |
+| real-micro-xds-6443 | EXPLOITABLE | reachable (`RouteAndProcess` в трейсе) | `C-LOCUS` TRUE — сигнал сохранён |
+| real-micro-wrap-6443 | EXPLOITABLE | reachable | factory-обёртка не ослабила: module-internal chain доказал локус |
+| real-micro-pkg-6443 | INCONCLUSIVE | reachable | пакет в графе, функция не вызвана → `C-LOCUS` UNKNOWN, NEPF не выносится |
+
+На реальном вендореном снапшоте (grpc v1.80.0, `internal/xds` отсутствует
+в vendor) пройден более сложный путь: `RouteAndProcess` не резолвится в
+source → `UnresolvedSubjects`, но он ∈ L, и верифицированное absence
+покрывает его по membership → NEPF выносится именно через coverage-гейт,
+не через тихое отбрасывание. Verdict-кейс: EXPLOITABLE (до B30) →
+INCONCLUSIVE (B30-блокер) → NO_EXPLOIT_PATH_FOUND (контракт).
+
+Переносимость: `GO-2026-6061` (xDS RBAC + transport, два дефекта в одном
+advisory) — boundary-кейс: fix-changed transport-символы остаются в L,
+их пакет слинкован в любой grpc-сборке → falsifier не покрывает →
+контракт корректно не даёт негатив. Второго *положительного* переноса
+нет: нужен advisory, чьи все дефектные сайты живут в опционально
+линкуемых пакетах — редкая форма.
+
+Стоимостная оценка: `govulncheck` не выносит mode-off отклонение (трейс
+останавливается на первом declared-символе), `LLM + исходники` может
+сформулировать ту же гипотезу, но без machine-verifiable доказательства —
+контракт даёт persisted VERIFIED-запись с явными границами build context.
+Один класс дефекта (guard перед faulting op) и одно основание
+(package-absence) — вывод о регулярной пользе не делается.
+
 ### 8.5. Artifact fidelity
 
 Выводы по реальным снапшотам остаются source-only до верификации
