@@ -36,6 +36,11 @@ func evalLocus(cond domain.Condition, c *domain.AnalysisCase) domain.Claim {
 		return claim
 	}
 
+	// Proposed falsifier: if the expert approves every machine non-locus
+	// proposal, would the reduced locus set be fully absent from the build
+	// graph? The note is advisory — it never changes this claim's result.
+	proposed := proposedLocusNote(c, symbols)
+
 	if govulncheckRan(c) {
 		for _, cp := range c.EvidenceGraph.CallPaths {
 			for _, fr := range cp.Frames {
@@ -48,6 +53,9 @@ func evalLocus(cond domain.Condition, c *domain.AnalysisCase) domain.Claim {
 						claim.Explanation = fmt.Sprintf(
 							"govulncheck call path reaches defect locus %s.%s",
 							sym.Package, sym.Symbol)
+						if proposed != "" {
+							claim.Limitations = append(claim.Limitations, proposed)
+						}
 						return claim
 					}
 				}
@@ -62,6 +70,9 @@ func evalLocus(cond domain.Condition, c *domain.AnalysisCase) domain.Claim {
 			claim.Explanation = fmt.Sprintf(
 				"defect locus %s reachable through module internals: %s",
 				want, strings.Join(chain, " -> "))
+			if proposed != "" {
+				claim.Limitations = append(claim.Limitations, proposed)
+			}
 			return claim
 		}
 	}
@@ -82,6 +93,9 @@ func evalLocus(cond domain.Condition, c *domain.AnalysisCase) domain.Claim {
 		claim.Limitations = append(claim.Limitations, fmt.Sprintf(
 			"locus package(s) linked into the build graph (%s); the defect site exists in the binary and function-level unreachability is unproven",
 			strings.Join(present, ", ")))
+		if proposed != "" {
+			claim.Limitations = append(claim.Limitations, proposed)
+		}
 		return claim
 	}
 	claim.Result = domain.ClaimFalse
@@ -114,4 +128,44 @@ func packageImportSet(c *domain.AnalysisCase) (map[string]bool, []domain.Evidenc
 	}
 	return nil, nil, fmt.Errorf(
 		"no package-list evidence (go list -deps); build-graph absence unverified")
+}
+
+// proposedLocusNote answers the expert's review question without code
+// reading: if every machine non-locus proposal were approved and recorded
+// as expert basis, would the reduced locus set be fully absent from the
+// persisted build graph? Returns a human-readable note or "" when no
+// proposal set exists or the reduced set still has linked packages.
+// The machine verifies the package-absence half; the necessity half stays
+// the expert's recorded decision.
+func proposedLocusNote(c *domain.AnalysisCase, symbols []domain.SymbolRef) string {
+	if c.Exploit == nil || len(c.Exploit.ProposedNonLocus) == 0 {
+		return ""
+	}
+	proposed := map[domain.SymbolRef]bool{}
+	for _, d := range c.Exploit.ProposedNonLocus {
+		proposed[d.Symbol] = true
+	}
+	var remaining []domain.SymbolRef
+	var pkgs []string
+	for _, s := range symbols {
+		if !proposed[s] {
+			remaining = append(remaining, s)
+			pkgs = append(pkgs, s.Package)
+		}
+	}
+	if len(remaining) == 0 || len(remaining) == len(symbols) {
+		return ""
+	}
+	set, _, err := packageImportSet(c)
+	if err != nil {
+		return ""
+	}
+	for _, s := range remaining {
+		if set[s.Package] {
+			return ""
+		}
+	}
+	return fmt.Sprintf(
+		"proposed falsifier pending expert approval: if the %d proposed non-locus decision(s) are recorded, the remaining locus package(s) (%s) are all absent from the go list -deps build graph — NO_EXPLOIT_PATH_FOUND would follow",
+		len(symbols)-len(remaining), strings.Join(pkgs, ", "))
 }

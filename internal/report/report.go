@@ -12,6 +12,7 @@ import (
 
 	"golang.org/x/mod/semver"
 
+	"example.com/vuln-analyzer/internal/affected"
 	"example.com/vuln-analyzer/internal/domain"
 )
 
@@ -113,6 +114,9 @@ func Markdown(c *domain.AnalysisCase) string {
 			b.WriteString("Machine proposals based on observed anchors — not verified, not used in the verdict. To approve, record as a `non_locus` decision and rerun:\n\n")
 			for _, d := range c.Exploit.ProposedNonLocus {
 				fmt.Fprintf(&b, "- `%s.%s` — %s\n", d.Symbol.Package, d.Symbol.Symbol, d.Basis)
+			}
+			if note := proposedFalsifierNote(c); note != "" {
+				fmt.Fprintf(&b, "\n%s\n", note)
 			}
 			b.WriteString("\n")
 		}
@@ -302,6 +306,64 @@ func evidenceIDs(ids []domain.EvidenceID) []string {
 		out[i] = string(id)
 	}
 	return out
+}
+
+// proposedFalsifierNote renders the case-level consequence of approving
+// all machine non-locus proposals: it re-checks the reduced locus set
+// against the persisted `go list -deps` package list and reports per-
+// package status, so the reviewer sees exactly which symbol still blocks
+// the package-absent falsifier — an advisory-level question, not a
+// product code audit. Advisory text only — never part of the verdict.
+func proposedFalsifierNote(c *domain.AnalysisCase) string {
+	if c.Exploit == nil {
+		return ""
+	}
+	proposed := map[domain.SymbolRef]bool{}
+	for _, d := range c.Exploit.ProposedNonLocus {
+		proposed[d.Symbol] = true
+	}
+	var remaining []domain.SymbolRef
+	for _, s := range c.Exploit.LocusSubjects {
+		if !proposed[s] {
+			remaining = append(remaining, s)
+		}
+	}
+	if len(remaining) == 0 || len(remaining) == len(c.Exploit.LocusSubjects) {
+		return ""
+	}
+	for _, e := range c.EvidenceGraph.EvidenceList() {
+		if e.Kind != domain.EvidencePackageList {
+			continue
+		}
+		set, err := affected.PackageImportPaths([]byte(e.Content))
+		if err != nil {
+			return ""
+		}
+		var absent, linked []string
+		for _, s := range remaining {
+			if set[s.Package] {
+				linked = append(linked, "`"+s.Package+"."+s.Symbol+"`")
+			} else {
+				absent = append(absent, "`"+s.Package+"."+s.Symbol+"`")
+			}
+		}
+		head := fmt.Sprintf(
+			"**If all %d proposal(s) above are recorded as `non_locus` decisions**, the remaining locus set is:",
+			len(c.Exploit.LocusSubjects)-len(remaining))
+		for _, s := range absent {
+			head += fmt.Sprintf("\n- %s — package absent from `go list -deps`", s)
+		}
+		for _, s := range linked {
+			head += fmt.Sprintf("\n- %s — package linked into the build graph", s)
+		}
+		if len(linked) == 0 {
+			return head + "\n\nAll remaining packages are absent — `NO_EXPLOIT_PATH_FOUND` would follow after expert approval."
+		}
+		return head + fmt.Sprintf(
+			"\n\nPackage-absent falsifier would **not** hold: %d symbol(s) stay in linked package(s). The verdict would remain unchanged unless the expert also excludes them with a recorded basis.",
+			len(linked))
+	}
+	return ""
 }
 
 func allLimitations(c *domain.AnalysisCase) []string {
