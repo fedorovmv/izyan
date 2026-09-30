@@ -116,8 +116,20 @@ func redact(raw string) string {
 type File struct {
 	Path    string   `json:"path"`
 	Symbols []string `json:"symbols,omitempty"` // enclosing function names
-	Adds    int      `json:"added_lines"`
-	Dels    int      `json:"deleted_lines"`
+	// GuardedSymbols names functions whose hunk adds a guard (length/nil
+	// check) over an operand that unchanged or removed lines of the same
+	// hunk then use in a faulting position (index, dereference, call) —
+	// the signature of a fix applied at the defect site itself, as
+	// opposed to upstream validation (enabler) where the guarded value
+	// is only rejected, never consumed unsafely.
+	GuardedSymbols []string `json:"guarded_symbols,omitempty"`
+	// GuardOperands maps each function to the operand expressions its
+	// added guards check — whether or not a faulting use was visible in
+	// hunk context. Callers verifying an enabler classification need the
+	// operand to rescan the full function body.
+	GuardOperands map[string][]string `json:"guard_operands,omitempty"`
+	Adds          int                 `json:"added_lines"`
+	Dels          int                 `json:"deleted_lines"`
 }
 
 // Patch is a parsed unified diff — the set of files it touches.
@@ -128,15 +140,38 @@ var (
 	hunkRe     = regexp.MustCompile(`^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@\s*(.*)`)
 	funcCtxRe  = regexp.MustCompile(`func\s+(?:\(([^)]*)\)\s*)?([A-Za-z_]\w*)\s*\(`)
 	funcDeclRe = regexp.MustCompile(`^[+-]?func\s+(?:\(([^)]*)\)\s*)?([A-Za-z_]\w*)\s*\(`)
+	// guardLenRe matches added bound checks: `if len(x) == 0`,
+	// `if len(x) < 4`, ... The operand captured inside len() is the value
+	// whose unsafe use the guard protects.
+	guardLenRe = regexp.MustCompile(`if\s+len\(([^()]*(?:\([^)]*\)[^()]*)?)\)\s*(?:==|!=|<=?|>=?)\s*\d+`)
+	// guardNilRe matches `if x == nil` / `if x != nil` on a simple operand.
+	guardNilRe = regexp.MustCompile(`if\s+([A-Za-z_][\w.]*)\s*(?:==|!=)\s*nil`)
 )
+
+// hunk accumulates one diff hunk's lines so guard detection can correlate
+// an added check with the operand's surviving (or removed) unsafe use.
+type hunk struct {
+	symbol string
+	// guards are the operand expressions guarded by added lines, recorded
+	// under the function symbol active when each guard line was seen.
+	guards map[string][]string
+	uses   []string // all content lines ('+', ' ', '-'), guard lines included
+}
 
 // Parse splits a unified diff into per-file entries and extracts the names
 // of the enclosing functions from hunk headers and changed func decls.
 func Parse(patch string) Patch {
 	var files Patch
 	var cur *File
-	var curSym string
+	var hk *hunk
+	flushHunk := func() {
+		if hk != nil {
+			markGuardedSite(cur, *hk)
+			hk = nil
+		}
+	}
 	flush := func() {
+		flushHunk()
 		if cur != nil {
 			files = append(files, *cur)
 		}
@@ -145,31 +180,122 @@ func Parse(patch string) Patch {
 		if m := diffGitRe.FindStringSubmatch(line); m != nil {
 			flush()
 			cur = &File{Path: strings.TrimPrefix(m[2], "b/")}
-			curSym = ""
 			continue
 		}
 		if cur == nil {
 			continue
 		}
 		if m := hunkRe.FindStringSubmatch(line); m != nil {
+			flushHunk()
+			hk = &hunk{}
 			if fm := funcCtxRe.FindStringSubmatch(m[1]); fm != nil {
-				curSym = qualifySym(fm[1], fm[2])
-				addSymbol(cur, curSym)
+				hk.symbol = qualifySym(fm[1], fm[2])
+				addSymbol(cur, hk.symbol)
 			}
 			continue
 		}
 		switch {
 		case strings.HasPrefix(line, "+"):
 			cur.Adds++
+			if hk != nil {
+				body := line[1:]
+				if ops := guardOperands(body); len(ops) > 0 && hk.symbol != "" {
+					if hk.guards == nil {
+						hk.guards = map[string][]string{}
+					}
+					hk.guards[hk.symbol] = append(hk.guards[hk.symbol], ops...)
+				}
+				hk.uses = append(hk.uses, body)
+			}
 		case strings.HasPrefix(line, "-"):
 			cur.Dels++
+			if hk != nil {
+				hk.uses = append(hk.uses, line[1:])
+			}
+		case strings.HasPrefix(line, " "):
+			if hk != nil {
+				hk.uses = append(hk.uses, line[1:])
+			}
 		}
 		if fm := funcDeclRe.FindStringSubmatch(strings.TrimLeft(line, "+-")); fm != nil {
-			addSymbol(cur, qualifySym(fm[1], fm[2]))
+			sym := qualifySym(fm[1], fm[2])
+			if hk != nil {
+				hk.symbol = sym
+			}
+			addSymbol(cur, sym)
 		}
 	}
 	flush()
 	return files
+}
+
+// markGuardedSite flags the hunk's function when an added guard protects a
+// value that the same hunk's surviving, removed or added lines use
+// unsafely — `len(x) == 0` before `x[i]`, `x == nil` before `x.f`/`x(...)`.
+// The correlation is positional evidence that the check sits at the defect
+// site rather than at an upstream validation point. All guard operands are
+// recorded regardless so callers can verify the enabler classification
+// against the full function body.
+func markGuardedSite(f *File, hk hunk) {
+	if f == nil {
+		return
+	}
+	for sym, operands := range hk.guards {
+		if f.GuardOperands == nil {
+			f.GuardOperands = map[string][]string{}
+		}
+		f.GuardOperands[sym] = append(f.GuardOperands[sym], operands...)
+		for _, operand := range operands {
+			for _, use := range hk.uses {
+				if faultingUse(use, operand) {
+					addGuardedSymbol(f, sym)
+					break
+				}
+			}
+		}
+	}
+}
+
+// guardOperands extracts the guarded value from an added guard line.
+// `if len(x) == 0` guards `x` against indexing; `if x == nil`/`!= nil`
+// guards `x` against dereference.
+func guardOperands(line string) []string {
+	var out []string
+	if m := guardLenRe.FindStringSubmatch(line); m != nil {
+		if op := strings.TrimSpace(m[1]); op != "" {
+			out = append(out, op)
+		}
+	}
+	if m := guardNilRe.FindStringSubmatch(line); m != nil {
+		if op := strings.TrimSpace(m[1]); op != "" {
+			out = append(out, op)
+		}
+	}
+	return out
+}
+
+// faultingUse reports whether line uses operand in a position that can
+// fault when the guarded property does not hold: `x[...]` indexes a
+// possibly empty slice, `x.f`/`x(...)` dereferences a possibly nil value.
+// For a len-guarded operand an index expression is the fault; any direct
+// use of a nil-guarded operand is.
+func faultingUse(line, operand string) bool {
+	idx := regexp.QuoteMeta(operand)
+	indexRe := regexp.MustCompile(`(?:^|[^\w.\]])` + idx + `\s*\[`)
+	if indexRe.MatchString(line) {
+		return true
+	}
+	derefRe := regexp.MustCompile(`(?:^|[^\w.\]])` + idx + `\s*(?:\.|\()`)
+	return derefRe.MatchString(line)
+}
+
+func addGuardedSymbol(f *File, name string) {
+	for _, s := range f.GuardedSymbols {
+		if s == name {
+			return
+		}
+	}
+	f.GuardedSymbols = append(f.GuardedSymbols, name)
 }
 
 // qualifySym renders a parsed func/method name as "Type.Name" when a

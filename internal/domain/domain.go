@@ -295,6 +295,14 @@ const (
 	// CheckReachable routes a CUSTOM condition to the symbol-reachability
 	// machinery (subjects, direction=read, sequence=a->b all apply).
 	CheckReachable = "reachable"
+	// CheckLocus marks a SYMBOL_REACHABLE condition whose subjects are the
+	// advisory's defect locus — the functions where the vulnerable
+	// operation lives — rather than the union of affected symbols. Its
+	// falsifier is build-graph absence of the locus package(s), verified
+	// against the product's `go list -deps` evidence, not call-path or
+	// subject-escape arguments: code absent from the build cannot execute
+	// through any dispatch.
+	CheckLocus = "locus"
 )
 
 // Exposure scope values — deterministic classification of a resolved
@@ -358,8 +366,16 @@ type ExploitModel struct {
 	// the verdict INCONCLUSIVE with the missing subjects named; a verified
 	// FALSE on the grouped reachability condition still grounds
 	// NO_EXPLOIT_PATH_FOUND because it covers every declared symbol.
-	UnresolvedSubjects []SymbolRef  `json:"unresolved_subjects,omitempty"`
-	EvidenceIDs        []EvidenceID `json:"evidence_ids,omitempty"`
+	UnresolvedSubjects []SymbolRef `json:"unresolved_subjects,omitempty"`
+	// LocusSubjects names the defect-locus set: advisory-declared symbols
+	// the fix diff changes AND whose function performs the faulting
+	// operation on the guarded value (per spec §8 necessity anchors —
+	// distinct from fix-touched enabler functions that only validate
+	// upstream). A mandatory locus-reachability condition is built over
+	// them; a verified locus-package-absent falsifier proves the defect
+	// cannot trigger even when generic enabler sinks are reachable.
+	LocusSubjects []SymbolRef  `json:"locus_subjects,omitempty"`
+	EvidenceIDs   []EvidenceID `json:"evidence_ids,omitempty"`
 }
 
 type NegativeVerificationStatus string
@@ -430,6 +446,12 @@ const (
 	FalsifierSafeConfigKey            = "safe-config-key"
 	FalsifierGuards                   = "guards"
 	FalsifierConstantOrGeneratedInput = "constant-or-generated-input"
+	// FalsifierLocusPackageAbsent grounds FALSE for a locus-reachability
+	// condition: every locus subject's package is absent from the
+	// product's build graph (`go list -deps`), so the defect code is not
+	// linked in and cannot execute through any path, including wrappers,
+	// callbacks and dynamic dispatch.
+	FalsifierLocusPackageAbsent = "locus-package-absent"
 )
 
 type EvidenceQuality string

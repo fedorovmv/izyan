@@ -76,7 +76,9 @@ func (VerdictEvaluator) Evaluate(affected domain.AffectedResult, model domain.Ex
 				// evaluates the union of all advisory symbols, while
 				// input/constraint/pair falsifiers bind just the resolved
 				// subjects.
-				if len(model.UnresolvedSubjects) > 0 && !coversAllDeclared(claim.Falsifier) {
+				if len(model.UnresolvedSubjects) > 0 &&
+					!coversAllDeclared(claim.Falsifier) &&
+					!locusCoversUnresolved(claim.Falsifier, condition, model) {
 					continue
 				}
 				return domain.VerdictResult{
@@ -138,6 +140,31 @@ func coversAllDeclared(falsifier string) bool {
 		return true
 	}
 	return false
+}
+
+// locusCoversUnresolved reports whether a verified locus-package-absent
+// falsifier also discharges the model's unresolved subjects: only when every
+// unresolved symbol is itself a member of the locus set the verification
+// proved absent from the build graph. An unresolved symbol outside L keeps
+// the negative unproven — the model cannot claim its exploit shape is
+// covered by an absence it was never checked against.
+func locusCoversUnresolved(falsifier string, cond domain.Condition, model domain.ExploitModel) bool {
+	if falsifier != domain.FalsifierLocusPackageAbsent {
+		return false
+	}
+	for _, u := range model.UnresolvedSubjects {
+		member := false
+		for _, s := range cond.Subjects {
+			if s == u {
+				member = true
+				break
+			}
+		}
+		if !member {
+			return false
+		}
+	}
+	return true
 }
 
 func joinPaths(paths []string) string {

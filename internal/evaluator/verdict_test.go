@@ -136,6 +136,61 @@ func TestVerdictNepfBlockedForNarrowFalsifier(t *testing.T) {
 	}
 }
 
+// A verified locus-package-absent falsifier discharges unresolved subjects
+// that are themselves locus members — the same build-graph absence covers
+// them.
+func TestVerdictNepfAllowedForLocusCoveringUnresolved(t *testing.T) {
+	locus := domain.SymbolRef{Package: "example.com/dep/internal/mode", Symbol: "RouteAndProcess"}
+	model := domain.ExploitModel{
+		MandatoryConditions: []domain.Condition{{
+			ID: "C-LOCUS", Kind: domain.ConditionSymbolReachable,
+			Params:   map[string]string{domain.ParamCheck: domain.CheckLocus},
+			Subjects: []domain.SymbolRef{locus},
+		}},
+		UnresolvedSubjects: []domain.SymbolRef{locus},
+	}
+	claims := []domain.Claim{{
+		ConditionID: "C-LOCUS",
+		Result:      domain.ClaimFalse,
+		Falsifier:   domain.FalsifierLocusPackageAbsent,
+		NegativeVerification: &domain.NegativeVerification{
+			Status: domain.NegativeVerified,
+		},
+	}}
+	got := VerdictEvaluator{}.Evaluate(affectedAllTrue(), model, claims)
+	if got.Verdict != domain.VerdictNoExploitPathFound {
+		t.Fatalf("got %s, want NO_EXPLOIT_PATH_FOUND", got.Verdict)
+	}
+}
+
+// An unresolved subject outside the locus set is not covered by the locus
+// falsifier — the package absence it verified says nothing about that
+// symbol's exploit shape.
+func TestVerdictNepfBlockedForLocusOutsideUnresolved(t *testing.T) {
+	locus := domain.SymbolRef{Package: "example.com/dep/internal/mode", Symbol: "RouteAndProcess"}
+	other := domain.SymbolRef{Package: "example.com/dep/internal/transport", Symbol: "HandleStreams"}
+	model := domain.ExploitModel{
+		MandatoryConditions: []domain.Condition{{
+			ID: "C-LOCUS", Kind: domain.ConditionSymbolReachable,
+			Params:   map[string]string{domain.ParamCheck: domain.CheckLocus},
+			Subjects: []domain.SymbolRef{locus},
+		}},
+		UnresolvedSubjects: []domain.SymbolRef{locus, other},
+	}
+	claims := []domain.Claim{{
+		ConditionID: "C-LOCUS",
+		Result:      domain.ClaimFalse,
+		Falsifier:   domain.FalsifierLocusPackageAbsent,
+		NegativeVerification: &domain.NegativeVerification{
+			Status: domain.NegativeVerified,
+		},
+	}}
+	got := VerdictEvaluator{}.Evaluate(affectedAllTrue(), model, claims)
+	if got.Verdict != domain.VerdictInconclusive {
+		t.Fatalf("got %s, want INCONCLUSIVE", got.Verdict)
+	}
+}
+
 func TestVerdictInconclusiveOnUnknown(t *testing.T) {
 	model := domain.ExploitModel{
 		MandatoryConditions: []domain.Condition{{ID: "C1"}},

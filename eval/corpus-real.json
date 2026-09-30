@@ -399,6 +399,65 @@
    ]
   },
   {
+   "id": "real-micro-plain-6443",
+   "vuln": "GO-2026-6443",
+   "vuln_file": "advisories/real/GO-2026-6443.json",
+   "product": "products/micro-plain",
+   "module": "example.com/micro-plain",
+   "deps": {
+    "google.golang.org/grpc": "v1.83.0"
+   },
+   "_note": "mode-off: plain grpc.NewServer, internal/xds/server absent from build graph — :authority panic locus unreachable; spec §8 contract",
+   "expect": [
+    "NO_EXPLOIT_PATH_FOUND",
+    "INCONCLUSIVE"
+   ]
+  },
+  {
+   "id": "real-micro-xds-6443",
+   "vuln": "GO-2026-6443",
+   "vuln_file": "advisories/real/GO-2026-6443.json",
+   "product": "products/micro-xds",
+   "module": "example.com/micro-xds",
+   "deps": {
+    "google.golang.org/grpc": "v1.83.0"
+   },
+   "_note": "mode-on: xds.NewGRPCServer — RouteAndProcess in govulncheck trace; defect locus reachable",
+   "expect": [
+    "EXPLOITABLE",
+    "INCONCLUSIVE"
+   ]
+  },
+  {
+   "id": "real-micro-wrap-6443",
+   "vuln": "GO-2026-6443",
+   "vuln_file": "advisories/real/GO-2026-6443.json",
+   "product": "products/micro-xds-wrap",
+   "module": "example.com/micro-xds-wrap",
+   "deps": {
+    "google.golang.org/grpc": "v1.83.0"
+   },
+   "_note": "wrapper: xds enabled via factory func value/registry — defeats call-site pattern checks, package stays in build graph",
+   "expect": [
+    "EXPLOITABLE",
+    "INCONCLUSIVE"
+   ]
+  },
+  {
+   "id": "real-micro-pkg-6443",
+   "vuln": "GO-2026-6443",
+   "vuln_file": "advisories/real/GO-2026-6443.json",
+   "product": "products/micro-xds-pkg",
+   "module": "example.com/micro-xds-pkg",
+   "deps": {
+    "google.golang.org/grpc": "v1.83.0"
+   },
+   "_note": "pkg-present: xds package imported but RouteAndProcess never invoked — package presence != locus reachability; contract must not give NEPF",
+   "expect": [
+    "INCONCLUSIVE"
+   ]
+  },
+  {
    "id": "real-unix-access",
    "vuln": "GO-2022-0493",
    "vuln_file": "advisories/real/GO-2022-0493.json",

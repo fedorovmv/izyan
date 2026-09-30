@@ -36,6 +36,9 @@ func (SymbolReachable) Evaluate(cond domain.Condition, c *domain.AnalysisCase) d
 	if cond.Params[domain.ParamSequence] != "" {
 		return evalSequencePair(cond, c)
 	}
+	if cond.Params[domain.ParamCheck] == domain.CheckLocus {
+		return evalLocus(cond, c)
+	}
 	claim := domain.Claim{
 		ID:          domain.ClaimID("CL-" + string(cond.ID)),
 		ConditionID: cond.ID,

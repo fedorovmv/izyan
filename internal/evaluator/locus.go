@@ -1,0 +1,117 @@
+package evaluator
+
+import (
+	"fmt"
+	"strings"
+
+	"example.com/vuln-analyzer/internal/affected"
+	"example.com/vuln-analyzer/internal/domain"
+)
+
+// evalLocus evaluates a C-LOCUS condition — reachability of the defect
+// locus set L (spec §8). TRUE follows the usual call-path evidence. FALSE
+// is a candidate grounded on one falsifier only: every locus package absent
+// from the snapshot's `go list -deps` build graph — code not linked cannot
+// execute through any path, wrapper, callback or dispatch. A locus package
+// present in the graph with no observed call path is UNKNOWN: absence of a
+// package proves code is missing; a present-but-unreached function is a
+// different, unproven claim.
+func evalLocus(cond domain.Condition, c *domain.AnalysisCase) domain.Claim {
+	claim := domain.Claim{
+		ID:          domain.ClaimID("CL-" + string(cond.ID)),
+		ConditionID: cond.ID,
+		Result:      domain.ClaimUnknown,
+		Producer:    "evaluator.SymbolReachable(locus)",
+	}
+	// Exact locus set — unlike reachabilitySubjects, the advisory's other
+	// declared symbols (enablers, path functions) do not join the subject
+	// set: their reachability says nothing about the defect executing.
+	symbols := append([]domain.SymbolRef(nil), cond.Subjects...)
+	if len(symbols) == 0 && cond.Subject != nil {
+		symbols = append(symbols, *cond.Subject)
+	}
+	if len(symbols) == 0 {
+		claim.Limitations = append(claim.Limitations,
+			"empty defect-locus set; necessity was not established")
+		return claim
+	}
+
+	if govulncheckRan(c) {
+		for _, cp := range c.EvidenceGraph.CallPaths {
+			for _, fr := range cp.Frames {
+				for _, sym := range symbols {
+					if frameMatches(fr, sym) {
+						if cp.EvidenceID != "" {
+							claim.EvidenceIDs = appendUniqueID(claim.EvidenceIDs, cp.EvidenceID)
+						}
+						claim.Result = domain.ClaimTrue
+						claim.Explanation = fmt.Sprintf(
+							"govulncheck call path reaches defect locus %s.%s",
+							sym.Package, sym.Symbol)
+						return claim
+					}
+				}
+			}
+		}
+	}
+	for _, subj := range symbols {
+		want := subj.Package + "." + subj.Symbol
+		if chain, ok := c.EvidenceGraph.ModuleReachable[want]; ok {
+			claim.Result = domain.ClaimTrue
+			claim.EvidenceIDs = append(moduleReachEvidence(c), moduleUsageEvidence(c)...)
+			claim.Explanation = fmt.Sprintf(
+				"defect locus %s reachable through module internals: %s",
+				want, strings.Join(chain, " -> "))
+			return claim
+		}
+	}
+
+	// Negative basis: complete build-graph absence of every locus package.
+	set, ids, err := packageImportSet(c)
+	if err != nil {
+		claim.Limitations = append(claim.Limitations, err.Error())
+		return claim
+	}
+	var present []string
+	for _, s := range symbols {
+		if set[s.Package] {
+			present = append(present, s.Package)
+		}
+	}
+	if len(present) > 0 {
+		claim.Limitations = append(claim.Limitations, fmt.Sprintf(
+			"locus package(s) linked into the build graph (%s); the defect site exists in the binary and function-level unreachability is unproven",
+			strings.Join(present, ", ")))
+		return claim
+	}
+	claim.Result = domain.ClaimFalse
+	claim.Falsifier = domain.FalsifierLocusPackageAbsent
+	claim.EvidenceIDs = ids
+	claim.Explanation = fmt.Sprintf(
+		"all %d defect-locus package(s) absent from the snapshot build graph (go list -deps); the vulnerable code is not linked and cannot execute",
+		len(symbols))
+	claim.Limitations = append(claim.Limitations,
+		"FALSE is a candidate: package absence is scoped to the build context the package list was produced under (GOOS/GOARCH/tags)")
+	return claim
+}
+
+// packageImportSet decodes the persisted `go list -deps -json` package-list
+// evidence into the set of linked import paths. Missing or undecodable
+// evidence is UNKNOWN-grade — a package-loading failure never counts as
+// absence.
+func packageImportSet(c *domain.AnalysisCase) (map[string]bool, []domain.EvidenceID, error) {
+	var ids []domain.EvidenceID
+	for _, e := range c.EvidenceGraph.EvidenceList() {
+		if e.Kind != domain.EvidencePackageList {
+			continue
+		}
+		set, err := affected.PackageImportPaths([]byte(e.Content))
+		if err != nil {
+			return nil, nil, fmt.Errorf(
+				"package-list evidence %s undecodable: %w; build-graph absence unverified", e.ID, err)
+		}
+		return set, append(ids, e.ID), nil
+	}
+	return nil, nil, fmt.Errorf(
+		"no package-list evidence (go list -deps); build-graph absence unverified")
+}

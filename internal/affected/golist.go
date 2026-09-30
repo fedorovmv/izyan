@@ -157,6 +157,24 @@ func decodePackages(b []byte) ([]Package, error) {
 	return out, nil
 }
 
+// PackageImportPaths decodes a `go list -deps -json` stream (already
+// persisted as package-list evidence) into the set of import paths the
+// snapshot's build graph links — under the build context (GOOS/GOARCH/
+// tags) the list was produced with. It is the absence check of the
+// defect-locus contract: a package missing here cannot execute through
+// any path.
+func PackageImportPaths(b []byte) (map[string]bool, error) {
+	pkgs, err := decodePackages(b)
+	if err != nil {
+		return nil, err
+	}
+	set := make(map[string]bool, len(pkgs))
+	for _, p := range pkgs {
+		set[p.ImportPath] = true
+	}
+	return set, nil
+}
+
 // loadVendorModules parses vendor/modules.txt — the authoritative
 // module list when the repository builds in vendor mode.
 func loadVendorModules(dir string) ([]Module, error) {

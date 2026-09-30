@@ -27,6 +27,13 @@ type Verifier struct {
 func (v Verifier) VerifyFalse(ctx context.Context, c *domain.AnalysisCase, claim domain.Claim,
 	cond domain.Condition) domain.Claim {
 
+	// The locus falsifier is verified against the persisted build-graph
+	// evidence, not the source index — it applies even when no index is
+	// configured, and package absence cannot be escaped by any dispatch.
+	if cond.Params[domain.ParamCheck] == domain.CheckLocus {
+		return v.verifyLocusAbsent(c, claim, cond)
+	}
+
 	nv := &domain.NegativeVerification{Status: domain.NegativeVerified}
 	if v.Source == nil {
 		return setNeg(claim, &domain.NegativeVerification{

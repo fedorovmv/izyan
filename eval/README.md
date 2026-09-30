@@ -2,7 +2,7 @@
 
 ## Real corpus — generated-manifest продукты (B13)
 
-`eval/corpus-real.json` — 33 кейса против реальных зависимостей через
+`eval/corpus-real.json` — 37 кейсов против реальных зависимостей через
 generated-manifest продукты `eval/products/`: исходники коммитятся без
 манифестов, `go.mod`/`go.sum` генерируются в `eval/.gen/<case-id>` из
 полей `module`/`deps` кейса; кейс может задавать `goos`/`goarch`/
@@ -13,8 +13,10 @@ GO-2022-0603), markdown render (GO-2023-2074), go-getter arg-injection
 GO-2025-3487 slow-handshake DoS), jose2go (GO-2023-2409), jwt-go
 missing-call (GO-2020-0017), http2 (GO-2023-2102), miekg/dns zone-parse
 (GO-2020-0028), protobuf protojson unmarshal loop (GO-2024-2611), grpc
-xDS RBAC bypass (GO-2026-6441), x/sys Faccessat priv-report
-(GO-2022-0493) — 11 классов, 11 реальных зависимостей.
+xDS RBAC bypass (GO-2026-6441), grpc xDS :authority panic — defect-locus
+пул GO-2026-6443 на четырёх вариантах (mode-off / mode-on / wrapper /
+pkg-present), x/sys Faccessat priv-report
+(GO-2022-0493) — 12 классов, 11 реальных зависимостей.
 
 Прогон: `analyzer eval --corpus eval/corpus-real.json` (сеть для `go mod
 tidy` + govulncheck; `--mem-limit 4GiB` стоит по умолчанию).
@@ -52,6 +54,10 @@ Baseline-таблица govulncheck-vs-analyzer (последний прогон
 | real-micro-xds | INCONCLUSIVE | package-level | нет — dep-internal registry (`httpfilter.Register`) + watcher callbacks (B24) |
 | real-micro-xds-fixed | NOT_AFFECTED | silent | **да — deterministic** |
 | real-micro-plain | NOT_AFFECTED | module-level | **да — rbac-пакет не в build graph; govulncheck также не сообщает уязвимый пакет** |
+| real-micro-plain-6443 | NO_EXPLOIT_PATH_FOUND | reachable | **да — locus-package-absent: единственный дефектный локус `internal/xds/server.RouteAndProcess` (fix-guarded fault site) вне build graph (B30, spec §8)** |
+| real-micro-xds-6443 | EXPLOITABLE | reachable | нет — xDS-режим включён, локус в govulncheck-трейсе |
+| real-micro-wrap-6443 | EXPLOITABLE | reachable | нет — xDS через factory-обёртку; module-internal chain доказывает локус достижимым |
+| real-micro-pkg-6443 | INCONCLUSIVE | reachable | нет — xds-пакет в build graph, но `RouteAndProcess` не вызывается; package-absence falsifier не применим, function-unreachability не доказана |
 | real-unix-access | EXPLOITABLE | reachable | нет — `unix.Access` вызван на dep-пути, payload внешний |
 | real-unix-stat | NO_EXPLOIT_PATH_FOUND | package-level | **да — zero-refs + dep-internal caller `unix.Access` транзитивно мёртв (нет product refs, нет caller'ов в модуле, сторонних импортеров пакета нет)** |
 | real-unix-fixed | NOT_AFFECTED | silent | **да — deterministic** |
@@ -62,9 +68,9 @@ Baseline-таблица govulncheck-vs-analyzer (последний прогон
 `NOT_AFFECTED` (deterministic affected-chain) или `NO_EXPLOIT_PATH_FOUND`
 (VERIFIED falsifier на mandatory-условии). `EXPLOITABLE`, `INCONCLUSIVE` и
 `UNKNOWN` оставляют кейс на человеке — для triage «reachable» и
-«не доказали безопасность» эквивалентны. Текущий прогон: **12/33 cleared**:
+«не доказали безопасность» эквивалентны. Текущий прогон: **13/37 cleared**:
 11×NOT_AFFECTED deterministic (в том числе `real-micro-plain` при
-module-only finding govulncheck) и один verified-негатив NEPF:
+module-only finding govulncheck) и два verified-негатива NEPF:
 `real-unix-stat` — продукт не трогает `unix.Faccessat`,
 а единственный dep-internal caller `unix.Access` доказанно мёртв —
 нет product refs, нет caller'ов внутри `x/sys`, сторонних модулей,
@@ -72,25 +78,38 @@ module-only finding govulncheck) и один verified-негатив NEPF:
 не выносится (`productReferenceable` гейт), а dep-internal invocation
 учитывается transitively (`depSiteLive`): ssh-keyparse и dns-marshal в
 INCONCLUSIVE — их прежний NEPF стоял на vacuous «zero product refs»;
-jwt-auth — missing-call гейт. Цель B23 — поднять долю честных cleared
+jwt-auth — missing-call гейт. Второй NEPF — `real-micro-plain-6443`
+по контракту defect-locus (B30, spec §8): fix PR9365 гардит faulting
+индекс `authority[0]` только в `internal/xds/server.RouteAndProcess`
+(advisory-declared ∩ fix-changed ∩ faulting-site), а `operateHeaders` —
+upstream-enabler, исключён из L после body-проверки `SymbolFaultingUse`;
+единственный locus-пакет отсутствует в `go list -deps` графе продукта —
+код дефекта физически не слинкован. Парные контроли: mode-on и
+factory-обёртка дают EXPLOITABLE (локус в трейсе/внутримодульной цепочке),
+pkg-present-func-absent даёт INCONCLUSIVE — наличие пакета в графе не
+доказывает недостижимость функции. Цель B23 — поднять долю честных cleared
 за счёт falsifier-доказательств, не объявляя недоказанное безопасным.
 
 Для сравнения со standalone govulncheck важен более узкий показатель:
-**signal-cleared rate = 1/22** на этом прогоне. Знаменатель — кейсы,
+**signal-cleared rate = 2/26** на этом прогоне. Знаменатель — кейсы,
 где govulncheck сообщил `reachable` или `package-level`; числитель —
-verified-негатив анализатора при таком сигнале (`real-unix-stat`).
-Разбивка: **0/17** при `reachable`, **1/5** при `package-level`.
+verified-негатив анализатора при таком сигнале (`real-unix-stat`,
+`real-micro-plain-6443`).
+Разбивка: **1/21** при `reachable`, **1/5** при `package-level`.
 Finding только с модулем учитывается отдельно (`module-level`), без
 приписывания ему присутствующего уязвимого пакета. Остальные cleared
 имеют `govulncheck: silent` или `module-level`.
 
-Эта метрика не доказывает дополнительную пользу относительно
-govulncheck: его обычный вывод уже сообщает, что package/module findings
-не имеют найденного вызова. `real-unix-stat` добавляет negative
-verification к этой информации, но одного такого кейса недостаточно
-для вывода о надёжности или экономии ручного triage. Нужны независимые
-проверки отрицательных результатов и контрпримеры; reachable-отклонений
-в текущем корпусе нет. `false-safe=0` означает совпадение с разметкой,
+Эта метрика частично доказывает дополнительную пользу относительно
+govulncheck: `real-micro-plain-6443` — первое reachable-отклонение,
+которое standalone govulncheck не выносит (он сообщает трейс до
+`HandleStreams` и останавливается — OR-семантика declared symbols не
+различает defect locus). `real-unix-stat` добавляет negative
+verification к package-level информации. Двух кейсов недостаточно
+для вывода о надёжности или экономии ручного triage; необходимость
+локуса опирается на полноту fix-diff (дефектный сайт вне патча
+невидим — см. spec §8), а переносимость на другие классы дефектов
+не проверена. `false-safe=0` означает совпадение с разметкой,
 не независимую верификацию самой разметки.
 
 Дополнительный контроль двух прежних cleared: прямой JSON govulncheck
