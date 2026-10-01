@@ -338,7 +338,7 @@ func machineAssessment(c *domain.AnalysisCase) string {
 
 	var b strings.Builder
 	b.WriteString("Falsifier отсутствия пакета применим, только если по каждому символу локуса в *слинкованном* пакете записано экспертное решение `non_locus`:\n\n")
-	var pending, flagged int
+	var pending, proposedN, flagged int
 	for _, s := range c.Exploit.LocusSubjects {
 		name := "`" + s.Package + "." + s.Symbol + "`"
 		if !set[s.Package] {
@@ -347,11 +347,12 @@ func machineAssessment(c *domain.AnalysisCase) string {
 		}
 		pending++
 		if d, ok := proposed[s]; ok {
+			proposedN++
 			fmt.Fprintf(&b, "- %s — пакет слинкован — машина **предлагает** исключение: %s\n", name, d.Basis)
 			continue
 		}
-		flagged++
 		if d, ok := annotated[s]; ok {
+			flagged++
 			fmt.Fprintf(&b, "- %s — пакет слинкован — **не предлагается**: машинная аннотация `%s` — исключение означает, что эксперт опровергает этот флаг\n", name, d.Basis)
 		} else {
 			fmt.Fprintf(&b, "- %s — пакет слинкован — **не предлагается**, машинной аннотации нет — нужно решение эксперта\n", name)
@@ -361,14 +362,18 @@ func machineAssessment(c *domain.AnalysisCase) string {
 	switch {
 	case pending == 0:
 		b.WriteString("**Предлагаемая оценка: ОТКЛОНИТЬ** — все пакеты локуса отсутствуют в графе сборки; falsifier стоит сам по себе.\n")
-	case flagged == 0:
+	case flagged == 0 && pending == proposedN:
 		fmt.Fprintf(&b,
 			"**Предлагаемая оценка: ОТКЛОНИТЬ после утверждения** — запишите %d машинных предложения как `non_locus` — оставшиеся пакеты локуса все отсутствуют → `NO_EXPLOIT_PATH_FOUND`.\n",
 			pending)
+	case flagged == 0:
+		fmt.Fprintf(&b,
+			"**Предлагаемая оценка: УСЛОВНО** — для отклонения нужны записанные решения `non_locus` по всем %d символам в слинкованных пакетах выше (%d уже предложены машиной, %d без аннотации — машина по ним ничего не знает).\n",
+			pending, proposedN, pending-proposedN)
 	default:
 		fmt.Fprintf(&b,
-			"**Предлагаемая оценка: УСЛОВНО** — для отклонения нужны записанные решения `non_locus` по всем %d символам в слинкованных пакетах выше; %d несут машинный флаг «возможный сайт дефекта», который эксперт должен опровергнуть.\n",
-			pending, flagged)
+			"**Предлагаемая оценка: УСЛОВНО** — для отклонения нужны записанные решения `non_locus` по всем %d символам в слинкованных пакетах выше (%d предложены машиной); %d несут машинный флаг «возможный сайт дефекта», который эксперт должен опровергнуть.\n",
+			pending, proposedN, flagged)
 	}
 	b.WriteString("\nВне машинной проверки (допущения, которые ревьюер принимает при утверждении):\n")
 	b.WriteString("- declared-множество advisory полно — сайт дефекта вне объявленных символов этому контракту невидим\n")
