@@ -32,7 +32,7 @@ func evalLocus(cond domain.Condition, c *domain.AnalysisCase) domain.Claim {
 	}
 	if len(symbols) == 0 {
 		claim.Limitations = append(claim.Limitations,
-			"пустое множество локусов дефекта; необходимость не установлена")
+			"пустое множество сайтов дефекта; необходимость не установлена")
 		return claim
 	}
 
@@ -51,7 +51,7 @@ func evalLocus(cond domain.Condition, c *domain.AnalysisCase) domain.Claim {
 						}
 						claim.Result = domain.ClaimTrue
 						claim.Explanation = fmt.Sprintf(
-							"govulncheck call path достигает локуса дефекта %s.%s",
+							"govulncheck-путь вызовов достигает сайта дефекта %s.%s",
 							sym.Package, sym.Symbol)
 						if proposed != "" {
 							claim.Limitations = append(claim.Limitations, proposed)
@@ -68,7 +68,7 @@ func evalLocus(cond domain.Condition, c *domain.AnalysisCase) domain.Claim {
 			claim.Result = domain.ClaimTrue
 			claim.EvidenceIDs = append(moduleReachEvidence(c), moduleUsageEvidence(c)...)
 			claim.Explanation = fmt.Sprintf(
-				"локус дефекта %s достижим через внутренности модуля: %s",
+				"сайт дефекта %s достижим через внутренности модуля: %s",
 				want, strings.Join(chain, " -> "))
 			if proposed != "" {
 				claim.Limitations = append(claim.Limitations, proposed)
@@ -91,7 +91,7 @@ func evalLocus(cond domain.Condition, c *domain.AnalysisCase) domain.Claim {
 	}
 	if len(present) > 0 {
 		claim.Limitations = append(claim.Limitations, fmt.Sprintf(
-			"пакет(ы) локуса слинкованы в граф сборки (%s); сайт дефекта присутствует в бинаре, недостижимость на уровне функции не доказана",
+			"пакет(ы) сайта дефекта присутствуют в графе сборки (%s); код дефекта входит в бинарь, недостижимость на уровне функции не доказана",
 			strings.Join(present, ", ")))
 		if proposed != "" {
 			claim.Limitations = append(claim.Limitations, proposed)
@@ -102,10 +102,10 @@ func evalLocus(cond domain.Condition, c *domain.AnalysisCase) domain.Claim {
 	claim.Falsifier = domain.FalsifierLocusPackageAbsent
 	claim.EvidenceIDs = ids
 	claim.Explanation = fmt.Sprintf(
-		"все %d пакет(ов) локуса отсутствуют в графе сборки снапшота (go list -deps); уязвимый код не слинкован и не может исполниться",
+		"все %d пакет(ов) сайта дефекта отсутствуют в графе сборки снапшота (go list -deps); уязвимый код не входит в сборку и не может исполниться",
 		len(symbols))
 	claim.Limitations = append(claim.Limitations,
-		"FALSE — кандидат: отсутствие пакета ограничено build-контекстом, под которым собран package-list (GOOS/GOARCH/теги)")
+		"FALSE — кандидат: отсутствие пакета ограничено контекстом сборки, под которым собран список пакетов (GOOS/GOARCH/теги)")
 	return claim
 }
 
@@ -122,12 +122,12 @@ func packageImportSet(c *domain.AnalysisCase) (map[string]bool, []domain.Evidenc
 		set, err := affected.PackageImportPaths([]byte(e.Content))
 		if err != nil {
 			return nil, nil, fmt.Errorf(
-				"package-list evidence %s undecodable: %w; build-graph absence unverified", e.ID, err)
+				"данные списка пакетов %s не декодируются: %w; отсутствие в графе сборки не проверено", e.ID, err)
 		}
 		return set, append(ids, e.ID), nil
 	}
 	return nil, nil, fmt.Errorf(
-		"нет package-list evidence (go list -deps); отсутствие в build-графе не проверено")
+		"нет данных списка пакетов (go list -deps); отсутствие в графе сборки не проверено")
 }
 
 // proposedLocusNote answers the expert's review question without code
@@ -166,6 +166,6 @@ func proposedLocusNote(c *domain.AnalysisCase, symbols []domain.SymbolRef) strin
 		}
 	}
 	return fmt.Sprintf(
-		"предложенный falsifier ждёт утверждения эксперта: если записать %d предложенных решений non-locus, оставшиеся пакеты локуса (%s) все отсутствуют в графе `go list -deps` — следует NO_EXPLOIT_PATH_FOUND",
+		"предложенное опровержение ждёт утверждения эксперта: если записать %d предложенных решений `non_locus`, оставшиеся пакеты сайта дефекта (%s) все отсутствуют в графе `go list -deps` — следует NO_EXPLOIT_PATH_FOUND",
 		len(symbols)-len(remaining), strings.Join(pkgs, ", "))
 }
