@@ -37,6 +37,9 @@ vuln-analyzer analyze --repo /src/product --vuln GO-2025-3595 [флаги]
 |---|---|
 | `--root-cause <pkg/path.Symbol>` | уязвимый символ вручную; повторяемый флаг |
 | `--exploit-model <path>` | готовая модель условий эксплуатации JSON |
+| `--non-locus-basis <sym:reason[:author]>` | экспертное исключение символа из сайтов дефекта (L = declared set − basis); повторяемый флаг |
+| `--accept-locus-proposals` | автоматически применить проверенные машинные предложения (`ProposedNonLocus`) в модель анализа без ручного ввода `--non-locus-basis` (не модифицирует код продукта) |
+
 
 ## scan — массовый прогон зависимостей
 
