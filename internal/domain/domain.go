@@ -1184,6 +1184,14 @@ type AnalysisCase struct {
 	// vulnerability/repository pair — the reproducibility-diff baseline.
 	PriorCase CaseID         `json:"prior_case,omitempty"`
 	Workflow  WorkflowStatus `json:"workflow"`
+
+	// CVE Analysis Slice A artifacts:
+	CVEAnalysisProfile AnalysisProfile        `json:"cve_analysis_profile,omitempty"`
+	CVEAnalysisBundle  *CVESourceBundle       `json:"cve_analysis_bundle,omitempty"`
+	CVEAnalysis        *CVEAnalysisProposal   `json:"cve_analysis,omitempty"`
+	StrategyPlan       *StrategyPlan          `json:"strategy_plan,omitempty"`
+	SemanticReview     *SemanticReview        `json:"semantic_review,omitempty"`
+	Justification      *AnalysisJustification `json:"justification,omitempty"`
 }
 
 // AddHypothesis appends a hypothesis with an assigned H-id.
