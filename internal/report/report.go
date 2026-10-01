@@ -337,7 +337,7 @@ func machineAssessment(c *domain.AnalysisCase) string {
 	}
 
 	var b strings.Builder
-	b.WriteString("Отклонить уязвимость из-за отсутствия пакетов в сборке можно только при условии, что для каждой функции из advisory в *попавших в сборку* пакетах подтверждено решение эксперта `non_locus` (код не содержит дефекта):\n\n")
+	b.WriteString("Отклонить уязвимость из-за отсутствия пакетов в сборке можно только при условии, что для каждой функции из advisory в *попавших в сборку* пакетах подтверждено решение о безопасности (код не содержит дефекта / `non_locus`):\n\n")
 	var pending, proposedN, flagged int
 	for _, s := range c.Exploit.LocusSubjects {
 		name := "`" + s.Package + "." + s.Symbol + "`"
@@ -364,20 +364,20 @@ func machineAssessment(c *domain.AnalysisCase) string {
 		b.WriteString("**Предлагаемая оценка: МОЖНО ОТКЛОНИТЬ** — ни один из пакетов с уязвимым кодом не входит в граф сборки приложения.\n")
 	case flagged == 0 && pending == proposedN:
 		fmt.Fprintf(&b,
-			"**Предлагаемая оценка: МОЖНО ОТКЛОНИТЬ ПОСЛЕ ПОДТВЕРЖДЕНИЯ** — подтвердите %d рекомендаций об исключении как `non_locus`; остальные пакеты в сборку не входят → вердикт `NO_EXPLOIT_PATH_FOUND` (для применения рекомендаций используйте флаг `--accept-locus-proposals`).\n",
+			"**Предлагаемая оценка: МОЖНО ОТКЛОНИТЬ ПОСЛЕ ПОДТВЕРЖДЕНИЯ** — подтвердите %d рекомендаций об исключении как безопасных (`non_locus`); остальные пакеты в сборку не входят → вердикт `NO_EXPLOIT_PATH_FOUND` (для автоматического применения рекомендаций используйте флаг `--accept-locus-proposals`).\n",
 			pending)
 	case flagged == 0:
 		fmt.Fprintf(&b,
-			"**Предлагаемая оценка: ТРЕБУЕТСЯ ПРОВЕРКА (УСЛОВНО)** — чтобы отклонить уязвимость, необходимо подтвердить решение `non_locus` по всем %d функциям в попавших в сборку пакетах (%d рекомендованы к исключению; по %d автоматических данных нет).\n",
+			"**Предлагаемая оценка: ТРЕБУЕТСЯ ПРОВЕРКА (УСЛОВНО)** — чтобы отклонить уязвимость, необходимо подтвердить решение о безопасности по всем %d функциям в попавших в сборку пакетах (%d рекомендованы к исключению; по %d автоматических данных нет).\n",
 			pending, proposedN, pending-proposedN)
 	default:
 		fmt.Fprintf(&b,
-			"**Предлагаемая оценка: ТРЕБУЕТСЯ ПРОВЕРКА (УСЛОВНО)** — чтобы отклонить уязвимость, необходимо подтвердить решение `non_locus` по всем %d функциям в попавших в сборку пакетах (%d рекомендованы к исключению; для %d найдены признаки уязвимости, требующие проверки экспертом).\n",
+			"**Предлагаемая оценка: ТРЕБУЕТСЯ ПРОВЕРКА (УСЛОВНО)** — чтобы отклонить уязвимость, необходимо подтвердить решение о безопасности по всем %d функциям в попавших в сборку пакетах (%d рекомендованы к исключению; для %d найдены признаки уязвимости, требующие проверки экспертом).\n",
 			pending, proposedN, flagged)
 	}
 	b.WriteString("\nДопущения (не проверяются автоматически, эксперт подтверждает их при согласовании):\n")
-	b.WriteString("- Список уязвимых функций в базе (advisory) полон (если уязвимость затрагивает и другие функции, анализ их не увидит)\n")
-	b.WriteString("- Внесённые экспертные решения `non_locus` верны (система проверяет факт их наличия, а не правильность)\n")
+	b.WriteString("- Список уязвимых функций в базе (advisory) полон (если уязвимость затрагивает другие функции библиотеки, анализ их не увидит)\n")
+	b.WriteString("- Внесённые решения о безопасности верны (система проверяет факт их наличия, а не правильность)\n")
 	goos, goarch := c.Product.GOOS, c.Product.GOARCH
 	if goos == "" {
 		goos = "?"
@@ -430,24 +430,403 @@ func allLimitations(c *domain.AnalysisCase) []string {
 	return out
 }
 
-func rationale(c *domain.AnalysisCase) string {
+// TrackerRationale renders a human-readable, professional justification
+// in Russian ready for issue trackers, detailing the verdict,
+// product facts, build graph status, defect mechanism, and residual risks.
+func TrackerRationale(c *domain.AnalysisCase) string {
 	if c.Verdict == nil {
-		return "analysis did not reach a verdict"
+		return "Анализ уязвимости не завершён (вердикт не вынесен)."
 	}
+
 	switch c.Verdict.Verdict {
-	case domain.VerdictNotAffected:
-		return fmt.Sprintf("%s is NOT_AFFECTED for %s@%s: %s. No code changes required for this snapshot.",
-			c.Vulnerability.ID, c.Product.Repository, shortCommit(c.Product.Commit), c.Verdict.Reason)
-	case domain.VerdictExploitable:
-		return fmt.Sprintf("%s is EXPLOITABLE in %s@%s: %s. Remediation required.",
-			c.Vulnerability.ID, c.Product.Repository, shortCommit(c.Product.Commit), c.Verdict.Reason)
 	case domain.VerdictNoExploitPathFound:
-		return fmt.Sprintf("%s has NO_EXPLOIT_PATH_FOUND in %s@%s: %s.",
-			c.Vulnerability.ID, c.Product.Repository, shortCommit(c.Product.Commit), c.Verdict.Reason)
+		return rationaleNoExploitPathFound(c)
+	case domain.VerdictNotAffected:
+		return rationaleNotAffected(c)
+	case domain.VerdictExploitable:
+		return rationaleExploitable(c)
 	default:
-		return fmt.Sprintf("%s analysis is INCONCLUSIVE for %s@%s: %s. Manual review required.",
-			c.Vulnerability.ID, c.Product.Repository, shortCommit(c.Product.Commit), c.Verdict.Reason)
+		return rationaleInconclusive(c)
 	}
+}
+
+func rationale(c *domain.AnalysisCase) string {
+	return TrackerRationale(c)
+}
+
+func shortRepo(repo string) string {
+	repo = strings.TrimSpace(repo)
+	if repo == "" {
+		return "проекте"
+	}
+	base := filepath.Base(filepath.Clean(repo))
+	if base == "." || base == "/" || base == "" {
+		return repo
+	}
+	return base
+}
+
+func formatEnv(c *domain.AnalysisCase) string {
+	var parts []string
+	if c.Product.GoVersion != "" {
+		parts = append(parts, "Go "+c.Product.GoVersion)
+	}
+	if c.Product.GOOS != "" && c.Product.GOARCH != "" {
+		parts = append(parts, c.Product.GOOS+"/"+c.Product.GOARCH)
+	}
+	if len(c.Product.BuildTags) > 0 {
+		parts = append(parts, "теги: "+strings.Join(c.Product.BuildTags, ", "))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return " (" + strings.Join(parts, ", ") + ")"
+}
+
+func moduleAndVersion(c *domain.AnalysisCase) (string, string) {
+	mod := c.Vulnerability.Module
+	if mod == "" && len(c.Vulnerability.AffectedPackages) > 0 {
+		mod = c.Vulnerability.AffectedPackages[0].Path
+	}
+	if mod == "" && c.Affected != nil && len(c.Affected.CheckedModules) > 0 {
+		mod = c.Affected.CheckedModules[0]
+	}
+	ver := ""
+	if c.Affected != nil {
+		ver = c.Affected.ResolvedVersion
+	}
+	return mod, ver
+}
+
+func defectDescription(c *domain.AnalysisCase) string {
+	if c.RootCause != nil && len(c.RootCause.RootCauses) > 0 {
+		var parts []string
+		for _, rc := range c.RootCause.RootCauses {
+			if rc.Mechanism != "" {
+				parts = append(parts, fmt.Sprintf("%s (локализовано в `%s.%s`)", rc.Mechanism, rc.Package, rc.Symbol))
+			}
+		}
+		if len(parts) > 0 {
+			return strings.Join(parts, "; ")
+		}
+	}
+	if c.Vulnerability.Summary != "" {
+		return c.Vulnerability.Summary
+	}
+	if c.Vulnerability.Description != "" {
+		desc := strings.TrimSpace(c.Vulnerability.Description)
+		if idx := strings.Index(desc, "\n\n"); idx > 0 {
+			desc = desc[:idx]
+		}
+		if len(desc) > 300 {
+			if idx := strings.Index(desc[200:], ". "); idx > 0 {
+				desc = desc[:200+idx+1]
+			}
+		}
+		return desc
+	}
+	return "дефект в реализации библиотеки"
+}
+
+func linkedPackages(c *domain.AnalysisCase) map[string]bool {
+	for _, e := range c.EvidenceGraph.EvidenceList() {
+		if e.Kind == domain.EvidencePackageList {
+			if s, err := affected.PackageImportPaths([]byte(e.Content)); err == nil {
+				return s
+			}
+		}
+	}
+	return nil
+}
+
+type locusSymbolNote struct {
+	Symbol domain.SymbolRef
+	Basis  string
+}
+
+func splitAdvisoryPackages(c *domain.AnalysisCase) (absentPkgs, presentPkgs []string, presentNotes []locusSymbolNote) {
+	linked := linkedPackages(c)
+	advisoryPkgs := map[string]bool{}
+
+	if c.Exploit != nil {
+		for _, s := range c.Exploit.LocusSubjects {
+			advisoryPkgs[s.Package] = true
+		}
+	}
+	for _, ap := range c.Vulnerability.AffectedPackages {
+		if ap.Path != "" {
+			advisoryPkgs[ap.Path] = true
+		}
+	}
+
+	for pkg := range advisoryPkgs {
+		if linked != nil {
+			if !linked[pkg] {
+				absentPkgs = append(absentPkgs, pkg)
+			} else {
+				presentPkgs = append(presentPkgs, pkg)
+			}
+		}
+	}
+	sort.Strings(absentPkgs)
+	sort.Strings(presentPkgs)
+
+	seenSym := map[domain.SymbolRef]bool{}
+	if c.Exploit != nil {
+		for _, d := range c.Exploit.NonLocusBasis {
+			if linked != nil && linked[d.Symbol.Package] && !seenSym[d.Symbol] {
+				seenSym[d.Symbol] = true
+				presentNotes = append(presentNotes, locusSymbolNote{Symbol: d.Symbol, Basis: d.Basis})
+			}
+		}
+		for _, d := range c.Exploit.ProposedNonLocus {
+			if linked != nil && linked[d.Symbol.Package] && !seenSym[d.Symbol] {
+				seenSym[d.Symbol] = true
+				presentNotes = append(presentNotes, locusSymbolNote{Symbol: d.Symbol, Basis: d.Basis})
+			}
+		}
+	}
+	return absentPkgs, presentPkgs, presentNotes
+}
+
+func formatExposureParagraph(c *domain.AnalysisCase, absentPkgs []string) string {
+	var inbounds, outbounds []string
+	for _, f := range c.EvidenceGraph.ExposuresList() {
+		loc := f.File
+		if f.Line > 0 {
+			loc = fmt.Sprintf("%s:%d", f.File, f.Line)
+		}
+		desc := fmt.Sprintf("`%s` (через `%s`)", loc, f.Target)
+		if f.Direction == "inbound" {
+			inbounds = append(inbounds, desc)
+		} else if f.Direction == "outbound" {
+			outbounds = append(outbounds, desc)
+		}
+	}
+	var parts []string
+	if len(inbounds) > 0 {
+		parts = append(parts, fmt.Sprintf("В коде проекта сервер создаётся в: %s.", strings.Join(inbounds, ", ")))
+	}
+	if len(outbounds) > 0 {
+		parts = append(parts, fmt.Sprintf("Клиентские подключения: %s.", strings.Join(outbounds, ", ")))
+	}
+	if len(absentPkgs) > 0 {
+		parts = append(parts, fmt.Sprintf("Инициализация или вызовы через отсутствующие уязвимые пакеты (`%s`) в коде проекта не используются.",
+			strings.Join(absentPkgs, "`, `")))
+	}
+	return strings.Join(parts, " ")
+}
+
+func formatExposureSummary(c *domain.AnalysisCase) string {
+	var list []string
+	for _, f := range c.EvidenceGraph.ExposuresList() {
+		loc := f.File
+		if f.Line > 0 {
+			loc = fmt.Sprintf("%s:%d", f.File, f.Line)
+		}
+		list = append(list, fmt.Sprintf("`%s` (`%s`)", loc, f.Target))
+	}
+	return strings.Join(list, ", ")
+}
+
+func formatPresentSymbolsParagraph(notes []locusSymbolNote) string {
+	var b strings.Builder
+	b.WriteString("То, что связанные пакеты входят в сборку, уязвимости не создаёт. Функции из advisory в скомпилированных пакетах:\n")
+	for _, n := range notes {
+		basis := n.Basis
+		if basis == "" {
+			basis = "дефектный код отсутствует"
+		}
+		fmt.Fprintf(&b, "- `%s.%s`: %s\n", n.Symbol.Package, n.Symbol.Symbol, basis)
+	}
+	b.WriteString("Эти функции выполняют лишь диспетчеризацию или вспомогательную проверку, дефектная логика в них отсутствует, поэтому исполнение до дефекта не доходит.")
+	return b.String()
+}
+
+func residualRisk(c *domain.AnalysisCase, absentPkgs []string) string {
+	mod, _ := moduleAndVersion(c)
+	_, best, ok := FixTarget(c)
+	var fixNote string
+	if ok && best != "" {
+		fixNote = fmt.Sprintf(" Для устранения потребуется обновление `%s` до версии не ниже `%s`.", mod, best)
+	} else if len(c.Vulnerability.FixedVersions) > 0 {
+		fixNote = fmt.Sprintf(" Для устранения потребуется обновление до версии `%s`.", c.Vulnerability.FixedVersions[0])
+	}
+
+	if len(absentPkgs) > 0 {
+		return fmt.Sprintf("Остаточный риск: если позже в проект будет добавлен импорт пакетов `%s` или сервер/клиент перейдёт на их использование, уязвимость станет применима.%s",
+			strings.Join(absentPkgs, "`, `"), fixNote)
+	}
+	if fixNote != "" {
+		return "Остаточный риск: при изменении конфигурации или пути вызовов уязвимость может стать активной." + fixNote
+	}
+	return ""
+}
+
+func rationaleNoExploitPathFound(c *domain.AnalysisCase) string {
+	var b strings.Builder
+	repo := shortRepo(c.Product.Repository)
+	mod, ver := moduleAndVersion(c)
+	commit := shortCommit(c.Product.Commit)
+	absentPkgs, _, presentNotes := splitAdvisoryPackages(c)
+
+	b.WriteString("Not Exploitable (Уязвимость не эксплуатируется).\n\n")
+
+	if mod != "" && ver != "" {
+		fmt.Fprintf(&b, "Библиотека в %s действительно `%s %s`, но код %s в сборку не входит и вызвать его нельзя. Это не ложное срабатывание (False Positive): сканер определил версию правильно, однако в данном снимке приложения уязвимый путь исполнения отсутствует.\n\n",
+			repo, mod, ver, c.Vulnerability.ID)
+	}
+
+	env := formatEnv(c)
+	if commit != "" {
+		if mod != "" && ver != "" {
+			fmt.Fprintf(&b, "Проверено по репозиторию `%s`, коммит `%s`%s. В `go.mod` зависимость `%s` зафиксирована на версии `%s`.\n\n",
+				c.Product.Repository, commit, env, mod, ver)
+		} else {
+			fmt.Fprintf(&b, "Проверено по репозиторию `%s`, коммит `%s`%s.\n\n",
+				c.Product.Repository, commit, env)
+		}
+	}
+
+	fmt.Fprintf(&b, "%s — %s.\n\n", c.Vulnerability.ID, defectDescription(c))
+
+	if len(absentPkgs) > 0 {
+		fmt.Fprintf(&b, "В графе зависимостей сборки (`go list -deps`) пакеты `%s` отсутствуют и в бинарный файл не попадают.\n\n",
+			strings.Join(absentPkgs, "`, `"))
+	}
+
+	if expText := formatExposureParagraph(c, absentPkgs); expText != "" {
+		b.WriteString(expText)
+		b.WriteString("\n\n")
+	}
+
+	if len(presentNotes) > 0 {
+		b.WriteString(formatPresentSymbolsParagraph(presentNotes))
+		b.WriteString("\n\n")
+	}
+
+	if risk := residualRisk(c, absentPkgs); risk != "" {
+		b.WriteString(risk)
+		b.WriteString("\n\n")
+	}
+
+	b.WriteString("Текст выше можно использовать в задаче трекера как обоснование статуса **Not Exploitable**.")
+	return b.String()
+}
+
+func rationaleNotAffected(c *domain.AnalysisCase) string {
+	var b strings.Builder
+	repo := shortRepo(c.Product.Repository)
+	mod, ver := moduleAndVersion(c)
+	commit := shortCommit(c.Product.Commit)
+	env := formatEnv(c)
+
+	b.WriteString("Not Affected (Уязвимость не применима к сервису).\n\n")
+
+	if c.Affected != nil && c.Affected.VersionAffected == domain.ClaimFalse {
+		fmt.Fprintf(&b, "Библиотека `%s` в %s используется в версии `%s`, которая не входит в диапазон уязвимых версий. Предупреждение сканера не применимо к текущей версии.\n\n",
+			mod, repo, ver)
+	} else if c.Affected != nil && c.Affected.ModulePresent == domain.ClaimFalse {
+		fmt.Fprintf(&b, "Модуль `%s` не входит в граф зависимостей проекта %s (`go list -m all`). Код библиотеки в проекте отсутствует.\n\n",
+			mod, repo)
+	} else if c.Affected != nil && c.Affected.PackagePresent == domain.ClaimFalse {
+		fmt.Fprintf(&b, "Библиотека `%s %s` присутствует в `go.mod`, но ни один из уязвимых пакетов не импортируется кодом проекта %s (`go list -deps`). Код не скомпилирован в бинарный файл.\n\n",
+			mod, ver, repo)
+	} else {
+		fmt.Fprintf(&b, "Уязвимость %s не применима к снимку %s: %s.\n\n",
+			c.Vulnerability.ID, repo, c.Verdict.Reason)
+	}
+
+	if commit != "" {
+		fmt.Fprintf(&b, "Проверено по репозиторию `%s`, коммит `%s`%s.\n\n",
+			c.Product.Repository, commit, env)
+	}
+
+	fmt.Fprintf(&b, "%s — %s.\n\n", c.Vulnerability.ID, defectDescription(c))
+
+	b.WriteString("Изменений в коде или обновления зависимостей в данном снимке не требуется.\n\n")
+
+	b.WriteString("Текст выше можно использовать в задаче трекера как обоснование закрытия со статусом **Not Affected**.")
+	return b.String()
+}
+
+func rationaleExploitable(c *domain.AnalysisCase) string {
+	var b strings.Builder
+	repo := shortRepo(c.Product.Repository)
+	mod, ver := moduleAndVersion(c)
+	commit := shortCommit(c.Product.Commit)
+	env := formatEnv(c)
+
+	b.WriteString("Exploitable (Уязвимость подтверждена и эксплуатируема).\n\n")
+
+	fmt.Fprintf(&b, "В проекте %s подтверждена возможность эксплуатации уязвимости %s (библиотека `%s %s`).\n\n",
+		repo, c.Vulnerability.ID, mod, ver)
+
+	if commit != "" {
+		fmt.Fprintf(&b, "Проверено по репозиторию `%s`, коммит `%s`%s.\n\n",
+			c.Product.Repository, commit, env)
+	}
+
+	fmt.Fprintf(&b, "%s — %s.\n\n", c.Vulnerability.ID, defectDescription(c))
+
+	b.WriteString("Факты проверки:\n")
+	b.WriteString("- Уязвимый пакет входит в граф зависимостей сборки (`go list -deps`) и скомпилирован в бинарный файл.\n")
+	if expText := formatExposureSummary(c); expText != "" {
+		fmt.Fprintf(&b, "- Входные точки взаимодействия: %s.\n", expText)
+	}
+	b.WriteString("- Все обязательные условия эксплуатации дефекта подтверждены.\n\n")
+
+	_, best, ok := FixTarget(c)
+	if ok && best != "" {
+		fmt.Fprintf(&b, "Требуется исправление: обновите зависимость `%s` до версии `%s` (`go get %s@%s && go mod tidy`) либо примените компенсирующие меры защиты.\n\n",
+			mod, best, mod, best)
+	} else {
+		b.WriteString("Требуется исправление или применение компенсирующих мер защиты.\n\n")
+	}
+
+	b.WriteString("Текст выше можно использовать в задаче трекера как обоснование необходимости исправления (статус **Exploitable**).")
+	return b.String()
+}
+
+func rationaleInconclusive(c *domain.AnalysisCase) string {
+	var b strings.Builder
+	repo := shortRepo(c.Product.Repository)
+	mod, ver := moduleAndVersion(c)
+	commit := shortCommit(c.Product.Commit)
+	env := formatEnv(c)
+	absentPkgs, _, presentNotes := splitAdvisoryPackages(c)
+
+	b.WriteString("Требуется ручной анализ (Inconclusive).\n\n")
+
+	fmt.Fprintf(&b, "Для уязвимости %s в проекте %s (библиотека `%s %s`) автоматический анализ не смог сделать однозначный вывод: %s.\n\n",
+		c.Vulnerability.ID, repo, mod, ver, c.Verdict.Reason)
+
+	if commit != "" {
+		fmt.Fprintf(&b, "Проверено по репозиторию `%s`, коммит `%s`%s.\n\n",
+			c.Product.Repository, commit, env)
+	}
+
+	fmt.Fprintf(&b, "%s — %s.\n\n", c.Vulnerability.ID, defectDescription(c))
+
+	b.WriteString("Результаты проверки:\n")
+	if len(absentPkgs) > 0 {
+		fmt.Fprintf(&b, "- Пакеты `%s` отсутствуют в графе сборки (`go list -deps`) и физически не скомпилированы.\n",
+			strings.Join(absentPkgs, "`, `"))
+	}
+	if len(presentNotes) > 0 {
+		var names []string
+		for _, n := range presentNotes {
+			names = append(names, fmt.Sprintf("`%s.%s` (%s)", n.Symbol.Package, n.Symbol.Symbol, n.Basis))
+		}
+		fmt.Fprintf(&b, "- Для функций в скомпилированных пакетах сформированы рекомендации об исключении: %s.\n",
+			strings.Join(names, ", "))
+		b.WriteString("  Для автоматического применения рекомендаций можно запустить анализ с флагом `--accept-locus-proposals`.\n")
+	}
+	if expText := formatExposureSummary(c); expText != "" {
+		fmt.Fprintf(&b, "- Точки взаимодействия в коде: %s.\n", expText)
+	}
+	b.WriteString("\nТекст выше можно использовать в задаче трекера для описания текущего статуса и открытых вопросов для эксперта.")
+	return b.String()
 }
 
 // FixTarget picks the smallest published fixed version above the

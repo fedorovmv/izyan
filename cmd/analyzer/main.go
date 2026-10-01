@@ -21,6 +21,7 @@ import (
 	"example.com/vuln-analyzer/internal/goanalysis"
 	"example.com/vuln-analyzer/internal/llm"
 	"example.com/vuln-analyzer/internal/persistence/filesystem"
+	"example.com/vuln-analyzer/internal/report"
 	"example.com/vuln-analyzer/internal/repository"
 	"example.com/vuln-analyzer/internal/review"
 	"example.com/vuln-analyzer/internal/rootcause"
@@ -458,6 +459,9 @@ func printCase(c *domain.AnalysisCase, caseDir string) {
 			strings.Join(parts, " "), total, c.Workflow.Usage.LLMCalls)
 	}
 	fmt.Printf("report: %s\n", filepath.Join(caseDir, string(c.ID), "report.md"))
+	if r := report.TrackerRationale(c); r != "" {
+		fmt.Printf("\n--- Обоснование для трекера (Tracker-ready rationale) ---\n%s\n---------------------------------------------------------\n", r)
+	}
 }
 
 // loadLLMEnv loads the LLM dotenv file: explicit --llm-env wins, else it

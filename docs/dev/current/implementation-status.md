@@ -158,7 +158,7 @@ adapter.
   прыгала прямо в EVALUATE_VERDICT минуя REVIEW.
 - `internal/tracker.Sink` + `FileSink`: tracker-ready markdown публикуется
   в `tracker_comment.md` рядом с report; сбой публикации → tool
-  limitation, не fail. Слот для реального адаптера (SberTrack и т.п.) —
+  limitation, не fail. Слот для реального адаптера трекера —
   без изменения workflow.
 - report.md: секция `## Review` (результат + findings по каждому REV-*).
 - Тесты: reviewer unit (7 кейсов), repair-демоция TRUE→UNKNOWN, budget
@@ -190,7 +190,7 @@ tracker API sink.
 - Инвариант сохранён: LLM-текст не evidence; все LLM-результаты проходят
   детерминистическую верификацию до влияния на вердикт.
 
-### Live-проверка (Qwen, api.ai.sbt)
+### Live-проверка (Qwen)
 
 - GO-2025-3595 full-auto: build-модель добавила `C-CONSTRAINT`
   (INPUT_CONSTRAINT — unquoted attr + `/` → self-closing; реальная

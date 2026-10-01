@@ -1,6 +1,6 @@
 // Package tracker isolates publishing the human-readable verdict to an
 // issue tracker. FileSink writes the markdown comment to disk; a real
-// tracker adapter (e.g. SberTrack) can implement Sink later without
+// tracker adapter can implement Sink later without
 // touching the workflow.
 package tracker
 
