@@ -34,7 +34,7 @@ func (v Verifier) verifyLocusAbsent(c *domain.AnalysisCase, claim domain.Claim,
 	if len(subjects) == 0 {
 		return setNeg(claim, &domain.NegativeVerification{
 			Status: domain.NegativeInsufficientScope,
-			Notes:  "у условия нет символов сайта дефекта",
+			Notes:  "в условии не указаны уязвимые функции",
 		})
 	}
 
@@ -57,15 +57,15 @@ func (v Verifier) verifyLocusAbsent(c *domain.AnalysisCase, claim domain.Claim,
 	if len(present) > 0 {
 		nv.Status = domain.NegativeContradicted
 		nv.Notes = fmt.Sprintf(
-			"пакет(ы) сайта дефекта %s присутствуют в графе сборки снапшота; "+
-				"код дефекта входит в сборку, отсутствие пакета не выполняется",
+			"пакеты с уязвимым кодом (%s) входят в граф сборки снапшота; "+
+				"код дефекта включён в приложение, условие отсутствия пакетов не выполняется",
 			strings.Join(present, ", "))
 		return setNeg(claim, nv)
 	}
 	nv.Notes = fmt.Sprintf(
-		"все %d пакет(ов) сайта дефекта отсутствуют в графе go list -deps", len(subjects))
+		"все пакеты с уязвимым кодом (%d) отсутствуют в графе сборки go list -deps", len(subjects))
 	nv.Limitations = append(nv.Limitations,
-		"отсутствие проверено в контексте сборки, под которым собран список пакетов (GOOS/GOARCH/теги); другие конфигурации могут включить пакет в сборку")
+		"отсутствие пакетов проверено для параметров сборки (GOOS/GOARCH/теги); в других конфигурациях они могут попасть в бинарник")
 
 	// Coverage gap check: files excluded under the recorded build context
 	// (other GOOS/GOARCH, build tags, cgo) may still import a locus package
@@ -83,7 +83,7 @@ func (v Verifier) verifyLocusAbsent(c *domain.AnalysisCase, claim domain.Claim,
 			names = append(names, d.Symbol.Package+"."+d.Symbol.Symbol)
 		}
 		nv.Limitations = append(nv.Limitations, fmt.Sprintf(
-			"покрытие сайта дефекта сужено экспертными решениями `non_locus` (не машинные данные): %s",
+			"проверка уязвимости сужена экспертными решениями `non_locus` (ручное подтверждение, не автоматическое доказательство): %s",
 			strings.Join(names, ", ")))
 	}
 	return setNeg(claim, nv)
@@ -160,8 +160,8 @@ func excludedBuildImports(c *domain.AnalysisCase, subjects []domain.SymbolRef) s
 		return ""
 	}
 	return fmt.Sprintf(
-		"файл(ы) продукта, исключённые записанным контекстом сборки, импортируют пакет(ы) сайта дефекта: %s — "+
-			"сборка с другими тегами/GOOS/GOARCH/cgo включила бы их",
+		"файлы продукта, не вошедшие в текущую конфигурацию сборки, импортируют пакеты с уязвимым кодом: %s — "+
+			"при сборке с другими тегами или под другую ОС они могут попасть в бинарник",
 		strings.Join(gaps, ", "))
 }
 
@@ -175,10 +175,10 @@ func packageImportSet(c *domain.AnalysisCase) (map[string]bool, domain.EvidenceI
 		set, err := affected.PackageImportPaths([]byte(e.Content))
 		if err != nil {
 			return nil, "", fmt.Errorf(
-				"данные списка пакетов %s не декодируются: %w; отсутствие в графе сборки не проверено", e.ID, err)
+				"не удалось прочитать список пакетов %s: %w; отсутствие в графе сборки не проверено", e.ID, err)
 		}
 		return set, e.ID, nil
 	}
 	return nil, "", fmt.Errorf(
-		"нет данных списка пакетов (go list -deps); отсутствие в графе сборки не проверено")
+		"нет данных о составе сборки (go list -deps); отсутствие в графе сборки не проверено")
 }

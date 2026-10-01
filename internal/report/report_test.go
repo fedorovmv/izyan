@@ -76,8 +76,8 @@ func TestMachineAssessment(t *testing.T) {
 		c := base(`{"ImportPath":"x/internal/transport"}` + "\n" + `{"ImportPath":"x"}`)
 		n := machineAssessment(c)
 		if !strings.Contains(n, "УСЛОВНО") ||
-			!strings.Contains(n, "**предлагает**") ||
-			!strings.Contains(n, "**не предлагается**") ||
+			!strings.Contains(n, "**рекомендуется исключить**") ||
+			!strings.Contains(n, "**исключение не рекомендуется**") ||
 			!strings.Contains(n, "x/internal/xds/server.Site") {
 			t.Fatalf("assessment=%q", n)
 		}
@@ -86,13 +86,13 @@ func TestMachineAssessment(t *testing.T) {
 		c := base(`{"ImportPath":"x/internal/transport"}` + "\n" + `{"ImportPath":"x"}`)
 		c.Exploit.ProposedNonLocus = append(c.Exploit.ProposedNonLocus,
 			domain.LocusDecision{Symbol: sym("x/internal/transport", "B"), Authority: "machine-proposal"})
-		if n := machineAssessment(c); !strings.Contains(n, "ОТКЛОНИТЬ после утверждения") {
+		if n := machineAssessment(c); !strings.Contains(n, "ОТКЛОНИТЬ ПОСЛЕ ПОДТВЕРЖДЕНИЯ") {
 			t.Fatalf("assessment=%q", n)
 		}
 	})
 	t.Run("all locus packages absent is dismissible outright", func(t *testing.T) {
 		c := base(`{"ImportPath":"x"}`)
-		if n := machineAssessment(c); !strings.Contains(n, "**Предлагаемая оценка: ОТКЛОНИТЬ**") {
+		if n := machineAssessment(c); !strings.Contains(n, "**Предлагаемая оценка: МОЖНО ОТКЛОНИТЬ**") {
 			t.Fatalf("assessment=%q", n)
 		}
 	})
