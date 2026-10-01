@@ -434,20 +434,39 @@ func allLimitations(c *domain.AnalysisCase) []string {
 // in Russian ready for issue trackers, detailing the verdict,
 // product facts, build graph status, defect mechanism, and residual risks.
 func TrackerRationale(c *domain.AnalysisCase) string {
+	baseRationale := ""
 	if c.Verdict == nil {
-		return "Анализ уязвимости не завершён (вердикт не вынесен)."
+		baseRationale = "Анализ уязвимости не завершён (вердикт не вынесен)."
+	} else {
+		switch c.Verdict.Verdict {
+		case domain.VerdictNoExploitPathFound:
+			baseRationale = rationaleNoExploitPathFound(c)
+		case domain.VerdictNotAffected:
+			baseRationale = rationaleNotAffected(c)
+		case domain.VerdictExploitable:
+			baseRationale = rationaleExploitable(c)
+		default:
+			baseRationale = rationaleInconclusive(c)
+		}
 	}
 
-	switch c.Verdict.Verdict {
-	case domain.VerdictNoExploitPathFound:
-		return rationaleNoExploitPathFound(c)
-	case domain.VerdictNotAffected:
-		return rationaleNotAffected(c)
-	case domain.VerdictExploitable:
-		return rationaleExploitable(c)
-	default:
-		return rationaleInconclusive(c)
+	// Enrich with Justification dossier if available
+	if c.Justification != nil {
+		var b strings.Builder
+		b.WriteString(baseRationale)
+		if c.Justification.TechnicalMechanism != "" {
+			b.WriteString(fmt.Sprintf("\n\n**Архитектурный контекст уязвимости:**\n%s", c.Justification.TechnicalMechanism))
+		}
+		if len(c.Justification.HumanRemainder) > 0 {
+			b.WriteString("\n\n**Открытые вопросы для экспертного подтверждения (Human Remainder):**\n")
+			for _, rem := range c.Justification.HumanRemainder {
+				b.WriteString(fmt.Sprintf("- %s\n", rem.Question))
+			}
+		}
+		return b.String()
 	}
+
+	return baseRationale
 }
 
 func rationale(c *domain.AnalysisCase) string {
