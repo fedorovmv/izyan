@@ -34,7 +34,7 @@ func (v Verifier) verifyLocusAbsent(c *domain.AnalysisCase, claim domain.Claim,
 	if len(subjects) == 0 {
 		return setNeg(claim, &domain.NegativeVerification{
 			Status: domain.NegativeInsufficientScope,
-			Notes:  "no locus subjects on condition",
+			Notes:  "у условия нет субъектов локуса",
 		})
 	}
 
@@ -57,15 +57,15 @@ func (v Verifier) verifyLocusAbsent(c *domain.AnalysisCase, claim domain.Claim,
 	if len(present) > 0 {
 		nv.Status = domain.NegativeContradicted
 		nv.Notes = fmt.Sprintf(
-			"locus package(s) %s are linked into the snapshot build graph; "+
-				"the defect code is present and package-absence does not hold",
+			"пакет(ы) локуса %s слинкованы в граф сборки снапшота; "+
+				"код дефекта присутствует, отсутствие пакета не выполняется",
 			strings.Join(present, ", "))
 		return setNeg(claim, nv)
 	}
 	nv.Notes = fmt.Sprintf(
-		"all %d defect-locus package(s) absent from the go list -deps build graph", len(subjects))
+		"все %d пакет(ов) локуса отсутствуют в графе go list -deps", len(subjects))
 	nv.Limitations = append(nv.Limitations,
-		"absence verified under the build context the package list was produced with (GOOS/GOARCH/tags); other configurations may link the package")
+		"отсутствие проверено в build-контексте, под которым собран package-list (GOOS/GOARCH/теги); другие конфигурации могут слинковать пакет")
 
 	// Coverage gap check: files excluded under the recorded build context
 	// (other GOOS/GOARCH, build tags, cgo) may still import a locus package
@@ -83,7 +83,7 @@ func (v Verifier) verifyLocusAbsent(c *domain.AnalysisCase, claim domain.Claim,
 			names = append(names, d.Symbol.Package+"."+d.Symbol.Symbol)
 		}
 		nv.Limitations = append(nv.Limitations, fmt.Sprintf(
-			"locus coverage reduced by expert non-locus decisions (not machine evidence): %s",
+			"покрытие локуса сужено экспертными non-locus решениями (не машинное evidence): %s",
 			strings.Join(names, ", ")))
 	}
 	return setNeg(claim, nv)
@@ -160,8 +160,8 @@ func excludedBuildImports(c *domain.AnalysisCase, subjects []domain.SymbolRef) s
 		return ""
 	}
 	return fmt.Sprintf(
-		"product file(s) excluded under the recorded build context import locus package(s): %s — "+
-			"a build with different tags/GOOS/GOARCH/cgo would link them",
+		"файл(ы) продукта, исключённые записанным build-контекстом, импортируют пакет(ы) локуса: %s — "+
+			"сборка с другими тегами/GOOS/GOARCH/cgo слинковала бы их",
 		strings.Join(gaps, ", "))
 }
 
@@ -175,10 +175,10 @@ func packageImportSet(c *domain.AnalysisCase) (map[string]bool, domain.EvidenceI
 		set, err := affected.PackageImportPaths([]byte(e.Content))
 		if err != nil {
 			return nil, "", fmt.Errorf(
-				"package-list evidence %s undecodable: %w; build-graph absence unverified", e.ID, err)
+				"package-list evidence %s не декодируется: %w; отсутствие в build-графе не проверено", e.ID, err)
 		}
 		return set, e.ID, nil
 	}
 	return nil, "", fmt.Errorf(
-		"no package-list evidence (go list -deps); build-graph absence unverified")
+		"нет package-list evidence (go list -deps); отсутствие в build-графе не проверено")
 }

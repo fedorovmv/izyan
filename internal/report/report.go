@@ -110,7 +110,7 @@ func Markdown(c *domain.AnalysisCase) string {
 			b.WriteString("\n")
 		}
 		if len(c.Exploit.ProposedNonLocus) > 0 || len(c.Exploit.LocusSubjects) > 0 {
-			b.WriteString("### Machine assessment — proposal, not a verdict\n\n")
+			b.WriteString("### Машинная оценка — предложение, не вердикт\n\n")
 			b.WriteString(machineAssessment(c))
 			b.WriteString("\n")
 		}
@@ -333,46 +333,46 @@ func machineAssessment(c *domain.AnalysisCase) string {
 		break
 	}
 	if set == nil {
-		return "Package-absent falsifier cannot be assessed: no decodable `go list -deps` package-list evidence.\n"
+		return "Оценить falsifier отсутствия пакета нельзя: нет декодируемого evidence `go list -deps`.\n"
 	}
 
 	var b strings.Builder
-	b.WriteString("The package-absent falsifier applies only if every defect-locus symbol in a *linked* package carries a recorded expert `non_locus` decision:\n\n")
+	b.WriteString("Falsifier отсутствия пакета применим, только если по каждому символу локуса в *слинкованном* пакете записано экспертное решение `non_locus`:\n\n")
 	var pending, flagged int
 	for _, s := range c.Exploit.LocusSubjects {
 		name := "`" + s.Package + "." + s.Symbol + "`"
 		if !set[s.Package] {
-			fmt.Fprintf(&b, "- %s — package **absent** from `go list -deps` — covered by the falsifier\n", name)
+			fmt.Fprintf(&b, "- %s — пакет **отсутствует** в `go list -deps` — покрыт falsifier'ом\n", name)
 			continue
 		}
 		pending++
 		if d, ok := proposed[s]; ok {
-			fmt.Fprintf(&b, "- %s — package linked — machine **proposes** exclusion: %s\n", name, d.Basis)
+			fmt.Fprintf(&b, "- %s — пакет слинкован — машина **предлагает** исключение: %s\n", name, d.Basis)
 			continue
 		}
 		flagged++
 		if d, ok := annotated[s]; ok {
-			fmt.Fprintf(&b, "- %s — package linked — **not proposed**: machine annotation `%s` — excluding it means the expert overrides this flag\n", name, d.Basis)
+			fmt.Fprintf(&b, "- %s — пакет слинкован — **не предлагается**: машинная аннотация `%s` — исключение означает, что эксперт опровергает этот флаг\n", name, d.Basis)
 		} else {
-			fmt.Fprintf(&b, "- %s — package linked — **not proposed**, no machine annotation — expert decision needed\n", name)
+			fmt.Fprintf(&b, "- %s — пакет слинкован — **не предлагается**, машинной аннотации нет — нужно решение эксперта\n", name)
 		}
 	}
 	b.WriteString("\n")
 	switch {
 	case pending == 0:
-		b.WriteString("**Proposed disposition: DISMISSIBLE** — all locus packages are absent from the build graph; the falsifier stands on its own.\n")
+		b.WriteString("**Предлагаемая оценка: ОТКЛОНИТЬ** — все пакеты локуса отсутствуют в графе сборки; falsifier стоит сам по себе.\n")
 	case flagged == 0:
 		fmt.Fprintf(&b,
-			"**Proposed disposition: DISMISSIBLE pending approval** — record the %d machine proposal(s) as `non_locus` decisions and the remaining locus packages are all absent → `NO_EXPLOIT_PATH_FOUND` follows.\n",
+			"**Предлагаемая оценка: ОТКЛОНИТЬ после утверждения** — запишите %d машинных предложения как `non_locus` — оставшиеся пакеты локуса все отсутствуют → `NO_EXPLOIT_PATH_FOUND`.\n",
 			pending)
 	default:
 		fmt.Fprintf(&b,
-			"**Proposed disposition: CONDITIONAL** — dismissal requires recorded `non_locus` decisions for all %d linked-package symbol(s) above; %d carry machine defect-site flags the expert would have to override.\n",
+			"**Предлагаемая оценка: УСЛОВНО** — для отклонения нужны записанные решения `non_locus` по всем %d символам в слинкованных пакетах выше; %d несут машинный флаг «возможный сайт дефекта», который эксперт должен опровергнуть.\n",
 			pending, flagged)
 	}
-	b.WriteString("\nOutside machine verification (assumptions the reviewer takes on approval):\n")
-	b.WriteString("- the advisory declared set is complete — a defect site outside it is invisible to this contract\n")
-	b.WriteString("- recorded expert decisions are true — the falsifier checks their coverage, not their correctness\n")
+	b.WriteString("\nВне машинной проверки (допущения, которые ревьюер принимает при утверждении):\n")
+	b.WriteString("- declared-множество advisory полно — сайт дефекта вне объявленных символов этому контракту невидим\n")
+	b.WriteString("- записанные экспертные решения истинны — falsifier проверяет их покрытие, а не корректность\n")
 	goos, goarch := c.Product.GOOS, c.Product.GOARCH
 	if goos == "" {
 		goos = "?"
@@ -384,7 +384,7 @@ func machineAssessment(c *domain.AnalysisCase) string {
 	if tags == "" {
 		tags = "none recorded"
 	}
-	fmt.Fprintf(&b, "- the recorded build context (%s/%s, tags: %s) matches the deployment configuration\n",
+	fmt.Fprintf(&b, "- записанный build-контекст (%s/%s, теги: %s) соответствует конфигурации развёртывания\n",
 		goos, goarch, tags)
 	return b.String()
 }

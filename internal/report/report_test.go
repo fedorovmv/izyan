@@ -75,9 +75,9 @@ func TestMachineAssessment(t *testing.T) {
 	t.Run("linked packages split proposals from flagged symbols", func(t *testing.T) {
 		c := base(`{"ImportPath":"x/internal/transport"}` + "\n" + `{"ImportPath":"x"}`)
 		n := machineAssessment(c)
-		if !strings.Contains(n, "CONDITIONAL") ||
-			!strings.Contains(n, "machine **proposes**") ||
-			!strings.Contains(n, "**not proposed**") ||
+		if !strings.Contains(n, "УСЛОВНО") ||
+			!strings.Contains(n, "**предлагает**") ||
+			!strings.Contains(n, "**не предлагается**") ||
 			!strings.Contains(n, "x/internal/xds/server.Site") {
 			t.Fatalf("assessment=%q", n)
 		}
@@ -86,20 +86,20 @@ func TestMachineAssessment(t *testing.T) {
 		c := base(`{"ImportPath":"x/internal/transport"}` + "\n" + `{"ImportPath":"x"}`)
 		c.Exploit.ProposedNonLocus = append(c.Exploit.ProposedNonLocus,
 			domain.LocusDecision{Symbol: sym("x/internal/transport", "B"), Authority: "machine-proposal"})
-		if n := machineAssessment(c); !strings.Contains(n, "DISMISSIBLE pending approval") {
+		if n := machineAssessment(c); !strings.Contains(n, "ОТКЛОНИТЬ после утверждения") {
 			t.Fatalf("assessment=%q", n)
 		}
 	})
 	t.Run("all locus packages absent is dismissible outright", func(t *testing.T) {
 		c := base(`{"ImportPath":"x"}`)
-		if n := machineAssessment(c); !strings.Contains(n, "**Proposed disposition: DISMISSIBLE**") {
+		if n := machineAssessment(c); !strings.Contains(n, "**Предлагаемая оценка: ОТКЛОНИТЬ**") {
 			t.Fatalf("assessment=%q", n)
 		}
 	})
 	t.Run("missing package-list evidence cannot be assessed", func(t *testing.T) {
 		c := base("")
 		c.EvidenceGraph.Evidence = nil
-		if n := machineAssessment(c); !strings.Contains(n, "cannot be assessed") {
+		if n := machineAssessment(c); !strings.Contains(n, "нельзя") {
 			t.Fatalf("assessment=%q", n)
 		}
 	})
