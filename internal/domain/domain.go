@@ -206,6 +206,7 @@ type RootCauseModel struct {
 	// surfaced to block positive verdicts on an incomplete model.
 	Unverified  []RootCause `json:"unverified,omitempty"`
 	Limitations []string    `json:"limitations,omitempty"`
+	FixDiff     string      `json:"fix_diff,omitempty"`
 }
 
 type ConditionKind string
