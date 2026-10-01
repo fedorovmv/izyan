@@ -45,7 +45,7 @@ func TestRemediationNoFixPublished(t *testing.T) {
 	}
 }
 
-func TestProposedFalsifierNoteAllAbsent(t *testing.T) {
+func TestMachineAssessment(t *testing.T) {
 	sym := func(pkg, s string) domain.SymbolRef {
 		return domain.SymbolRef{Package: pkg, Symbol: s}
 	}
@@ -58,8 +58,10 @@ func TestProposedFalsifierNoteAllAbsent(t *testing.T) {
 					sym("x/internal/xds/server", "Site"),
 				},
 				ProposedNonLocus: []domain.LocusDecision{
-					{Symbol: sym("x/internal/transport", "A"), Authority: "machine-proposal"},
-					{Symbol: sym("x/internal/transport", "B"), Authority: "machine-proposal"},
+					{Symbol: sym("x/internal/transport", "A"), Authority: "machine-proposal", Basis: "enabler-candidate"},
+				},
+				LocusAnnotations: []domain.LocusDecision{
+					{Symbol: sym("x/internal/transport", "B"), Authority: "machine-annotation", Basis: "guarded-site; fix hunk guards the faulting operation"},
 				},
 			},
 			EvidenceGraph: domain.EvidenceGraph{
@@ -70,31 +72,35 @@ func TestProposedFalsifierNoteAllAbsent(t *testing.T) {
 			},
 		}
 	}
-	t.Run("remaining package absent produces note", func(t *testing.T) {
+	t.Run("linked packages split proposals from flagged symbols", func(t *testing.T) {
 		c := base(`{"ImportPath":"x/internal/transport"}` + "\n" + `{"ImportPath":"x"}`)
-		if n := proposedFalsifierNote(c); !strings.Contains(n, "NO_EXPLOIT_PATH_FOUND") {
-			t.Fatalf("note=%q", n)
+		n := machineAssessment(c)
+		if !strings.Contains(n, "CONDITIONAL") ||
+			!strings.Contains(n, "machine **proposes**") ||
+			!strings.Contains(n, "**not proposed**") ||
+			!strings.Contains(n, "x/internal/xds/server.Site") {
+			t.Fatalf("assessment=%q", n)
 		}
 	})
-	t.Run("remaining package linked reports falsifier would not hold", func(t *testing.T) {
-		c := base(`{"ImportPath":"x/internal/transport"}` + "\n" + `{"ImportPath":"x/internal/xds/server"}`)
-		n := proposedFalsifierNote(c)
-		if !strings.Contains(n, "would **not** hold") || !strings.Contains(n, "x/internal/xds/server.Site") {
-			t.Fatalf("note=%q", n)
+	t.Run("all-proposed linked symbols give dismissible pending approval", func(t *testing.T) {
+		c := base(`{"ImportPath":"x/internal/transport"}` + "\n" + `{"ImportPath":"x"}`)
+		c.Exploit.ProposedNonLocus = append(c.Exploit.ProposedNonLocus,
+			domain.LocusDecision{Symbol: sym("x/internal/transport", "B"), Authority: "machine-proposal"})
+		if n := machineAssessment(c); !strings.Contains(n, "DISMISSIBLE pending approval") {
+			t.Fatalf("assessment=%q", n)
 		}
 	})
-	t.Run("missing package-list evidence yields no note", func(t *testing.T) {
+	t.Run("all locus packages absent is dismissible outright", func(t *testing.T) {
+		c := base(`{"ImportPath":"x"}`)
+		if n := machineAssessment(c); !strings.Contains(n, "**Proposed disposition: DISMISSIBLE**") {
+			t.Fatalf("assessment=%q", n)
+		}
+	})
+	t.Run("missing package-list evidence cannot be assessed", func(t *testing.T) {
 		c := base("")
 		c.EvidenceGraph.Evidence = nil
-		if n := proposedFalsifierNote(c); n != "" {
-			t.Fatalf("note=%q", n)
-		}
-	})
-	t.Run("no proposals yields no note", func(t *testing.T) {
-		c := base(`{"ImportPath":"x"}`)
-		c.Exploit.ProposedNonLocus = nil
-		if n := proposedFalsifierNote(c); n != "" {
-			t.Fatalf("note=%q", n)
+		if n := machineAssessment(c); !strings.Contains(n, "cannot be assessed") {
+			t.Fatalf("assessment=%q", n)
 		}
 	})
 }

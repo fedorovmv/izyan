@@ -109,15 +109,9 @@ func Markdown(c *domain.AnalysisCase) string {
 			}
 			b.WriteString("\n")
 		}
-		if len(c.Exploit.ProposedNonLocus) > 0 {
-			b.WriteString("### Proposed non-locus decisions\n\n")
-			b.WriteString("Machine proposals based on observed anchors — not verified, not used in the verdict. To approve, record as a `non_locus` decision and rerun:\n\n")
-			for _, d := range c.Exploit.ProposedNonLocus {
-				fmt.Fprintf(&b, "- `%s.%s` — %s\n", d.Symbol.Package, d.Symbol.Symbol, d.Basis)
-			}
-			if note := proposedFalsifierNote(c); note != "" {
-				fmt.Fprintf(&b, "\n%s\n", note)
-			}
+		if len(c.Exploit.ProposedNonLocus) > 0 || len(c.Exploit.LocusSubjects) > 0 {
+			b.WriteString("### Machine assessment — proposal, not a verdict\n\n")
+			b.WriteString(machineAssessment(c))
 			b.WriteString("\n")
 		}
 	}
@@ -308,62 +302,91 @@ func evidenceIDs(ids []domain.EvidenceID) []string {
 	return out
 }
 
-// proposedFalsifierNote renders the case-level consequence of approving
-// all machine non-locus proposals: it re-checks the reduced locus set
-// against the persisted `go list -deps` package list and reports per-
-// package status, so the reviewer sees exactly which symbol still blocks
-// the package-absent falsifier — an advisory-level question, not a
-// product code audit. Advisory text only — never part of the verdict.
-func proposedFalsifierNote(c *domain.AnalysisCase) string {
-	if c.Exploit == nil {
+// machineAssessment renders the case-level machine opinion: a proposed
+// disposition for the defect-locus falsifier, the expert decisions it
+// depends on, and the assumptions outside machine verification. The
+// package-absent falsifier needs every locus subject in a linked package
+// to carry a recorded expert exclusion — so the block lists, per declared
+// symbol, its package status and what the expert still has to decide.
+// Advisory text for review — never part of the verdict.
+func machineAssessment(c *domain.AnalysisCase) string {
+	if c.Exploit == nil || len(c.Exploit.LocusSubjects) == 0 {
 		return ""
 	}
-	proposed := map[domain.SymbolRef]bool{}
+	proposed := map[domain.SymbolRef]domain.LocusDecision{}
 	for _, d := range c.Exploit.ProposedNonLocus {
-		proposed[d.Symbol] = true
+		proposed[d.Symbol] = d
 	}
-	var remaining []domain.SymbolRef
-	for _, s := range c.Exploit.LocusSubjects {
-		if !proposed[s] {
-			remaining = append(remaining, s)
-		}
+	annotated := map[domain.SymbolRef]domain.LocusDecision{}
+	for _, d := range c.Exploit.LocusAnnotations {
+		annotated[d.Symbol] = d
 	}
-	if len(remaining) == 0 || len(remaining) == len(c.Exploit.LocusSubjects) {
-		return ""
-	}
+
+	var set map[string]bool
 	for _, e := range c.EvidenceGraph.EvidenceList() {
 		if e.Kind != domain.EvidencePackageList {
 			continue
 		}
-		set, err := affected.PackageImportPaths([]byte(e.Content))
-		if err != nil {
-			return ""
+		if s, err := affected.PackageImportPaths([]byte(e.Content)); err == nil {
+			set = s
 		}
-		var absent, linked []string
-		for _, s := range remaining {
-			if set[s.Package] {
-				linked = append(linked, "`"+s.Package+"."+s.Symbol+"`")
-			} else {
-				absent = append(absent, "`"+s.Package+"."+s.Symbol+"`")
-			}
-		}
-		head := fmt.Sprintf(
-			"**If all %d proposal(s) above are recorded as `non_locus` decisions**, the remaining locus set is:",
-			len(c.Exploit.LocusSubjects)-len(remaining))
-		for _, s := range absent {
-			head += fmt.Sprintf("\n- %s — package absent from `go list -deps`", s)
-		}
-		for _, s := range linked {
-			head += fmt.Sprintf("\n- %s — package linked into the build graph", s)
-		}
-		if len(linked) == 0 {
-			return head + "\n\nAll remaining packages are absent — `NO_EXPLOIT_PATH_FOUND` would follow after expert approval."
-		}
-		return head + fmt.Sprintf(
-			"\n\nPackage-absent falsifier would **not** hold: %d symbol(s) stay in linked package(s). The verdict would remain unchanged unless the expert also excludes them with a recorded basis.",
-			len(linked))
+		break
 	}
-	return ""
+	if set == nil {
+		return "Package-absent falsifier cannot be assessed: no decodable `go list -deps` package-list evidence.\n"
+	}
+
+	var b strings.Builder
+	b.WriteString("The package-absent falsifier applies only if every defect-locus symbol in a *linked* package carries a recorded expert `non_locus` decision:\n\n")
+	var pending, flagged int
+	for _, s := range c.Exploit.LocusSubjects {
+		name := "`" + s.Package + "." + s.Symbol + "`"
+		if !set[s.Package] {
+			fmt.Fprintf(&b, "- %s — package **absent** from `go list -deps` — covered by the falsifier\n", name)
+			continue
+		}
+		pending++
+		if d, ok := proposed[s]; ok {
+			fmt.Fprintf(&b, "- %s — package linked — machine **proposes** exclusion: %s\n", name, d.Basis)
+			continue
+		}
+		flagged++
+		if d, ok := annotated[s]; ok {
+			fmt.Fprintf(&b, "- %s — package linked — **not proposed**: machine annotation `%s` — excluding it means the expert overrides this flag\n", name, d.Basis)
+		} else {
+			fmt.Fprintf(&b, "- %s — package linked — **not proposed**, no machine annotation — expert decision needed\n", name)
+		}
+	}
+	b.WriteString("\n")
+	switch {
+	case pending == 0:
+		b.WriteString("**Proposed disposition: DISMISSIBLE** — all locus packages are absent from the build graph; the falsifier stands on its own.\n")
+	case flagged == 0:
+		fmt.Fprintf(&b,
+			"**Proposed disposition: DISMISSIBLE pending approval** — record the %d machine proposal(s) as `non_locus` decisions and the remaining locus packages are all absent → `NO_EXPLOIT_PATH_FOUND` follows.\n",
+			pending)
+	default:
+		fmt.Fprintf(&b,
+			"**Proposed disposition: CONDITIONAL** — dismissal requires recorded `non_locus` decisions for all %d linked-package symbol(s) above; %d carry machine defect-site flags the expert would have to override.\n",
+			pending, flagged)
+	}
+	b.WriteString("\nOutside machine verification (assumptions the reviewer takes on approval):\n")
+	b.WriteString("- the advisory declared set is complete — a defect site outside it is invisible to this contract\n")
+	b.WriteString("- recorded expert decisions are true — the falsifier checks their coverage, not their correctness\n")
+	goos, goarch := c.Product.GOOS, c.Product.GOARCH
+	if goos == "" {
+		goos = "?"
+	}
+	if goarch == "" {
+		goarch = "?"
+	}
+	tags := strings.Join(c.Product.BuildTags, ", ")
+	if tags == "" {
+		tags = "none recorded"
+	}
+	fmt.Fprintf(&b, "- the recorded build context (%s/%s, tags: %s) matches the deployment configuration\n",
+		goos, goarch, tags)
+	return b.String()
 }
 
 func allLimitations(c *domain.AnalysisCase) []string {

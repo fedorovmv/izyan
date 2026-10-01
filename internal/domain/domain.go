@@ -388,6 +388,12 @@ type ExploitModel struct {
 	// Proposals never shrink L — they are the draft an expert may approve
 	// by recording them as NonLocusBasis input.
 	ProposedNonLocus []LocusDecision `json:"proposed_non_locus,omitempty"`
+	// LocusAnnotations records the machine's per-symbol classification for
+	// every member of L (guarded-site / enabler-candidate / fix-changed /
+	// not-fix-changed) with the observed evidence, Authority
+	// "machine-annotation". Annotations are advisory labels for the expert
+	// and the assessment block — they never shrink L either.
+	LocusAnnotations []LocusDecision `json:"locus_annotations,omitempty"`
 	EvidenceIDs      []EvidenceID    `json:"evidence_ids,omitempty"`
 }
 
