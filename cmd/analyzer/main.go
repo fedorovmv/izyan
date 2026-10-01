@@ -75,6 +75,8 @@ options:
   --root-cause p.Sym     manual root cause symbol (repeatable, comma-separated)
   --exploit-model <path> manual exploit model JSON
   --knowledge <path>     extend the ecosystem knowledge base (JSON, additive)
+  --non-locus-basis <path> JSON file with expert non-locus basis decisions
+  --accept-locus-proposals adopt machine-generated non_locus recommendations into expert basis
   --deterministic-only   disable all LLM-backed states`)
 	os.Exit(2)
 }
@@ -110,6 +112,8 @@ type analyzeOpts struct {
 	// -non-locus-basis JSON file or from an eval corpus entry.
 	nonLocusBasis []domain.LocusDecision
 	nonLocusFile  string
+	// acceptLocusProposals adopts machine-generated non_locus proposals as basis.
+	acceptLocusProposals bool
 	// toolchain is the resolved target Go toolchain; zero value = local.
 	toolchain toolchain.Toolchain
 	// tcLims carries resolution notes into the case's limitations.
@@ -139,6 +143,7 @@ func commonFlags(fs *flag.FlagSet, o *analyzeOpts) {
 	fs.StringVar(&o.knowledge, "knowledge", "", "extend the ecosystem knowledge base with a JSON file (see internal/goanalysis/knowledge.go)")
 	fs.StringVar(&o.memLimit, "mem-limit", "4GiB", "analyzer memory ceiling (e.g. 4GiB, 512MiB; 0 disables) — real products can pull very large dependency graphs into the index")
 	fs.StringVar(&o.nonLocusFile, "non-locus-basis", "", "JSON file with expert non-locus decisions: [{\"symbol\":{\"package\":\"pkg\",\"symbol\":\"Type.Name\"},\"basis\":\"why it is not a defect site\",\"authority\":\"review ref\"}]")
+	fs.BoolVar(&o.acceptLocusProposals, "accept-locus-proposals", false, "adopt machine-generated non_locus recommendations into expert basis")
 }
 
 // loadKnowledgeBase resolves the --knowledge extension: built-in
@@ -292,6 +297,7 @@ func analyzeCase(ctx context.Context, o analyzeOpts) (*domain.AnalysisCase, erro
 		c.PriorCase = prior.ID
 	}
 	c.NonLocusBasis = o.nonLocusBasis
+	c.AcceptLocusProposals = o.acceptLocusProposals
 	if o.nonLocusFile != "" {
 		b, err := os.ReadFile(o.nonLocusFile)
 		if err != nil {

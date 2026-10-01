@@ -13,6 +13,10 @@ func (t *http2Server) HandleStreams() {
 	mdata := getMeta()
 	_ = len(mdata)
 	delete(mdata, "host")
+	var err error
+	if err != nil {
+		_ = err.Error()
+	}
 }
 
 // operateHeaders rejects requests missing :authority — it validates the

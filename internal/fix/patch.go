@@ -258,20 +258,29 @@ func markGuardedSite(f *File, hk hunk) {
 
 // guardOperands extracts the guarded value from an added guard line.
 // `if len(x) == 0` guards `x` against indexing; `if x == nil`/`!= nil`
-// guards `x` against dereference.
+// guards `x` against dereference. Generic error checks (`err != nil`) are
+// skipped as standard control flow rather than vulnerability guards.
 func guardOperands(line string) []string {
 	var out []string
 	if m := guardLenRe.FindStringSubmatch(line); m != nil {
-		if op := strings.TrimSpace(m[1]); op != "" {
+		if op := strings.TrimSpace(m[1]); op != "" && !isGenericOperand(op) {
 			out = append(out, op)
 		}
 	}
 	if m := guardNilRe.FindStringSubmatch(line); m != nil {
-		if op := strings.TrimSpace(m[1]); op != "" {
+		if op := strings.TrimSpace(m[1]); op != "" && !isGenericOperand(op) {
 			out = append(out, op)
 		}
 	}
 	return out
+}
+
+func isGenericOperand(op string) bool {
+	switch op {
+	case "err", "error":
+		return true
+	}
+	return false
 }
 
 // faultingUse reports whether line uses operand in a position that can

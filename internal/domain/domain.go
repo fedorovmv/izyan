@@ -1177,6 +1177,9 @@ type AnalysisCase struct {
 	// Expert input — it participates in the locus falsifier's coverage
 	// obligation but is never treated as machine-verified evidence.
 	NonLocusBasis []LocusDecision `json:"non_locus_basis,omitempty"`
+	// AcceptLocusProposals instructs the exploit model builder to adopt
+	// machine-generated non_locus proposals into NonLocusBasis.
+	AcceptLocusProposals bool `json:"accept_locus_proposals,omitempty"`
 	// PriorCase references the previous stored run of the same
 	// vulnerability/repository pair — the reproducibility-diff baseline.
 	PriorCase CaseID         `json:"prior_case,omitempty"`

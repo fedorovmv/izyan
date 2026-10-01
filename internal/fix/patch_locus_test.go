@@ -174,3 +174,23 @@ index 1..2 100644
 		t.Fatalf("server.Serve not flagged: %+v", f)
 	}
 }
+
+// Standard error checking (err != nil) is normal control flow in Go and must
+// not be treated as a vulnerability guard operand.
+func TestParseNilGuardIgnoresErr(t *testing.T) {
+	patch := `diff --git a/srv/handler.go b/srv/handler.go
+index 1..2 100644
+--- a/srv/handler.go
++++ b/srv/handler.go
+@@ -10,3 +10,6 @@ func Handle(req *Request) error {
++	if err != nil {
++		return err
++	}
+ 	return nil
+ }
+`
+	f := Parse(patch)[0]
+	if len(f.GuardOperands["Handle"]) != 0 {
+		t.Fatalf("expected err to be ignored as guard operand, got: %v", f.GuardOperands["Handle"])
+	}
+}
