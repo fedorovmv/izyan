@@ -3,6 +3,7 @@ package affected
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"example.com/vuln-analyzer/internal/domain"
@@ -413,5 +414,71 @@ func TestPendingModuleMixedLink(t *testing.T) {
 	}
 	if len(res.PendingModules) != 1 || res.PendingModules[0] != "example.com/other" {
 		t.Fatalf("PendingModules=%v — linked pending module must be named", res.PendingModules)
+	}
+}
+
+func TestUnreviewedModuleTestOnlyAbsentFromMains(t *testing.T) {
+	v := domain.Vulnerability{
+		ID:     "GO-0000-0010",
+		Module: "example.com/testdep",
+		AffectedVersions: []domain.VersionRange{
+			{Introduced: "0"},
+		},
+		// Unreviewed advisory: no AffectedPackages
+	}
+	mods := `{"Path":"example.com/testdep","Version":"v1.0.0"}`
+	pkgs := `{"ImportPath":"example.com/product/cmd/app","Name":"main","Deps":["example.com/product/pkg/service"]}
+{"ImportPath":"example.com/product/pkg/service","Deps":[]}
+{"ImportPath":"example.com/product/pkg/service.test","Name":"main","Deps":["example.com/product/pkg/service","example.com/testdep/helper"]}
+{"ImportPath":"example.com/testdep/helper","Module":{"Path":"example.com/testdep"},"Deps":[]}`
+
+	res, _, err := GoResolver{Tool: fakeTool{modules: []byte(mods), packages: []byte(pkgs)}}.
+		Resolve(context.Background(), v, product())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.PackagePresent != domain.ClaimFalse {
+		t.Fatalf("unreviewed module used only in tests must be FALSE for product executables, got: %s", res.PackagePresent)
+	}
+	if res.BuildRelevant != domain.ClaimFalse {
+		t.Fatalf("BuildRelevant must be FALSE, got: %s", res.BuildRelevant)
+	}
+	hasTestLimitation := false
+	for _, lim := range res.Limitations {
+		if strings.Contains(lim, "test scope") || strings.Contains(lim, "absent from compiled product executables") {
+			hasTestLimitation = true
+			break
+		}
+	}
+	if !hasTestLimitation {
+		t.Fatalf("expected test-scope limitation, got: %v", res.Limitations)
+	}
+}
+
+func TestReviewedPackageTestOnlyAbsentFromMains(t *testing.T) {
+	v := domain.Vulnerability{
+		ID:     "GO-0000-0011",
+		Module: "example.com/testdep",
+		AffectedVersions: []domain.VersionRange{
+			{Introduced: "0", Fixed: "1.2.0"},
+		},
+		AffectedPackages: []domain.AffectedPackage{{Path: "example.com/testdep/vulnpkg"}},
+	}
+	mods := `{"Path":"example.com/testdep","Version":"v1.0.0"}`
+	pkgs := `{"ImportPath":"example.com/product/cmd/app","Name":"main","Deps":["example.com/product/pkg/service"]}
+{"ImportPath":"example.com/product/pkg/service","Deps":[]}
+{"ImportPath":"example.com/product/pkg/service.test","Name":"main","Deps":["example.com/product/pkg/service","example.com/testdep/vulnpkg"]}
+{"ImportPath":"example.com/testdep/vulnpkg","Module":{"Path":"example.com/testdep"},"Deps":[]}`
+
+	res, _, err := GoResolver{Tool: fakeTool{modules: []byte(mods), packages: []byte(pkgs)}}.
+		Resolve(context.Background(), v, product())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.PackagePresent != domain.ClaimFalse {
+		t.Fatalf("reviewed package used only in tests must be FALSE for product executables, got: %s", res.PackagePresent)
+	}
+	if res.BuildRelevant != domain.ClaimFalse {
+		t.Fatalf("BuildRelevant must be FALSE, got: %s", res.BuildRelevant)
 	}
 }

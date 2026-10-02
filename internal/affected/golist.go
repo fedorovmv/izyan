@@ -42,6 +42,7 @@ func (m Module) EffectiveVersion() string {
 // Package mirrors `go list -json` subset.
 type Package struct {
 	ImportPath string `json:"ImportPath"`
+	Name       string `json:"Name"`
 	Standard   bool   `json:"Standard"`
 	DepOnly    bool   `json:"DepOnly"`
 	Dir        string `json:"Dir"`
@@ -50,6 +51,9 @@ type Package struct {
 	// tag set, so package absence is a claim about this configuration only.
 	IgnoredGoFiles []string `json:"IgnoredGoFiles"`
 	Module         *Module  `json:"Module"`
+	Imports        []string `json:"Imports"`
+	Deps           []string `json:"Deps"`
+	ForTest        string   `json:"ForTest"`
 }
 
 // GoTool runs the go toolchain inside the analyzed repository. Implementations

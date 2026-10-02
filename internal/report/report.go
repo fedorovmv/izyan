@@ -1293,8 +1293,24 @@ func rationaleNotAffected(c *domain.AnalysisCase) string {
 		fmt.Fprintf(&b, "Модуль `%s` не входит в граф зависимостей проекта %s (`go list -m all`). Код библиотеки в проекте отсутствует.\n\n",
 			mod, repo)
 	} else if c.Affected != nil && c.Affected.PackagePresent == domain.ClaimFalse {
-		fmt.Fprintf(&b, "Библиотека `%s %s` присутствует в `go.mod`, но ни один из уязвимых пакетов не импортируется кодом проекта %s (`go list -deps`). Код не скомпилирован в бинарный файл.\n\n",
-			mod, ver, repo)
+		modDesc := mod
+		if ver != "" {
+			modDesc = fmt.Sprintf("%s %s", mod, ver)
+		}
+		isTestScope := false
+		for _, lim := range c.Affected.Limitations {
+			if strings.Contains(lim, "used only in test scope") {
+				isTestScope = true
+				break
+			}
+		}
+		if isTestScope {
+			fmt.Fprintf(&b, "Библиотека `%s` присутствует в `go.mod`, но используется исключительно во вспомогательном коде тестов и полностью отсутствует в графе зависимостей скомпилированных исполняемых файлов проекта %s. Код не попадает в релизные бинарники.\n\n",
+				modDesc, repo)
+		} else {
+			fmt.Fprintf(&b, "Библиотека `%s` присутствует в `go.mod`, но ни один из уязвимых пакетов не импортируется кодом проекта %s (`go list -deps`). Код не скомпилирован в бинарный файл.\n\n",
+				modDesc, repo)
+		}
 	} else {
 		fmt.Fprintf(&b, "Уязвимость %s не применима к снимку %s: %s.\n\n",
 			c.Vulnerability.ID, repo, c.Verdict.Reason)

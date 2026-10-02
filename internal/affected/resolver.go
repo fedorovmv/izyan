@@ -257,15 +257,6 @@ func resolvePackages(ctx context.Context, tool GoTool, selected []*domain.Affect
 		}
 	}
 	res.CheckedPackages = affectedPaths
-	if len(affectedPaths) == 0 {
-		// The advisory names no affected package for the selected module —
-		// nothing concrete to probe, so absence cannot be asserted.
-		res.PackagePresent = domain.ClaimUnknown
-		res.BuildRelevant = domain.ClaimUnknown
-		res.Limitations = append(res.Limitations,
-			"advisory names no affected packages for the selected module; package presence undecidable")
-		return res, ev, nil
-	}
 	pkgRaw, err := tool.ListPackages(ctx, product.Repository, product)
 	if err != nil {
 		res.PackagePresent = domain.ClaimUnknown
@@ -290,14 +281,81 @@ func resolvePackages(ctx context.Context, tool GoTool, selected []*domain.Affect
 		return res, ev, nil
 	}
 
+	compiled, mains, isApp := analyzeCompiledScope(pkgs)
+
+	if len(affectedPaths) == 0 {
+		// When the advisory names no affected packages, absence cannot normally be asserted.
+		// However, if compiled scope is known, we check whether any package belonging to
+		// the selected module(s) is compiled into the product.
+		if compiled != nil {
+			pkgByPath := make(map[string]Package, len(pkgs))
+			for _, p := range pkgs {
+				pkgByPath[p.ImportPath] = p
+			}
+			moduleCompiled := false
+			for d := range compiled {
+				for _, sel := range selected {
+					if pkg, ok := pkgByPath[d]; ok && pkg.Module != nil && pkg.Module.Path == sel.Module {
+						moduleCompiled = true
+						break
+					}
+					if d == sel.Module || strings.HasPrefix(d, sel.Module+"/") {
+						moduleCompiled = true
+						break
+					}
+				}
+				if moduleCompiled {
+					break
+				}
+			}
+			if !moduleCompiled {
+				// The module has 0 packages in the compiled product deliverables.
+				res.PackagePresent = domain.ClaimFalse
+				res.BuildRelevant = domain.ClaimFalse
+				if isApp && len(mains) > 0 {
+					res.Limitations = append(res.Limitations, fmt.Sprintf(
+						"module %s is absent from compiled product executables (%s); used only in test scope",
+						selected[0].Module, strings.Join(mains, ", ")))
+				} else {
+					res.Limitations = append(res.Limitations, fmt.Sprintf(
+						"module %s is absent from compiled product library packages; used only in test scope",
+						selected[0].Module))
+				}
+				return res, ev, nil
+			}
+		}
+
+		// The advisory names no affected package for the selected module and compiled scope
+		// contains module packages or is unknown — package presence undecidable.
+		res.PackagePresent = domain.ClaimUnknown
+		res.BuildRelevant = domain.ClaimUnknown
+		res.Limitations = append(res.Limitations,
+			"advisory names no affected packages for the selected module; package presence undecidable")
+		return res, ev, nil
+	}
+
 	present := false
+	testOnly := false
 	confirmedLinked := false // a version-affected entry's package is linked
 	pendingLinked := false   // a version-undecidable entry's package is linked
 	var confirmedOwner *domain.AffectedModule
 	seenMod := map[string]bool{}
 	res.SelectedModules = nil
 	for _, want := range affectedPaths {
-		if packageImported(pkgs, want) {
+		isLinked := false
+		if compiled != nil {
+			if compiled[want] {
+				isLinked = true
+			} else if packageImported(pkgs, want) {
+				testOnly = true
+			}
+		} else {
+			if packageImported(pkgs, want) {
+				isLinked = true
+			}
+		}
+
+		if isLinked {
 			present = true
 			owner := pathOwner[want]
 			if pendingSet[owner] {
@@ -370,13 +428,88 @@ func resolvePackages(ctx context.Context, tool GoTool, selected []*domain.Affect
 		}
 		res.PackagePresent = domain.ClaimFalse
 		res.BuildRelevant = domain.ClaimFalse
-		res.Limitations = append(res.Limitations,
-			"package set derived from go list -deps; dynamically loaded plugins are not covered")
+		if testOnly {
+			if isApp && len(mains) > 0 {
+				res.Limitations = append(res.Limitations, fmt.Sprintf(
+					"affected package(s) %s absent from compiled product executables (%s); used only in test scope",
+					strings.Join(affectedPaths, ", "), strings.Join(mains, ", ")))
+			} else {
+				res.Limitations = append(res.Limitations, fmt.Sprintf(
+					"affected package(s) %s absent from compiled product scope; used only in test scope",
+					strings.Join(affectedPaths, ", ")))
+			}
+		} else {
+			res.Limitations = append(res.Limitations,
+				"package set derived from go list -deps; dynamically loaded plugins are not covered")
+		}
 		return res, ev, nil
 	}
 
 	res.BuildRelevant = buildRelevant(affectedPkgs, product)
 	return res, ev, nil
+}
+
+// analyzeCompiledScope discovers the production scope of the product:
+// 1. If real production `package main` executables exist, the compiled scope is
+// the union of their transitive dependencies (.Deps) + the mains themselves.
+// 2. If no `package main` exists, the product is a library. Its compiled scope is
+// the union of dependencies of all non-test packages belonging to the product.
+func analyzeCompiledScope(pkgs []Package) (map[string]bool, []string, bool) {
+	var mains []string
+	pkgByPath := make(map[string]Package, len(pkgs))
+	for _, p := range pkgs {
+		pkgByPath[p.ImportPath] = p
+		// Production main: Name == "main", not DepOnly, not a synthetic test binary ending in ".test", and ForTest == "".
+		if p.Name == "main" && !p.DepOnly && !strings.HasSuffix(p.ImportPath, ".test") && p.ForTest == "" {
+			mains = append(mains, p.ImportPath)
+		}
+	}
+	if len(mains) > 0 {
+		compiled := make(map[string]bool)
+		for _, m := range mains {
+			compiled[m] = true
+			if p, ok := pkgByPath[m]; ok {
+				for _, d := range p.Deps {
+					compiled[d] = true
+				}
+			}
+		}
+		return compiled, mains, true
+	}
+	// Library module: check non-test product packages that have Deps populated
+	libPkgs := make([]string, 0)
+	hasDepsInfo := false
+	for _, p := range pkgs {
+		if !p.DepOnly && !strings.HasSuffix(p.ImportPath, ".test") && p.ForTest == "" && !isTestPath(p.ImportPath) {
+			libPkgs = append(libPkgs, p.ImportPath)
+			if len(p.Deps) > 0 {
+				hasDepsInfo = true
+			}
+		}
+	}
+	if len(libPkgs) > 0 && hasDepsInfo {
+		compiled := make(map[string]bool)
+		for _, lp := range libPkgs {
+			compiled[lp] = true
+			if p, ok := pkgByPath[lp]; ok {
+				for _, d := range p.Deps {
+					compiled[d] = true
+				}
+			}
+		}
+		return compiled, nil, false
+	}
+	return nil, nil, false
+}
+
+func isTestPath(path string) bool {
+	parts := strings.Split(path, "/")
+	for _, part := range parts {
+		if part == "test" || part == "tests" || part == "testdata" || strings.HasSuffix(part, "test-helpers") {
+			return true
+		}
+	}
+	return false
 }
 
 // isStdlibModule reports whether the advisory's module is the Go standard
