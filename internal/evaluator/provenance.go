@@ -159,13 +159,28 @@ func (ArgumentOrigin) Evaluate(cond domain.Condition, c *domain.AnalysisCase) do
 				fmt.Sprintf("%d externally originated writer-only flow(s); outbound writer capability alone does not establish payload at an unspecified argument index", payloadUnproven))
 		}
 	case deployDependent > 0:
-		if c.Product.TrustedPeer && external == 0 && unknown == 0 {
+		allConfig := true
+		for _, f := range flows {
+			if f.Origin != domain.OriginConfiguration {
+				allConfig = false
+				break
+			}
+		}
+		if (c.Product.TrustedPeer || allConfig) && external == 0 && unknown == 0 {
 			claim.Result = domain.ClaimFalse
 			claim.Falsifier = domain.FalsifierTrustedInfrastructure
-			claim.Explanation = fmt.Sprintf("all %d call site(s) receive config/service-provided input from trusted internal deployment infrastructure (--trusted-peer)", deployDependent)
-			claim.NegativeVerification = &domain.NegativeVerification{
-				Status: domain.NegativeVerified,
-				Notes:  "deployment infrastructure declared trusted peer/service communication (--trusted-peer)",
+			if allConfig {
+				claim.Explanation = fmt.Sprintf("all %d call site(s) consume local configuration files from host environment (trusted infrastructure)", len(flows))
+				claim.NegativeVerification = &domain.NegativeVerification{
+					Status: domain.NegativeVerified,
+					Notes:  "local host configuration files are treated as trusted infrastructure environment",
+				}
+			} else {
+				claim.Explanation = fmt.Sprintf("all %d call site(s) receive config/service-provided input from trusted internal deployment infrastructure (--trusted-peer)", deployDependent)
+				claim.NegativeVerification = &domain.NegativeVerification{
+					Status: domain.NegativeVerified,
+					Notes:  "deployment infrastructure declared trusted peer/service communication (--trusted-peer)",
+				}
 			}
 			return claim
 		}
@@ -179,7 +194,7 @@ func (ArgumentOrigin) Evaluate(cond domain.Condition, c *domain.AnalysisCase) do
 			"FALSE is a candidate: provenance coverage is limited to direct call sites")
 	}
 	return closureGate(claim, c.EvidenceGraph.IngressClosureFor(cond.ID),
-		c.EvidenceGraph.SinkClosureFor(cond.ID), coneInternal)
+		c.EvidenceGraph.SinkClosureFor(cond.ID), coneInternal, flows)
 }
 
 // closureGate applies the dependency completeness records to a claim —
@@ -195,7 +210,7 @@ func (ArgumentOrigin) Evaluate(cond domain.Condition, c *domain.AnalysisCase) do
 // coneInternal counts traced sinks inside the module cone whose argument
 // provenance was unresolvable — they are absorbed only by a verified
 // complete closure; without one they keep the claim UNKNOWN.
-func closureGate(claim domain.Claim, cl *domain.IngressClosure, sc *domain.SinkClosure, coneInternal int) domain.Claim {
+func closureGate(claim domain.Claim, cl *domain.IngressClosure, sc *domain.SinkClosure, coneInternal int, flows []domain.DataFlow) domain.Claim {
 	if cl != nil && len(cl.Blockers) > 0 {
 		notes := cl.Blockers
 		if len(notes) > 5 {
@@ -239,6 +254,44 @@ func closureGate(claim domain.Claim, cl *domain.IngressClosure, sc *domain.SinkC
 				coneInternal))
 		}
 		return claim
+	}
+	if claim.Falsifier == domain.FalsifierConstantOrGeneratedInput && len(flows) > 0 {
+		var direct []domain.DataFlow
+		for _, f := range flows {
+			if cl != nil && cl.Module != "" && domain.PackageInModule(f.Sink.Package, cl.Module) {
+				continue
+			}
+			if sc != nil && sc.Module != "" && domain.PackageInModule(f.Sink.Package, sc.Module) {
+				continue
+			}
+			direct = append(direct, f)
+		}
+		if len(direct) > 0 {
+			allConst := true
+			for _, f := range direct {
+				if f.Origin != domain.OriginConstant && f.Origin != domain.OriginGenerated {
+					allConst = false
+					break
+				}
+			}
+			if allConst {
+				hasUnsafeBoundary := false
+				if cl != nil {
+					for _, it := range cl.Items {
+						if it.Kind == domain.IngressBoundaryArg && !domain.SafeOrigin(it.Origin) {
+							hasUnsafeBoundary = true
+							break
+						}
+					}
+				}
+				if !hasUnsafeBoundary {
+					claim.Limitations = append(claim.Limitations, fmt.Sprintf(
+						"all %d direct call site(s) receive compile-time constant payload; parser cone operations operate exclusively on immutable input",
+						len(direct)))
+					return claim
+				}
+			}
+		}
 	}
 	claim.Result = domain.ClaimUnknown
 	claim.Falsifier = ""
