@@ -1,6 +1,8 @@
 package report
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -321,12 +323,12 @@ func TestMarkdownStructureInvertedPyramid(t *testing.T) {
 	md := Markdown(c)
 
 	// Ensure sections appear in the exact required order:
-	idxHeader := strings.Index(md, "# Vulnerability analysis: GO-2026-6443")
-	idxVerdict := strings.Index(md, "## Verdict: `NO_EXPLOIT_PATH_FOUND`")
-	idxVerdictBlockquote := strings.Index(md, "> **mandatory exploit condition is proven false**")
-	idxRationale := strings.Index(md, "## Резюме для трекера (Tracker-ready rationale)")
-	idxRemediation := strings.Index(md, "## Рекомендации по устранению (Remediation)")
-	idxEvidence := strings.Index(md, "## Доказательная база (Evidence & Claims)")
+	idxHeader := strings.Index(md, "# Анализ уязвимости: GO-2026-6443")
+	idxVerdict := strings.Index(md, "## Вердикт: `NO_EXPLOIT_PATH_FOUND`")
+	idxVerdictBlockquote := strings.Index(md, "> **Обязательное условие эксплуатации опровергнуто (уязвимый путь исполнения отсутствует)**")
+	idxRationale := strings.Index(md, "## Резюме")
+	idxRemediation := strings.Index(md, "## Рекомендации по устранению")
+	idxEvidence := strings.Index(md, "## Доказательная база")
 	idxDetailsOpen := strings.Index(md, "<details>")
 	idxDetailsSummary := strings.Index(md, "<summary><b>Технические детали и аудит (Data Flows, Tool Executions, Limitations)</b></summary>")
 	idxDataFlows := strings.Index(md, "### Потоки данных (Data Flows)")
@@ -438,16 +440,16 @@ func TestMarkdownStructureInvertedPyramid_FullSections(t *testing.T) {
 	md := Markdown(c)
 
 	expectedSectionsInOrder := []string{
-		"# Vulnerability analysis: CVE-2026-12345",
-		"## Verdict: `NO_EXPLOIT_PATH_FOUND`",
-		"> **mandatory exploit condition is proven false**",
-		"## Резюме для трекера (Tracker-ready rationale)",
-		"## Рекомендации по устранению (Remediation)",
-		"## Доказательная база (Evidence & Claims)",
+		"# Анализ уязвимости: CVE-2026-12345",
+		"## Вердикт: `NO_EXPLOIT_PATH_FOUND`",
+		"> **Обязательное условие эксплуатации опровергнуто (уязвимый путь исполнения отсутствует)**",
+		"## Резюме",
+		"## Рекомендации по устранению",
+		"## Доказательная база",
 		"### Применимость (Affected Analysis)",
 		"### Статус условий эксплуатации (Claims)",
 		"### Точки входа (Exposure Facts)",
-		"### Модель эксплуатации и сайты дефекта (Exploit & Locus)",
+		"### Модель эксплуатации и сайты дефекта",
 		"<details>",
 		"<summary><b>Технические детали и аудит (Data Flows, Tool Executions, Limitations)</b></summary>",
 		"### Потоки данных (Data Flows)",
@@ -456,7 +458,7 @@ func TestMarkdownStructureInvertedPyramid_FullSections(t *testing.T) {
 		"### Рецензирование (Review Findings)",
 		"### Факты среды (Runtime Facts)",
 		"### Сборка и тесты (Build & Test)",
-		"### Гипотезы (Hypotheses)",
+		"### Рабочие гипотезы (Hypotheses)",
 		"</details>",
 	}
 
@@ -470,5 +472,272 @@ func TestMarkdownStructureInvertedPyramid_FullSections(t *testing.T) {
 			t.Fatalf("section %q at index %d is out of order (previous at %d)", sec, idx, lastIdx)
 		}
 		lastIdx = idx
+	}
+}
+
+func sampleCaseForLocalization() *domain.AnalysisCase {
+	return &domain.AnalysisCase{
+		ID: "case-loc-test",
+		Vulnerability: domain.Vulnerability{
+			ID:            "GO-2026-6443",
+			Module:        "example.com/mod",
+			FixedVersions: []string{"v1.2.0"},
+			AffectedPackages: []domain.AffectedPackage{
+				{Path: "example.com/mod/vulnpkg"},
+			},
+		},
+		Product: domain.ProductSnapshot{
+			Repository: "example.com/product",
+			Commit:     "1234567890ab",
+			GoVersion:  "go1.26.1",
+			GOOS:       "linux",
+			GOARCH:     "amd64",
+		},
+		Verdict: &domain.VerdictResult{
+			Verdict: domain.VerdictNoExploitPathFound,
+			Reason:  "mandatory exploit condition is proven false",
+		},
+		Affected: &domain.AffectedResult{
+			VersionAffected: domain.ClaimTrue,
+			ResolvedVersion: "v1.0.0",
+			ModulePresent:   domain.ClaimTrue,
+			PackagePresent:  domain.ClaimFalse,
+			BuildRelevant:   domain.ClaimTrue,
+			CheckedModules:  []string{"example.com/mod"},
+			SelectedModules: []string{"example.com/mod"},
+			PendingModules:  []string{"example.com/pending"},
+			CheckedPackages: []string{"example.com/mod/vulnpkg"},
+			EvidenceIDs:     []domain.EvidenceID{"EV-AFF-1"},
+			Limitations:     []string{"affected limitation"},
+		},
+		Claims: []domain.Claim{
+			{
+				ConditionID: "C-LOCUS",
+				Result:      domain.ClaimFalse,
+				Falsifier:   "locus-package-absent",
+				NegativeVerification: &domain.NegativeVerification{
+					Status: domain.NegativeVerified,
+				},
+				EvidenceIDs: []domain.EvidenceID{"EV-CLM-1"},
+			},
+		},
+		RootCause: &domain.RootCauseModel{
+			Status: domain.RootCauseResolved,
+			RootCauses: []domain.RootCause{
+				{Package: "example.com/mod/vulnpkg", Symbol: "VulnFunc", Role: domain.RootCauseSink, Mechanism: "out-of-bounds read"},
+			},
+		},
+		Exploit: &domain.ExploitModel{
+			Class:  "MEMORY_CORRUPTION",
+			Impact: "Remote Code Execution",
+			MandatoryConditions: []domain.Condition{
+				{ID: "C-LOCUS", Kind: "code", Description: "vulnerable function called"},
+				{ID: "C-REACH", Kind: "code", Description: "symbol reachable"},
+				{ID: "C-PEER-INPUT", Kind: "input", Description: "peer input controlled"},
+				{ID: "C-CONSTRAINT", Kind: "constraint", Description: "constraint violation"},
+			},
+			SupportingFactors: []domain.Condition{
+				{ID: "C-EXPOSURE", Kind: "network", Description: "network reachable"},
+				{ID: "C-TLS-VERIFY", Kind: "tls", Description: "tls verify disabled"},
+			},
+			NonLocusBasis: []domain.LocusDecision{
+				{Symbol: domain.SymbolRef{Package: "example.com/mod/vulnpkg", Symbol: "SafeFunc"}, Authority: "эксперт", Basis: "safe helper"},
+			},
+		},
+		EvidenceGraph: domain.EvidenceGraph{
+			Exposures: []domain.ExposureFact{
+				{CallSite: domain.CallSite{File: "main.go", Line: 42}, Direction: "inbound", Target: "net/http.ListenAndServe"},
+			},
+			DataFlows: []domain.DataFlow{
+				{Origin: domain.OriginExternalUntrusted, Summary: "query param flows to sink"},
+			},
+			ToolExecutions: []domain.ToolExecution{
+				{Tool: "govulncheck", Args: []string{"./..."}, ExitCode: 0, DurationMs: 150, StdoutSHA256: "fedcba0987654321"},
+			},
+			Runtime: []domain.EvidenceID{"EV-RUNTIME-1"},
+			Evidence: []domain.Evidence{
+				{ID: "EV-RUNTIME-1", Kind: domain.EvidenceRuntime, Source: "runtime-env", Content: "go version go1.26.1"},
+				{ID: "EV-BUILD-1", Kind: domain.EvidenceBuild, Source: "go build", Content: "build successful\nall targets ok"},
+			},
+			Limitations: []string{"graph limitation 1"},
+		},
+		Hypotheses: []domain.Hypothesis{
+			{ID: "H-1", ConditionID: "C-LOCUS", Status: domain.HypothesisRejected, Statement: "package not linked"},
+		},
+		Reviews: []domain.Review{
+			{
+				ID:     "REV-1",
+				Result: domain.ReviewAccept,
+				Findings: []domain.ReviewFinding{
+					{Severity: "LOW", TargetType: "claim", TargetID: "C-LOCUS", Problem: "minor verification note"},
+				},
+			},
+		},
+	}
+}
+
+func TestMarkdownLocalizationRU(t *testing.T) {
+	c := sampleCaseForLocalization()
+
+	for _, md := range []string{Markdown(c, "ru"), Markdown(c)} { // both explicit "ru" and default
+		expectedPhrases := []string{
+			"# Анализ уязвимости: GO-2026-6443",
+			"- Кейс: `case-loc-test`",
+			"- Репозиторий: `example.com/product`",
+			"- Коммит: `1234567890ab`",
+			"- Окружение Go: `go1.26.1` (linux/amd64)",
+			"## Вердикт: `NO_EXPLOIT_PATH_FOUND`",
+			"> **Обязательное условие эксплуатации опровергнуто (уязвимый путь исполнения отсутствует)**",
+			"## Резюме",
+			"## Рекомендации по устранению",
+			"Обновите зависимость `example.com/mod` с `v1.0.0` до `v1.2.0`:",
+			"## Доказательная база",
+			"### Применимость (Affected Analysis)",
+			"| Проверка | Результат |",
+			"| Наличие модуля в зависимостях |",
+			"| Разрешённая версия в go.mod |",
+			"| Версия входит в диапазон уязвимых |",
+			"| Уязвимый пакет входит в сборку |",
+			"| Код компилируется для целевой платформы |",
+			"| Проверенные модули |",
+			"| Скомпилированные модули |",
+			"| Модули с неопределённой версией |",
+			"| Проверенные пакеты |",
+			"| Идентификаторы доказательств (Evidence IDs) |",
+			"### Статус условий эксплуатации (Claims)",
+			"| Условие | Результат | Верификация | Доказательства |",
+			"Пакет отсутствует в сборке / ПОДТВЕРЖДЕНО",
+			"### Точки входа (Exposure Facts)",
+			"Входящий слушатель через `net/http.ListenAndServe`",
+			"### Модель эксплуатации и сайты дефекта",
+			"#### Первопричина дефекта (Root cause): Определена",
+			"VulnFunc` (Точка сбоя / Sink)",
+			"Класс дефекта: `MEMORY_CORRUPTION`",
+			"Последствия: Remote Code Execution",
+			"#### Обязательные условия (Mandatory conditions)",
+			"Выполнение уязвимого кода: пакеты дефектного кода входят в граф сборки приложения",
+			"Достижимость символов: хотя бы одна из уязвимых функций вызывается в коде продукта",
+			"Контроль ввода: параметры уязвимой функции контролируются удалённым клиентом",
+			"Нарушение ограничений: удалённый клиент может передать входные данные, вызывающие сбой",
+			"#### Сопутствующие факторы (Supporting factors)",
+			"Сетевая доступность: наличие открытых сетевых портов или исходящих подключений",
+			"Проверка TLS: отключение проверки сертификатов позволяет передавать трафик без доверенного канала",
+			"#### Экспертные решения non_locus",
+			"<details>",
+			"<summary><b>Технические детали и аудит (Data Flows, Tool Executions, Limitations)</b></summary>",
+			"### Потоки данных (Data Flows)",
+			"### Журнал инструментов (Tool Executions)",
+			"| Инструмент | Аргументы | Код возврата | Длительность (мс) | SHA-256 вывода |",
+			"### Ограничения анализа (Limitations)",
+			"### Рецензирование (Review Findings)",
+			"### Факты среды (Runtime Facts)",
+			"### Сборка и тесты (Build & Test)",
+			"### Рабочие гипотезы (Hypotheses)",
+			"</details>",
+		}
+
+		for _, phrase := range expectedPhrases {
+			if !strings.Contains(md, phrase) {
+				t.Errorf("RU markdown missing expected phrase: %q", phrase)
+			}
+		}
+
+		if strings.Contains(md, "# Vulnerability analysis:") {
+			t.Errorf("RU markdown should not contain English header '# Vulnerability analysis:'")
+		}
+		if strings.Contains(md, "## Резюме для трекера (Tracker-ready rationale)") {
+			t.Errorf("RU markdown should use strictly '## Резюме', not old verbose header")
+		}
+	}
+}
+
+func TestMarkdownLocalizationEN(t *testing.T) {
+	c := sampleCaseForLocalization()
+	md := Markdown(c, "en")
+
+	expectedPhrases := []string{
+		"# Vulnerability analysis: GO-2026-6443",
+		"- Case: `case-loc-test`",
+		"- Repository: `example.com/product`",
+		"- Commit: `1234567890ab`",
+		"- Go: `go1.26.1` (linux/amd64)",
+		"## Verdict: `NO_EXPLOIT_PATH_FOUND`",
+		"> **mandatory exploit condition is proven false**",
+		"## Executive Summary",
+		"## Remediation",
+		"Update `example.com/mod` from `v1.0.0` to `v1.2.0`:",
+		"## Evidence Dossier",
+		"### Affected Analysis",
+		"| check | result |",
+		"| module present |",
+		"| package present |",
+		"### Claims Status",
+		"| condition | result | verification | evidence |",
+		"locus-package-absent / VERIFIED",
+		"### Exposure Facts",
+		"`inbound`",
+		"### Exploit Model & Defect Locus",
+		"#### Root cause: `RESOLVED`",
+		"Class: `MEMORY_CORRUPTION`",
+		"Impact: Remote Code Execution",
+		"#### Mandatory conditions",
+		"#### Supporting factors",
+		"<details>",
+		"<summary><b>Technical Details & Audit (Data Flows, Tool Executions, Limitations)</b></summary>",
+		"### Data Flows",
+		"### Tool Executions",
+		"| tool | args | exit | ms | stdout sha256 |",
+		"### Limitations",
+		"### Review Findings",
+		"### Runtime Facts",
+		"### Build & Test",
+		"### Hypotheses",
+		"</details>",
+	}
+
+	for _, phrase := range expectedPhrases {
+		if !strings.Contains(md, phrase) {
+			t.Errorf("EN markdown missing expected phrase: %q", phrase)
+		}
+	}
+
+	if strings.Contains(md, "# Анализ уязвимости:") {
+		t.Errorf("EN markdown should not contain Russian header '# Анализ уязвимости:'")
+	}
+	if strings.Contains(md, "## Резюме") {
+		t.Errorf("EN markdown should not contain '## Резюме'")
+	}
+}
+
+func TestReportWriteGeneratesBothRUandEN(t *testing.T) {
+	c := sampleCaseForLocalization()
+	dir := t.TempDir()
+
+	if err := Write(dir, c); err != nil {
+		t.Fatalf("Write failed: %v", err)
+	}
+
+	ruBytes, err := os.ReadFile(filepath.Join(dir, "report.md"))
+	if err != nil {
+		t.Fatalf("reading report.md: %v", err)
+	}
+	ruContent := string(ruBytes)
+	if !strings.Contains(ruContent, "# Анализ уязвимости: GO-2026-6443") || !strings.Contains(ruContent, "## Резюме") {
+		t.Fatalf("report.md does not contain expected RU content:\n%s", ruContent)
+	}
+
+	enBytes, err := os.ReadFile(filepath.Join(dir, "report.en.md"))
+	if err != nil {
+		t.Fatalf("reading report.en.md: %v", err)
+	}
+	enContent := string(enBytes)
+	if !strings.Contains(enContent, "# Vulnerability analysis: GO-2026-6443") || !strings.Contains(enContent, "## Executive Summary") {
+		t.Fatalf("report.en.md does not contain expected EN content:\n%s", enContent)
+	}
+
+	for _, name := range []string{"report.json", "openvex.json", "cyclonedx.json"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Fatalf("expected file %s to exist: %v", name, err)
+		}
 	}
 }

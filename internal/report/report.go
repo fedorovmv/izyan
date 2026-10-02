@@ -43,119 +43,340 @@ func Write(dir string, c *domain.AnalysisCase) error {
 	if err := os.WriteFile(filepath.Join(dir, "cyclonedx.json"), cb, 0o644); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, "report.md"), []byte(Markdown(c)), 0o644)
+	if err := os.WriteFile(filepath.Join(dir, "report.md"), []byte(Markdown(c, "ru")), 0o644); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "report.en.md"), []byte(Markdown(c, "en")), 0o644)
 }
 
-func Markdown(c *domain.AnalysisCase) string {
+func isRussian(lang ...string) bool {
+	if len(lang) > 0 && strings.EqualFold(strings.TrimSpace(lang[0]), "en") {
+		return false
+	}
+	return true
+}
+
+var verdictReasonRU = map[string]string{
+	"mandatory exploit condition is proven false": "Обязательное условие эксплуатации опровергнуто (уязвимый путь исполнения отсутствует)",
+	"all mandatory conditions met":                "Все обязательные условия эксплуатации выполнены (уязвимость подтверждена)",
+	"resolved version outside affected range":     "Разрешённая версия библиотеки находится вне уязвимого диапазона",
+	"no exploit conditions met":                   "Ни одно условие эксплуатации не выполнено",
+	"locus packages absent from build graph":      "Уязвимый код физически не включён в сборку",
+}
+
+func localizeVerdictReason(reason string, isRU bool) string {
+	if !isRU {
+		return reason
+	}
+	if s, ok := verdictReasonRU[reason]; ok {
+		return s
+	}
+	return reason
+}
+
+var conditionDescRU = map[string]string{
+	"C-REACH":      "Достижимость символов: хотя бы одна из уязвимых функций вызывается в коде продукта",
+	"C-PEER-INPUT": "Контроль ввода: параметры уязвимой функции контролируются удалённым клиентом",
+	"C-CONSTRAINT": "Нарушение ограничений: удалённый клиент может передать входные данные, вызывающие сбой",
+	"C-LOCUS":      "Выполнение уязвимого кода: пакеты дефектного кода входят в граф сборки приложения",
+	"C-EXPOSURE":   "Сетевая доступность: наличие открытых сетевых портов или исходящих подключений",
+	"C-TLS-VERIFY": "Проверка TLS: отключение проверки сертификатов позволяет передавать трафик без доверенного канала",
+}
+
+func localizeConditionDesc(id string, defaultDesc string, isRU bool) string {
+	if !isRU {
+		return defaultDesc
+	}
+	if s, ok := conditionDescRU[id]; ok {
+		return s
+	}
+	return defaultDesc
+}
+
+func rootCauseRole(role domain.RootCauseRole, isRU bool) string {
+	if !isRU {
+		return string(role)
+	}
+	switch role {
+	case domain.RootCauseSink:
+		return "Точка сбоя / Sink"
+	case domain.RootCauseEntrypoint:
+		return "Точка входа / Entrypoint"
+	case domain.RootCausePropagation:
+		return "Распространение / Propagation"
+	default:
+		return string(role)
+	}
+}
+
+func rootCauseStatus(status domain.RootCauseStatus, isRU bool) string {
+	if !isRU {
+		return fmt.Sprintf("`%s`", status)
+	}
+	switch status {
+	case domain.RootCauseResolved:
+		return "Определена"
+	case domain.RootCauseAmbiguous:
+		return "Неоднозначно"
+	case domain.RootCauseNotFound:
+		return "Не найдена"
+	default:
+		return fmt.Sprintf("`%s`", status)
+	}
+}
+
+func Markdown(c *domain.AnalysisCase, lang ...string) string {
+	isRU := isRussian(lang...)
 	var b strings.Builder
-	fmt.Fprintf(&b, "# Vulnerability analysis: %s\n\n", c.Vulnerability.ID)
-	fmt.Fprintf(&b, "- Case: `%s`\n", c.ID)
-	fmt.Fprintf(&b, "- Repository: `%s`\n- Commit: `%s`\n- Go: `%s` (%s/%s)\n\n",
-		c.Product.Repository, c.Product.Commit, c.Product.GoVersion, c.Product.GOOS, c.Product.GOARCH)
+	if isRU {
+		fmt.Fprintf(&b, "# Анализ уязвимости: %s\n\n", c.Vulnerability.ID)
+		fmt.Fprintf(&b, "- Кейс: `%s`\n", c.ID)
+		fmt.Fprintf(&b, "- Репозиторий: `%s`\n- Коммит: `%s`\n- Окружение Go: `%s` (%s/%s)\n\n",
+			c.Product.Repository, c.Product.Commit, c.Product.GoVersion, c.Product.GOOS, c.Product.GOARCH)
+	} else {
+		fmt.Fprintf(&b, "# Vulnerability analysis: %s\n\n", c.Vulnerability.ID)
+		fmt.Fprintf(&b, "- Case: `%s`\n", c.ID)
+		fmt.Fprintf(&b, "- Repository: `%s`\n- Commit: `%s`\n- Go: `%s` (%s/%s)\n\n",
+			c.Product.Repository, c.Product.Commit, c.Product.GoVersion, c.Product.GOOS, c.Product.GOARCH)
+	}
 
 	if c.Verdict != nil {
-		fmt.Fprintf(&b, "## Verdict: `%s`\n\n> **%s**\n\n", c.Verdict.Verdict, c.Verdict.Reason)
+		if isRU {
+			fmt.Fprintf(&b, "## Вердикт: `%s`\n\n> **%s**\n\n", c.Verdict.Verdict, localizeVerdictReason(c.Verdict.Reason, true))
+		} else {
+			fmt.Fprintf(&b, "## Verdict: `%s`\n\n> **%s**\n\n", c.Verdict.Verdict, c.Verdict.Reason)
+		}
 	}
 	if rat := rationale(c); rat != "" {
-		fmt.Fprintf(&b, "## Резюме для трекера (Tracker-ready rationale)\n\n%s\n\n", rat)
+		if isRU {
+			fmt.Fprintf(&b, "## Резюме\n\n%s\n\n", rat)
+		} else {
+			fmt.Fprintf(&b, "## Executive Summary\n\n%s\n\n", rat)
+		}
 	}
-	if r := remediation(c); r != "" {
-		fmt.Fprintf(&b, "## Рекомендации по устранению (Remediation)\n\n%s\n\n", r)
+	if r := remediation(c, isRU); r != "" {
+		if isRU {
+			fmt.Fprintf(&b, "## Рекомендации по устранению\n\n%s\n\n", r)
+		} else {
+			fmt.Fprintf(&b, "## Remediation\n\n%s\n\n", r)
+		}
 	}
 
 	exps := c.EvidenceGraph.ExposuresList()
 	hasEvidence := c.Affected != nil || len(c.Claims) > 0 || len(exps) > 0 || c.RootCause != nil || c.Exploit != nil
 	if hasEvidence {
-		b.WriteString("## Доказательная база (Evidence & Claims)\n\n")
+		if isRU {
+			b.WriteString("## Доказательная база\n\n")
+		} else {
+			b.WriteString("## Evidence Dossier\n\n")
+		}
+
 		if c.Affected != nil {
 			a := c.Affected
-			fmt.Fprintf(&b, "### Применимость (Affected Analysis)\n\n")
-			fmt.Fprintf(&b, "| check | result |\n|---|---|\n")
-			fmt.Fprintf(&b, "| module present | %s |\n", a.ModulePresent)
-			fmt.Fprintf(&b, "| resolved version | `%s` |\n", a.ResolvedVersion)
-			fmt.Fprintf(&b, "| version affected | %s |\n", a.VersionAffected)
-			fmt.Fprintf(&b, "| package present | %s |\n", a.PackagePresent)
-			fmt.Fprintf(&b, "| build relevant | %s |\n", a.BuildRelevant)
-			if len(a.CheckedModules) > 0 {
-				fmt.Fprintf(&b, "| modules probed | `%s` |\n", strings.Join(a.CheckedModules, "`, `"))
-			}
-			if len(a.SelectedModules) > 0 {
-				fmt.Fprintf(&b, "| modules linked | `%s` |\n", strings.Join(a.SelectedModules, "`, `"))
-			}
-			if len(a.PendingModules) > 0 {
-				fmt.Fprintf(&b, "| modules version-unresolved | `%s` |\n", strings.Join(a.PendingModules, "`, `"))
-			}
-			if len(a.CheckedPackages) > 0 {
-				fmt.Fprintf(&b, "| packages probed | `%s` |\n", strings.Join(a.CheckedPackages, "`, `"))
-			}
-			if len(a.EvidenceIDs) > 0 {
-				fmt.Fprintf(&b, "| evidence | %s |\n", strings.Join(evidenceIDs(a.EvidenceIDs), ", "))
-			}
-			b.WriteString("\n")
-		}
-		if len(c.Claims) > 0 {
-			b.WriteString("### Статус условий эксплуатации (Claims)\n\n| condition | result | verification | evidence |\n|---|---|---|---|\n")
-			for _, cl := range c.Claims {
-				fmt.Fprintf(&b, "| `%s` | %s | %s | %s |\n", cl.ConditionID, cl.Result,
-					claimVerification(cl), strings.Join(evidenceIDs(cl.EvidenceIDs), ", "))
-			}
-			b.WriteString("\n")
-		}
-		if len(exps) > 0 {
-			b.WriteString("### Точки входа (Exposure Facts)\n\n")
-			for _, f := range exps {
-				fmt.Fprintf(&b, "- `%s` %s via `%s`", f.Direction, f.Kind, f.Target)
-				if f.Address != "" {
-					fmt.Fprintf(&b, " — `%s`", f.Address)
+			if isRU {
+				fmt.Fprintf(&b, "### Применимость (Affected Analysis)\n\n")
+				fmt.Fprintf(&b, "| Проверка | Результат |\n|---|---|\n")
+				fmt.Fprintf(&b, "| Наличие модуля в зависимостях | %s |\n", a.ModulePresent)
+				fmt.Fprintf(&b, "| Разрешённая версия в go.mod | `%s` |\n", a.ResolvedVersion)
+				fmt.Fprintf(&b, "| Версия входит в диапазон уязвимых | %s |\n", a.VersionAffected)
+				fmt.Fprintf(&b, "| Уязвимый пакет входит в сборку | %s |\n", a.PackagePresent)
+				fmt.Fprintf(&b, "| Код компилируется для целевой платформы | %s |\n", a.BuildRelevant)
+				if len(a.CheckedModules) > 0 {
+					fmt.Fprintf(&b, "| Проверенные модули | `%s` |\n", strings.Join(a.CheckedModules, "`, `"))
 				}
-				var meta []string
-				if f.AddressSource != "" {
-					meta = append(meta, "source: "+f.AddressSource)
+				if len(a.SelectedModules) > 0 {
+					fmt.Fprintf(&b, "| Скомпилированные модули | `%s` |\n", strings.Join(a.SelectedModules, "`, `"))
 				}
-				if f.Scope != "" {
-					meta = append(meta, "scope: "+f.Scope)
+				if len(a.PendingModules) > 0 {
+					fmt.Fprintf(&b, "| Модули с неопределённой версией | `%s` |\n", strings.Join(a.PendingModules, "`, `"))
 				}
-				if len(meta) > 0 {
-					fmt.Fprintf(&b, " (%s)", strings.Join(meta, ", "))
+				if len(a.CheckedPackages) > 0 {
+					fmt.Fprintf(&b, "| Проверенные пакеты | `%s` |\n", strings.Join(a.CheckedPackages, "`, `"))
 				}
-				fmt.Fprintf(&b, " — %s:%d\n", f.File, f.Line)
-			}
-			b.WriteString("\n")
-		}
-		if c.RootCause != nil || c.Exploit != nil {
-			b.WriteString("### Модель эксплуатации и сайты дефекта (Exploit & Locus)\n\n")
-			if c.RootCause != nil {
-				fmt.Fprintf(&b, "#### Root cause: `%s`\n\n", c.RootCause.Status)
-				for _, rc := range c.RootCause.RootCauses {
-					fmt.Fprintf(&b, "- `%s.%s` (%s) — %s\n", rc.Package, rc.Symbol, rc.Role, rc.Mechanism)
+				if len(a.EvidenceIDs) > 0 {
+					fmt.Fprintf(&b, "| Идентификаторы доказательств (Evidence IDs) | %s |\n", strings.Join(evidenceIDs(a.EvidenceIDs), ", "))
+				}
+				b.WriteString("\n")
+			} else {
+				fmt.Fprintf(&b, "### Affected Analysis\n\n")
+				fmt.Fprintf(&b, "| check | result |\n|---|---|\n")
+				fmt.Fprintf(&b, "| module present | %s |\n", a.ModulePresent)
+				fmt.Fprintf(&b, "| resolved version | `%s` |\n", a.ResolvedVersion)
+				fmt.Fprintf(&b, "| version affected | %s |\n", a.VersionAffected)
+				fmt.Fprintf(&b, "| package present | %s |\n", a.PackagePresent)
+				fmt.Fprintf(&b, "| build relevant | %s |\n", a.BuildRelevant)
+				if len(a.CheckedModules) > 0 {
+					fmt.Fprintf(&b, "| modules probed | `%s` |\n", strings.Join(a.CheckedModules, "`, `"))
+				}
+				if len(a.SelectedModules) > 0 {
+					fmt.Fprintf(&b, "| modules linked | `%s` |\n", strings.Join(a.SelectedModules, "`, `"))
+				}
+				if len(a.PendingModules) > 0 {
+					fmt.Fprintf(&b, "| modules version-unresolved | `%s` |\n", strings.Join(a.PendingModules, "`, `"))
+				}
+				if len(a.CheckedPackages) > 0 {
+					fmt.Fprintf(&b, "| packages probed | `%s` |\n", strings.Join(a.CheckedPackages, "`, `"))
+				}
+				if len(a.EvidenceIDs) > 0 {
+					fmt.Fprintf(&b, "| evidence | %s |\n", strings.Join(evidenceIDs(a.EvidenceIDs), ", "))
 				}
 				b.WriteString("\n")
 			}
-			if c.Exploit != nil {
-				if c.Exploit.Class != "" {
-					fmt.Fprintf(&b, "Class: `%s`\n\n", c.Exploit.Class)
+		}
+
+		if len(c.Claims) > 0 {
+			if isRU {
+				b.WriteString("### Статус условий эксплуатации (Claims)\n\n| Условие | Результат | Верификация | Доказательства |\n|---|---|---|---|\n")
+				for _, cl := range c.Claims {
+					fmt.Fprintf(&b, "| `%s` | %s | %s | %s |\n", cl.ConditionID, cl.Result,
+						claimVerification(cl, true), strings.Join(evidenceIDs(cl.EvidenceIDs), ", "))
 				}
-				if c.Exploit.Impact != "" {
-					fmt.Fprintf(&b, "Impact: %s\n\n", c.Exploit.Impact)
+				b.WriteString("\n")
+			} else {
+				b.WriteString("### Claims Status\n\n| condition | result | verification | evidence |\n|---|---|---|---|\n")
+				for _, cl := range c.Claims {
+					fmt.Fprintf(&b, "| `%s` | %s | %s | %s |\n", cl.ConditionID, cl.Result,
+						claimVerification(cl, false), strings.Join(evidenceIDs(cl.EvidenceIDs), ", "))
 				}
-				writeConditions(&b, "Mandatory conditions", c.Exploit.MandatoryConditions)
-				writeConditions(&b, "Supporting factors", c.Exploit.SupportingFactors)
-				if len(c.Exploit.NonLocusBasis) > 0 {
-					b.WriteString("#### Экспертные решения `non_locus` (исключённые функции)\n\n")
-					b.WriteString("Анализ скорректирован с учётом ранее зафиксированных решений эксперта (ручное подтверждение, не автоматический вывод):\n\n")
-					for _, d := range c.Exploit.NonLocusBasis {
-						auth := d.Authority
-						if auth == "" {
-							auth = "эксперт"
-						}
-						fmt.Fprintf(&b, "- `%s.%s` — %s (%s)\n", d.Symbol.Package, d.Symbol.Symbol, d.Basis, auth)
+				b.WriteString("\n")
+			}
+		}
+
+		if len(exps) > 0 {
+			if isRU {
+				b.WriteString("### Точки входа (Exposure Facts)\n\n")
+				for _, f := range exps {
+					var dirDesc string
+					if f.Direction == "inbound" {
+						dirDesc = "Входящий слушатель"
+					} else if f.Direction == "outbound" {
+						dirDesc = "Исходящее подключение"
+					} else {
+						dirDesc = fmt.Sprintf("`%s` %s", f.Direction, f.Kind)
+					}
+					fmt.Fprintf(&b, "- %s через `%s`", dirDesc, f.Target)
+					if f.Address != "" {
+						fmt.Fprintf(&b, " — `%s`", f.Address)
+					}
+					var meta []string
+					if f.AddressSource != "" {
+						meta = append(meta, "источник: "+f.AddressSource)
+					}
+					if f.Scope != "" {
+						meta = append(meta, "область: "+f.Scope)
+					}
+					if len(meta) > 0 {
+						fmt.Fprintf(&b, " (%s)", strings.Join(meta, ", "))
+					}
+					fmt.Fprintf(&b, " — %s:%d\n", f.File, f.Line)
+				}
+				b.WriteString("\n")
+			} else {
+				b.WriteString("### Exposure Facts\n\n")
+				for _, f := range exps {
+					fmt.Fprintf(&b, "- `%s` %s via `%s`", f.Direction, f.Kind, f.Target)
+					if f.Address != "" {
+						fmt.Fprintf(&b, " — `%s`", f.Address)
+					}
+					var meta []string
+					if f.AddressSource != "" {
+						meta = append(meta, "source: "+f.AddressSource)
+					}
+					if f.Scope != "" {
+						meta = append(meta, "scope: "+f.Scope)
+					}
+					if len(meta) > 0 {
+						fmt.Fprintf(&b, " (%s)", strings.Join(meta, ", "))
+					}
+					fmt.Fprintf(&b, " — %s:%d\n", f.File, f.Line)
+				}
+				b.WriteString("\n")
+			}
+		}
+
+		if c.RootCause != nil || c.Exploit != nil {
+			if isRU {
+				b.WriteString("### Модель эксплуатации и сайты дефекта\n\n")
+			} else {
+				b.WriteString("### Exploit Model & Defect Locus\n\n")
+			}
+
+			if c.RootCause != nil {
+				if isRU {
+					fmt.Fprintf(&b, "#### Первопричина дефекта (Root cause): %s\n\n", rootCauseStatus(c.RootCause.Status, true))
+					for _, rc := range c.RootCause.RootCauses {
+						fmt.Fprintf(&b, "- `%s.%s` (%s) — %s\n", rc.Package, rc.Symbol, rootCauseRole(rc.Role, true), rc.Mechanism)
+					}
+					b.WriteString("\n")
+				} else {
+					fmt.Fprintf(&b, "#### Root cause: `%s`\n\n", c.RootCause.Status)
+					for _, rc := range c.RootCause.RootCauses {
+						fmt.Fprintf(&b, "- `%s.%s` (%s) — %s\n", rc.Package, rc.Symbol, rc.Role, rc.Mechanism)
 					}
 					b.WriteString("\n")
 				}
+			}
+
+			if c.Exploit != nil {
+				if c.Exploit.Class != "" {
+					if isRU {
+						fmt.Fprintf(&b, "Класс дефекта: `%s`\n\n", c.Exploit.Class)
+					} else {
+						fmt.Fprintf(&b, "Class: `%s`\n\n", c.Exploit.Class)
+					}
+				}
+				if c.Exploit.Impact != "" {
+					if isRU {
+						fmt.Fprintf(&b, "Последствия: %s\n\n", c.Exploit.Impact)
+					} else {
+						fmt.Fprintf(&b, "Impact: %s\n\n", c.Exploit.Impact)
+					}
+				}
+
+				if isRU {
+					writeConditions(&b, "Обязательные условия (Mandatory conditions)", c.Exploit.MandatoryConditions, true)
+					writeConditions(&b, "Сопутствующие факторы (Supporting factors)", c.Exploit.SupportingFactors, true)
+				} else {
+					writeConditions(&b, "Mandatory conditions", c.Exploit.MandatoryConditions, false)
+					writeConditions(&b, "Supporting factors", c.Exploit.SupportingFactors, false)
+				}
+
+				if len(c.Exploit.NonLocusBasis) > 0 {
+					if isRU {
+						b.WriteString("#### Экспертные решения non_locus\n\n")
+						b.WriteString("Анализ скорректирован с учётом ранее зафиксированных решений эксперта (ручное подтверждение, не автоматический вывод):\n\n")
+						for _, d := range c.Exploit.NonLocusBasis {
+							auth := d.Authority
+							if auth == "" {
+								auth = "эксперт"
+							}
+							fmt.Fprintf(&b, "- `%s.%s` — %s (%s)\n", d.Symbol.Package, d.Symbol.Symbol, d.Basis, auth)
+						}
+						b.WriteString("\n")
+					} else {
+						b.WriteString("#### Expert decisions on non_locus\n\n")
+						b.WriteString("Analysis adjusted for recorded expert decisions (manual confirmation, not automated deduction):\n\n")
+						for _, d := range c.Exploit.NonLocusBasis {
+							auth := d.Authority
+							if auth == "" {
+								auth = "expert"
+							}
+							fmt.Fprintf(&b, "- `%s.%s` — %s (%s)\n", d.Symbol.Package, d.Symbol.Symbol, d.Basis, auth)
+						}
+						b.WriteString("\n")
+					}
+				}
+
 				if len(c.Exploit.ProposedNonLocus) > 0 || len(c.Exploit.LocusSubjects) > 0 {
-					b.WriteString("#### Предварительная оценка анализатора (рекомендация, не вердикт)\n\n")
-					b.WriteString(machineAssessment(c))
-					b.WriteString("\n")
+					if isRU {
+						b.WriteString("#### Оценка анализатора\n\n")
+						b.WriteString(machineAssessment(c))
+						b.WriteString("\n")
+					} else {
+						b.WriteString("#### Machine assessment\n\n")
+						b.WriteString(machineAssessment(c))
+						b.WriteString("\n")
+					}
 				}
 			}
 		}
@@ -178,9 +399,18 @@ func Markdown(c *domain.AnalysisCase) string {
 		len(c.Hypotheses) > 0
 
 	if hasAudit {
-		b.WriteString("<details>\n<summary><b>Технические детали и аудит (Data Flows, Tool Executions, Limitations)</b></summary>\n\n")
+		if isRU {
+			b.WriteString("<details>\n<summary><b>Технические детали и аудит (Data Flows, Tool Executions, Limitations)</b></summary>\n\n")
+		} else {
+			b.WriteString("<details>\n<summary><b>Technical Details & Audit (Data Flows, Tool Executions, Limitations)</b></summary>\n\n")
+		}
+
 		if len(c.EvidenceGraph.DataFlows) > 0 {
-			b.WriteString("### Потоки данных (Data Flows)\n\n")
+			if isRU {
+				b.WriteString("### Потоки данных (Data Flows)\n\n")
+			} else {
+				b.WriteString("### Data Flows\n\n")
+			}
 			for _, f := range c.EvidenceGraph.DataFlows {
 				var tx []string
 				for _, t := range f.Transformations {
@@ -194,8 +424,13 @@ func Markdown(c *domain.AnalysisCase) string {
 			}
 			b.WriteString("\n")
 		}
+
 		if len(texs) > 0 {
-			b.WriteString("### Журнал инструментов (Tool Executions)\n\n| tool | args | exit | ms | stdout sha256 |\n|---|---|---|---|---|\n")
+			if isRU {
+				b.WriteString("### Журнал инструментов (Tool Executions)\n\n| Инструмент | Аргументы | Код возврата | Длительность (мс) | SHA-256 вывода |\n|---|---|---|---|---|\n")
+			} else {
+				b.WriteString("### Tool Executions\n\n| tool | args | exit | ms | stdout sha256 |\n|---|---|---|---|---|\n")
+			}
 			for _, t := range texs {
 				tool := t.Tool
 				if t.Version != "" {
@@ -210,15 +445,25 @@ func Markdown(c *domain.AnalysisCase) string {
 			}
 			b.WriteString("\n")
 		}
+
 		if len(lims) > 0 {
-			b.WriteString("### Ограничения анализа (Limitations)\n\n")
+			if isRU {
+				b.WriteString("### Ограничения анализа (Limitations)\n\n")
+			} else {
+				b.WriteString("### Limitations\n\n")
+			}
 			for _, l := range lims {
 				fmt.Fprintf(&b, "- %s\n", l)
 			}
 			b.WriteString("\n")
 		}
+
 		if len(c.Reviews) > 0 {
-			b.WriteString("### Рецензирование (Review Findings)\n\n")
+			if isRU {
+				b.WriteString("### Рецензирование (Review Findings)\n\n")
+			} else {
+				b.WriteString("### Review Findings\n\n")
+			}
 			for _, rv := range c.Reviews {
 				fmt.Fprintf(&b, "- `%s` → **%s**", rv.ID, rv.Result)
 				if len(rv.Findings) > 0 {
@@ -227,21 +472,35 @@ func Markdown(c *domain.AnalysisCase) string {
 						fmt.Fprintf(&b, "  - [%s] %s `%s`: %s\n", f.Severity, f.TargetType, f.TargetID, f.Problem)
 					}
 				} else {
-					b.WriteString(" — no findings\n")
+					if isRU {
+						b.WriteString(" — замечаний нет\n")
+					} else {
+						b.WriteString(" — no findings\n")
+					}
 				}
 			}
 			b.WriteString("\n")
 		}
+
 		if len(c.EvidenceGraph.Runtime) > 0 {
-			b.WriteString("### Факты среды (Runtime Facts)\n\n")
+			if isRU {
+				b.WriteString("### Факты среды (Runtime Facts)\n\n")
+			} else {
+				b.WriteString("### Runtime Facts\n\n")
+			}
 			for _, id := range c.EvidenceGraph.Runtime {
 				if e := c.EvidenceGraph.EvidenceByID(id); e != nil {
 					fmt.Fprintf(&b, "- %s: %s\n\n", e.Source, e.Content)
 				}
 			}
 		}
+
 		if len(bt) > 0 {
-			b.WriteString("### Сборка и тесты (Build & Test)\n\n")
+			if isRU {
+				b.WriteString("### Сборка и тесты (Build & Test)\n\n")
+			} else {
+				b.WriteString("### Build & Test\n\n")
+			}
 			for _, e := range bt {
 				name := e.Command
 				if name == "" {
@@ -255,8 +514,13 @@ func Markdown(c *domain.AnalysisCase) string {
 			}
 			b.WriteString("\n")
 		}
+
 		if len(c.Hypotheses) > 0 {
-			b.WriteString("### Гипотезы (Hypotheses)\n\n")
+			if isRU {
+				b.WriteString("### Рабочие гипотезы (Hypotheses)\n\n")
+			} else {
+				b.WriteString("### Hypotheses\n\n")
+			}
 			for _, h := range c.Hypotheses {
 				fmt.Fprintf(&b, "- `%s` %s → **%s**: %s", h.ID, h.ConditionID, h.Status, h.Statement)
 				if h.Notes != "" {
@@ -266,19 +530,21 @@ func Markdown(c *domain.AnalysisCase) string {
 			}
 			b.WriteString("\n")
 		}
+
 		b.WriteString("</details>\n")
 	}
 
 	return b.String()
 }
 
-func writeConditions(b *strings.Builder, title string, conds []domain.Condition) {
+func writeConditions(b *strings.Builder, title string, conds []domain.Condition, isRU bool) {
 	if len(conds) == 0 {
 		return
 	}
 	fmt.Fprintf(b, "#### %s\n\n", title)
 	for _, cond := range conds {
-		fmt.Fprintf(b, "- `%s` [%s]: %s%s\n", cond.ID, cond.Kind, cond.Description, renderParams(cond.Params))
+		desc := localizeConditionDesc(string(cond.ID), cond.Description, isRU)
+		fmt.Fprintf(b, "- `%s` [%s]: %s%s\n", cond.ID, cond.Kind, desc, renderParams(cond.Params))
 	}
 	b.WriteString("\n")
 }
@@ -302,19 +568,35 @@ func renderParams(params map[string]string) string {
 // claimVerification renders the falsifier/NV status so a claim that was
 // proven and then demoted by review stays auditable in the table —
 // e.g. "guards / VERIFIED (demoted)" instead of a bare UNKNOWN.
-func claimVerification(cl domain.Claim) string {
+func claimVerification(cl domain.Claim, isRU bool) string {
 	if cl.NegativeVerification == nil && cl.Falsifier == "" {
 		return ""
 	}
 	var s string
 	if cl.Falsifier != "" {
-		s = string(cl.Falsifier)
+		f := string(cl.Falsifier)
+		if isRU {
+			switch cl.Falsifier {
+			case "locus-package-absent":
+				f = "Пакет отсутствует в сборке"
+			}
+		}
+		s = f
 	}
 	if cl.NegativeVerification != nil {
+		st := string(cl.NegativeVerification.Status)
+		if isRU {
+			switch cl.NegativeVerification.Status {
+			case domain.NegativeVerified:
+				st = "ПОДТВЕРЖДЕНО"
+			case domain.NegativeInsufficientScope:
+				st = "Недостаточный охват"
+			}
+		}
 		if s != "" {
 			s += " / "
 		}
-		s += string(cl.NegativeVerification.Status)
+		s += st
 	}
 	if cl.Result == domain.ClaimUnknown && cl.NegativeVerification != nil &&
 		cl.NegativeVerification.Status == domain.NegativeVerified {
@@ -911,15 +1193,24 @@ func FixTarget(c *domain.AnalysisCase) (module, version string, ok bool) {
 // remediation renders a deterministic fix recommendation: the smallest
 // fixed version above the resolved one, plus the go command to apply it.
 // Empty when the component is not affected or no fix is published.
-func remediation(c *domain.AnalysisCase) string {
+func remediation(c *domain.AnalysisCase, langRU ...bool) string {
+	isRU := len(langRU) > 0 && langRU[0]
 	mod, best, ok := FixTarget(c)
 	if !ok {
 		return ""
 	}
 	resolved := c.Affected.ResolvedVersion
 	if best == "" {
+		if isRU {
+			return fmt.Sprintf("Для зависимости `%s` (текущая: `%s`) нет опубликованных версий с исправлением. "+
+				"Рассмотрите возможность фиксации безопасной версии или наложения патча.", mod, resolved)
+		}
 		return fmt.Sprintf("No fixed version published for `%s` (current: `%s`). "+
 			"Consider pinning an unaffected release or vendoring a patch.", mod, resolved)
+	}
+	if isRU {
+		return fmt.Sprintf("Обновите зависимость `%s` с `%s` до `%s`:\n\n```\ngo get %s@%s\ngo mod tidy\n```",
+			mod, resolved, best, mod, best)
 	}
 	return fmt.Sprintf("Update `%s` from `%s` to `%s`:\n\n```\ngo get %s@%s\ngo mod tidy\n```",
 		mod, resolved, best, mod, best)
