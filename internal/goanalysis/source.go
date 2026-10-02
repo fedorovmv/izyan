@@ -871,8 +871,37 @@ func (ix *Index) DepInvocationState(ctx context.Context, ref domain.SymbolRef) (
 		}
 	}
 	_, name := splitSymbol(ref.Symbol)
-	if ast.IsExported(name) && ix.importedByOtherModule(ctx, ref.Package, mod) {
-		unbounded = true
+	if ast.IsExported(name) {
+		importers, ierr := ix.depImporters(ctx)
+		if ierr != nil {
+			unbounded = true
+		} else {
+			var otherPkgs []string
+			for _, im := range importers[ref.Package] {
+				if !ix.isProductPath(im.path) && im.module != mod {
+					otherPkgs = append(otherPkgs, im.path)
+				}
+			}
+			if len(otherPkgs) > 0 {
+				if len(otherPkgs) <= 16 {
+					for _, op := range otherPkgs {
+						opLoaded, lerr := ix.loadExtra(ctx, op)
+						if lerr != nil {
+							unbounded = true
+							break
+						}
+						otherSites := ix.findCallSitesIn(opLoaded, ref)
+						for _, os := range otherSites {
+							if ix.depSiteLive(ctx, os, depLiveFuel, map[string]bool{}) {
+								callers++
+							}
+						}
+					}
+				} else {
+					unbounded = true
+				}
+			}
+		}
 	}
 	sites, err := ix.depModuleCallSites(ctx, ref, mod)
 	if err != nil {
