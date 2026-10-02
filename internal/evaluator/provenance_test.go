@@ -101,4 +101,7 @@ func TestArgumentOrigin_LocalConfigurationTrusted(t *testing.T) {
 	if claim.Falsifier != domain.FalsifierTrustedInfrastructure {
 		t.Fatalf("expected FalsifierTrustedInfrastructure, got %s", claim.Falsifier)
 	}
+	if claim.NegativeVerification == nil || claim.NegativeVerification.Status != domain.NegativeVerified {
+		t.Fatalf("expected NegativeVerified on ClaimFalse, got %+v", claim.NegativeVerification)
+	}
 }

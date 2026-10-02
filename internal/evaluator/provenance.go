@@ -278,7 +278,7 @@ func closureGate(claim domain.Claim, cl *domain.IngressClosure, sc *domain.SinkC
 				hasUnsafeBoundary := false
 				if cl != nil {
 					for _, it := range cl.Items {
-						if it.Kind == domain.IngressBoundaryArg && !domain.SafeOrigin(it.Origin) {
+						if (it.Kind == domain.IngressBoundaryArg || it.Kind == domain.IngressBoundaryReceiver || it.Kind == domain.IngressObjectState) && !domain.SafeOrigin(it.Origin) {
 							hasUnsafeBoundary = true
 							break
 						}
