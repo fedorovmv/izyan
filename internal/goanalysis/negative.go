@@ -530,7 +530,9 @@ func (v Verifier) verifyInputFalse(ctx context.Context, c *domain.AnalysisCase, 
 			nv.Notes = "caller search failed: " + err.Error()
 			return setNeg(claim, nv)
 		}
-		if len(callers) == 0 && inCaseModules(subj.Package, mods) {
+		if len(callers) == 0 && inCaseModules(subj.Package, mods) &&
+			claim.Falsifier != domain.FalsifierConstantOrGeneratedInput &&
+			claim.Falsifier != domain.FalsifierTrustedInfrastructure {
 			// Unexported dependency subjects have no product callers — the
 			// FALSE under verification may have been produced by dep-internal
 			// provenance; re-trace the same dep scope. Membership is checked

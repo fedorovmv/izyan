@@ -357,6 +357,15 @@ func linkedModules(c *domain.AnalysisCase) []string {
 	return nil
 }
 
+func inCaseModules(pkgPath string, mods []string) bool {
+	for _, m := range mods {
+		if domain.PackageInModule(pkgPath, m) {
+			return true
+		}
+	}
+	return false
+}
+
 // subjectModules returns the linked modules owning the subjects — the
 // longest matching module per subject, so a nested module is not absorbed
 // by its parent's prefix. A subject matching none of them widens the

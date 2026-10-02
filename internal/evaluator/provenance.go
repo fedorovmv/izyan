@@ -36,7 +36,7 @@ func (ArgumentOrigin) Evaluate(cond domain.Condition, c *domain.AnalysisCase) do
 			"no argument-provenance data flows recorded for this condition")
 		return claim
 	}
-	module := c.Vulnerability.Module
+	mods := linkedModules(c)
 	var safe, external, unknown, payloadUnproven, deployDependent, coneInternal int
 	for _, f := range flows {
 		if cond.ArgIndex < 0 && f.PayloadUnproven &&
@@ -59,7 +59,7 @@ func (ArgumentOrigin) Evaluate(cond domain.Condition, c *domain.AnalysisCase) do
 			// the value is dependency-internal, so its provenance is
 			// decided by the ingress closure, not by call-site tracing —
 			// a complete closure with all-safe reaching items absorbs it.
-			if module != "" && domain.PackageInModule(f.Sink.Package, module) {
+			if inCaseModules(f.Sink.Package, mods) {
 				coneInternal++
 			} else {
 				unknown++
@@ -161,6 +161,9 @@ func (ArgumentOrigin) Evaluate(cond domain.Condition, c *domain.AnalysisCase) do
 	case deployDependent > 0:
 		allConfig := true
 		for _, f := range flows {
+			if inCaseModules(f.Sink.Package, mods) {
+				continue
+			}
 			if f.Origin != domain.OriginConfiguration {
 				allConfig = false
 				break
@@ -170,7 +173,7 @@ func (ArgumentOrigin) Evaluate(cond domain.Condition, c *domain.AnalysisCase) do
 			claim.Result = domain.ClaimFalse
 			claim.Falsifier = domain.FalsifierTrustedInfrastructure
 			if allConfig {
-				claim.Explanation = fmt.Sprintf("all %d call site(s) consume local configuration files from host environment (trusted infrastructure)", len(flows))
+				claim.Explanation = fmt.Sprintf("all %d call site(s) consume local configuration files from host environment (trusted infrastructure)", deployDependent)
 				claim.NegativeVerification = &domain.NegativeVerification{
 					Status: domain.NegativeVerified,
 					Notes:  "local host configuration files are treated as trusted infrastructure environment",
@@ -182,7 +185,8 @@ func (ArgumentOrigin) Evaluate(cond domain.Condition, c *domain.AnalysisCase) do
 					Notes:  "deployment infrastructure declared trusted peer/service communication (--trusted-peer)",
 				}
 			}
-			return claim
+			return closureGate(c, claim, c.EvidenceGraph.IngressClosureFor(cond.ID),
+				c.EvidenceGraph.SinkClosureFor(cond.ID), coneInternal, flows)
 		}
 		claim.Limitations = append(claim.Limitations,
 			fmt.Sprintf("%d call site(s) receive config/service-provided input; attacker control depends on deployment trust boundary — cannot prove non-external", deployDependent))
@@ -193,7 +197,7 @@ func (ArgumentOrigin) Evaluate(cond domain.Condition, c *domain.AnalysisCase) do
 		claim.Limitations = append(claim.Limitations,
 			"FALSE is a candidate: provenance coverage is limited to direct call sites")
 	}
-	return closureGate(claim, c.EvidenceGraph.IngressClosureFor(cond.ID),
+	return closureGate(c, claim, c.EvidenceGraph.IngressClosureFor(cond.ID),
 		c.EvidenceGraph.SinkClosureFor(cond.ID), coneInternal, flows)
 }
 
@@ -210,7 +214,7 @@ func (ArgumentOrigin) Evaluate(cond domain.Condition, c *domain.AnalysisCase) do
 // coneInternal counts traced sinks inside the module cone whose argument
 // provenance was unresolvable — they are absorbed only by a verified
 // complete closure; without one they keep the claim UNKNOWN.
-func closureGate(claim domain.Claim, cl *domain.IngressClosure, sc *domain.SinkClosure, coneInternal int, flows []domain.DataFlow) domain.Claim {
+func closureGate(c *domain.AnalysisCase, claim domain.Claim, cl *domain.IngressClosure, sc *domain.SinkClosure, coneInternal int, flows []domain.DataFlow) domain.Claim {
 	if cl != nil && len(cl.Blockers) > 0 {
 		notes := cl.Blockers
 		if len(notes) > 5 {
@@ -255,9 +259,13 @@ func closureGate(claim domain.Claim, cl *domain.IngressClosure, sc *domain.SinkC
 		}
 		return claim
 	}
-	if claim.Falsifier == domain.FalsifierConstantOrGeneratedInput && len(flows) > 0 {
+	if (claim.Falsifier == domain.FalsifierConstantOrGeneratedInput || claim.Falsifier == domain.FalsifierTrustedInfrastructure) && len(flows) > 0 {
+		mods := linkedModules(c)
 		var direct []domain.DataFlow
 		for _, f := range flows {
+			if inCaseModules(f.Sink.Package, mods) {
+				continue
+			}
 			if cl != nil && cl.Module != "" && domain.PackageInModule(f.Sink.Package, cl.Module) {
 				continue
 			}
@@ -267,27 +275,54 @@ func closureGate(claim domain.Claim, cl *domain.IngressClosure, sc *domain.SinkC
 			direct = append(direct, f)
 		}
 		if len(direct) > 0 {
-			allConst := true
+			allOk := true
 			for _, f := range direct {
-				if f.Origin != domain.OriginConstant && f.Origin != domain.OriginGenerated {
-					allConst = false
-					break
+				if claim.Falsifier == domain.FalsifierConstantOrGeneratedInput {
+					if f.Origin != domain.OriginConstant && f.Origin != domain.OriginGenerated {
+						allOk = false
+						break
+					}
+				} else if claim.Falsifier == domain.FalsifierTrustedInfrastructure {
+					if f.Origin != domain.OriginConfiguration {
+						allOk = false
+						break
+					}
 				}
 			}
-			if allConst {
+			if allOk {
 				hasUnsafeBoundary := false
 				if cl != nil {
 					for _, it := range cl.Items {
-						if (it.Kind == domain.IngressBoundaryArg || it.Kind == domain.IngressBoundaryReceiver || it.Kind == domain.IngressObjectState) && !domain.SafeOrigin(it.Origin) {
-							hasUnsafeBoundary = true
-							break
+						if it.Kind == domain.IngressBoundaryArg || it.Kind == domain.IngressBoundaryReceiver || it.Kind == domain.IngressObjectState {
+							// Receivers or object states that do not reach any vulnerable symbol cannot influence the vulnerability.
+							if len(it.Reaches) == 0 && (it.Kind == domain.IngressBoundaryReceiver || it.Kind == domain.IngressObjectState) {
+								continue
+							}
+							// For unmarshaling/decoding functions, arg > 0 is the destination output struct being populated, not the input payload.
+							if it.Kind == domain.IngressBoundaryArg && it.Arg > 0 && isPopulateCallee(it.Callee) {
+								continue
+							}
+							if claim.Falsifier == domain.FalsifierConstantOrGeneratedInput && !domain.SafeOrigin(it.Origin) {
+								hasUnsafeBoundary = true
+								break
+							}
+							if claim.Falsifier == domain.FalsifierTrustedInfrastructure && it.Origin != domain.OriginConfiguration && !domain.SafeOrigin(it.Origin) {
+								hasUnsafeBoundary = true
+								break
+							}
 						}
 					}
 				}
 				if !hasUnsafeBoundary {
-					claim.Limitations = append(claim.Limitations, fmt.Sprintf(
-						"all %d direct call site(s) receive compile-time constant payload; parser cone operations operate exclusively on immutable input",
-						len(direct)))
+					if claim.Falsifier == domain.FalsifierConstantOrGeneratedInput {
+						claim.Limitations = append(claim.Limitations, fmt.Sprintf(
+							"all %d direct call site(s) receive compile-time constant payload; parser cone operations operate exclusively on immutable input",
+							len(direct)))
+					} else {
+						claim.Limitations = append(claim.Limitations, fmt.Sprintf(
+							"all %d direct call site(s) consume local configuration files from host environment (trusted infrastructure)",
+							len(direct)))
+					}
 					return claim
 				}
 			}
@@ -652,4 +687,15 @@ func guardCovers(vals []domain.Validation, sink domain.CallSite, arg int) bool {
 		}
 	}
 	return false
+}
+
+func isPopulateCallee(callee string) bool {
+	parts := strings.Split(callee, ".")
+	name := parts[len(parts)-1]
+	switch name {
+	case "Unmarshal", "Decode", "DecodeElement", "UnmarshalStrict", "UnmarshalExact", "DecodeValues", "Read":
+		return true
+	default:
+		return false
+	}
 }

@@ -2485,18 +2485,20 @@ func canonicalByteIO(sig *types.Signature) bool {
 
 // InputParamIndex heuristically selects the parameter index most likely to
 // carry attacker-controlled data, from the callee's signature: request-like
-// and reader types win over plain data types. Returns -1 when nothing
-// looks like input — callers must treat that as UNKNOWN, never guess.
-func (ix *Index) InputParamIndex(ref domain.SymbolRef) (int, error) {
+// and reader types win over plain data types.
+// Returns (bestIdx, numParams, nil).
+// If the function takes 0 parameters, it returns (-1, 0, nil).
+// If parameters exist but none score as input, it returns (-1, numParams, nil).
+func (ix *Index) InputParamIndex(ref domain.SymbolRef) (int, int, error) {
 	ix.mu.Lock()
 	defer ix.mu.Unlock()
 	cs, err := ix.findSymbol(ix.ctxOr(nil), ref)
 	if err != nil {
-		return -1, err
+		return -1, 0, err
 	}
 	decl, dp, err := ix.funcDeclAt(cs, ref)
 	if err != nil || decl == nil || decl.Type.Params == nil {
-		return -1, fmt.Errorf("signature for %s.%s unavailable", ref.Package, ref.Symbol)
+		return -1, 0, fmt.Errorf("signature for %s.%s unavailable", ref.Package, ref.Symbol)
 	}
 	best, bestScore := -1, 0
 	i := 0
@@ -2507,14 +2509,18 @@ func (ix *Index) InputParamIndex(ref domain.SymbolRef) (int, error) {
 				tstr = t.String()
 			}
 		}
-		for range f.Names {
+		namesCount := len(f.Names)
+		if namesCount == 0 {
+			namesCount = 1
+		}
+		for n := 0; n < namesCount; n++ {
 			if s := inputScore(tstr); s > bestScore {
 				best, bestScore = i, s
 			}
 			i++
 		}
 	}
-	return best, nil
+	return best, i, nil
 }
 
 // funcDeclAt locates the FuncDecl for a symbol — reusing the definition
