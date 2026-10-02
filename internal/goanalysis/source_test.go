@@ -558,14 +558,20 @@ func TestVerifyInputFalseSecondModule(t *testing.T) {
 
 func TestInputOriginVerificationUnknownValue(t *testing.T) {
 	for _, origin := range []domain.DataOrigin{"", domain.OriginUnknown, "FUTURE_ORIGIN"} {
-		if got := inputOriginVerification(origin); got != domain.NegativeInsufficientScope {
+		if got := inputOriginVerification(origin, ""); got != domain.NegativeInsufficientScope {
 			t.Errorf("origin %q: status = %s, want INSUFFICIENT_SCOPE", origin, got)
 		}
 	}
 	for _, origin := range []domain.DataOrigin{domain.OriginConstant, domain.OriginGenerated} {
-		if got := inputOriginVerification(origin); got != domain.NegativeVerified {
+		if got := inputOriginVerification(origin, ""); got != domain.NegativeVerified {
 			t.Errorf("origin %q: status = %s, want VERIFIED", origin, got)
 		}
+	}
+	if got := inputOriginVerification(domain.OriginConfiguration, ""); got != domain.NegativeContradicted {
+		t.Errorf("OriginConfiguration with empty falsifier: got %s, want CONTRADICTED", got)
+	}
+	if got := inputOriginVerification(domain.OriginConfiguration, domain.FalsifierTrustedInfrastructure); got != domain.NegativeVerified {
+		t.Errorf("OriginConfiguration with FalsifierTrustedInfrastructure: got %s, want VERIFIED", got)
 	}
 }
 

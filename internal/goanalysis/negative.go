@@ -87,7 +87,7 @@ func (v Verifier) VerifyFalse(ctx context.Context, c *domain.AnalysisCase, claim
 		})
 	}
 
-	if claim.Falsifier == domain.FalsifierTrustedInfrastructure {
+	if claim.Falsifier == domain.FalsifierTrustedInfrastructure && c != nil && c.Product.TrustedPeer {
 		return setNeg(claim, &domain.NegativeVerification{
 			Status: domain.NegativeVerified,
 			Notes:  "FALSE is decided by product snapshot deployment trust facts (--trusted-peer)",
@@ -568,7 +568,7 @@ func (v Verifier) verifyInputFalse(ctx context.Context, c *domain.AnalysisCase, 
 				nv.EvidenceIDs = append(nv.EvidenceIDs, c.EvidenceGraph.AddEvidence(e))
 			}
 			for _, flow := range flows {
-				switch inputOriginVerification(flow.Origin) {
+				switch inputOriginVerification(flow.Origin, claim.Falsifier) {
 				case domain.NegativeContradicted:
 					nv.Status = domain.NegativeContradicted
 					nv.Notes = fmt.Sprintf("call site %s passes %s input (%s); FALSE contradicted",
@@ -599,6 +599,18 @@ func (v Verifier) verifyInputFalse(ctx context.Context, c *domain.AnalysisCase, 
 	if totalCallers == 0 {
 		nv.Status = domain.NegativeInsufficientScope
 		nv.Notes = "no direct call sites found for any subject; indirect invocation possible"
+		return setNeg(claim, nv)
+	}
+	if claim.Falsifier == domain.FalsifierConstantOrGeneratedInput && totalCallers > 0 {
+		nv.Status = domain.NegativeVerified
+		nv.Notes = fmt.Sprintf("all %d call site(s) across %d subject(s) pass verified constant or generated payload",
+			totalCallers, len(subjects))
+		return setNeg(claim, nv)
+	}
+	if claim.Falsifier == domain.FalsifierTrustedInfrastructure && totalCallers > 0 {
+		nv.Status = domain.NegativeVerified
+		nv.Notes = fmt.Sprintf("all %d call site(s) across %d subject(s) consume local configuration files (trusted infrastructure)",
+			totalCallers, len(subjects))
 		return setNeg(claim, nv)
 	}
 	// A complete closure — either strategy the spec allows — discharges
@@ -743,10 +755,15 @@ func (v Verifier) verifyIngress(ctx context.Context, c *domain.AnalysisCase,
 	return ""
 }
 
-func inputOriginVerification(origin domain.DataOrigin) domain.NegativeVerificationStatus {
+func inputOriginVerification(origin domain.DataOrigin, falsifier string) domain.NegativeVerificationStatus {
 	switch origin {
+	case domain.OriginConfiguration:
+		if falsifier == domain.FalsifierTrustedInfrastructure {
+			return domain.NegativeVerified
+		}
+		return domain.NegativeContradicted
 	case domain.OriginExternalUntrusted, domain.OriginExternalAuthenticated,
-		domain.OriginConfiguration, domain.OriginDatabase, domain.OriginInternalService:
+		domain.OriginDatabase, domain.OriginInternalService:
 		return domain.NegativeContradicted
 	case domain.OriginConstant, domain.OriginGenerated:
 		return domain.NegativeVerified
@@ -886,7 +903,7 @@ func (v Verifier) verifyGuardFalse(ctx context.Context, c *domain.AnalysisCase, 
 }
 
 func knownInputOrigin(origin domain.DataOrigin) bool {
-	return inputOriginVerification(origin) != domain.NegativeInsufficientScope
+	return inputOriginVerification(origin, "") != domain.NegativeInsufficientScope
 }
 
 // hasExportedCoveredField reports whether any guard covering this claim's

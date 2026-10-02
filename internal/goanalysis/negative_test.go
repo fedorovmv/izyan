@@ -117,3 +117,86 @@ func TestGovulncheckSilenceWithUnexportedSubject(t *testing.T) {
 		t.Fatalf("expected NegativeInsufficientScope for no-product-refs on unexported symbol, got: %+v", out2.NegativeVerification)
 	}
 }
+
+func TestVerifyInputFalse_ConstantPayloadVerified(t *testing.T) {
+	ix := fixture(t, "constprod")
+	v := Verifier{Source: ix}
+	c := &domain.AnalysisCase{
+		Vulnerability: domain.Vulnerability{Module: "gopkg.in/yaml.v2"},
+	}
+	subject := domain.SymbolRef{Package: "example.com/dep/vuln", Symbol: "Parse"}
+	cond := domain.Condition{
+		ID:       "C-INPUT",
+		Kind:     domain.ConditionAttackerControl,
+		Subjects: []domain.SymbolRef{subject},
+		ArgIndex: 0,
+	}
+	claim := domain.Claim{
+		ConditionID: "C-INPUT",
+		Result:      domain.ClaimFalse,
+		Falsifier:   domain.FalsifierConstantOrGeneratedInput,
+	}
+
+	out := v.VerifyFalse(context.Background(), c, claim, cond)
+	if out.NegativeVerification == nil || out.NegativeVerification.Status != domain.NegativeVerified {
+		t.Fatalf("expected NegativeVerified for constant payload, got: %+v", out.NegativeVerification)
+	}
+	if !strings.Contains(out.NegativeVerification.Notes, "pass verified constant or generated payload") {
+		t.Fatalf("unexpected notes: %q", out.NegativeVerification.Notes)
+	}
+}
+
+func TestVerifyInputFalse_TrustedConfigVerified(t *testing.T) {
+	ix := fixture(t, "fieldprod")
+	v := Verifier{Source: ix}
+	c := &domain.AnalysisCase{
+		Vulnerability: domain.Vulnerability{Module: "example.com/dep"},
+	}
+	subject := domain.SymbolRef{Package: "example.com/dep/vuln", Symbol: "Parse"}
+	cond := domain.Condition{
+		ID:       "C-INPUT",
+		Kind:     domain.ConditionAttackerControl,
+		Subjects: []domain.SymbolRef{subject},
+		ArgIndex: 0,
+	}
+	claim := domain.Claim{
+		ConditionID: "C-INPUT",
+		Result:      domain.ClaimFalse,
+		Falsifier:   domain.FalsifierTrustedInfrastructure,
+	}
+
+	out := v.VerifyFalse(context.Background(), c, claim, cond)
+	if out.NegativeVerification == nil || out.NegativeVerification.Status != domain.NegativeVerified {
+		t.Fatalf("expected NegativeVerified for trusted config, got: %+v", out.NegativeVerification)
+	}
+	if !strings.Contains(out.NegativeVerification.Notes, "consume local configuration files (trusted infrastructure)") {
+		t.Fatalf("unexpected notes: %q", out.NegativeVerification.Notes)
+	}
+}
+
+func TestVerifyInputFalse_ExternalInputContradictsConstantAndConfig(t *testing.T) {
+	ix := fixture(t, "extprod")
+	v := Verifier{Source: ix}
+	c := &domain.AnalysisCase{
+		Vulnerability: domain.Vulnerability{Module: "example.com/dep"},
+	}
+	subject := domain.SymbolRef{Package: "example.com/dep/vuln", Symbol: "Parse"}
+	cond := domain.Condition{
+		ID:       "C-INPUT",
+		Kind:     domain.ConditionAttackerControl,
+		Subjects: []domain.SymbolRef{subject},
+		ArgIndex: 0,
+	}
+
+	for _, falsifier := range []string{domain.FalsifierConstantOrGeneratedInput, domain.FalsifierTrustedInfrastructure} {
+		claim := domain.Claim{
+			ConditionID: "C-INPUT",
+			Result:      domain.ClaimFalse,
+			Falsifier:   falsifier,
+		}
+		out := v.VerifyFalse(context.Background(), c, claim, cond)
+		if out.NegativeVerification == nil || out.NegativeVerification.Status != domain.NegativeContradicted {
+			t.Fatalf("falsifier %q: expected NegativeContradicted for external input, got: %+v", falsifier, out.NegativeVerification)
+		}
+	}
+}
