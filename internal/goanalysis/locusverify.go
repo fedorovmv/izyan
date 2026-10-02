@@ -271,8 +271,26 @@ func (v Verifier) verifyLocusFunctionUnreached(ctx context.Context, c *domain.An
 		productImports, linknamePragmas = scanProductSource(repoDir)
 	}
 
+	if v.Source != nil {
+		if note := v.checkDepInvocation(ctx, c, subjects); note != "" {
+			nv.Status = domain.NegativeInsufficientScope
+			nv.Notes = note
+			return setNeg(claim, nv)
+		}
+	}
+
 	for _, subj := range subjects {
 		isInternal := isInternalPkg(subj.Package)
+
+		if symbolIsMethod(subj) {
+			_, name := splitSymbol(subj.Symbol)
+			if v.Source != nil && v.Source.methodInAnyInterface(name) {
+				nv.Status = domain.NegativeInsufficientScope
+				nv.Notes = fmt.Sprintf("метод %s.%s может вызываться через интерфейс (метод входит в интерфейсы сборки)",
+					subj.Package, subj.Symbol)
+				return setNeg(claim, nv)
+			}
+		}
 
 		// Check if product code directly imports subj.Package.
 		if files, imported := productImports[subj.Package]; imported {

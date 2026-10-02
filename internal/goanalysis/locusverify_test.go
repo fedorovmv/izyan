@@ -304,3 +304,30 @@ func TestVerifyLocusFunctionUnreached_NonInternalNoSource(t *testing.T) {
 		t.Fatalf("expected NegativeInsufficientScope, got %+v", verified.NegativeVerification)
 	}
 }
+
+func TestVerifyLocusFunctionUnreached_MethodInInterface(t *testing.T) {
+	ix := &Index{
+		Dir: t.TempDir(),
+	}
+	v := Verifier{Source: ix}
+	claim := domain.Claim{
+		ID:          "CL-C-LOCUS",
+		ConditionID: "C-LOCUS",
+		Result:      domain.ClaimFalse,
+		Falsifier:   domain.FalsifierLocusFunctionUnreached,
+	}
+	// "Close" is a standard library interface method (io.Closer).
+	cond := domain.Condition{
+		ID: "C-LOCUS",
+		Subjects: []domain.SymbolRef{
+			{Package: "example.com/dep/internal/pkg", Symbol: "MyStruct.Close"},
+		},
+	}
+	c := &domain.AnalysisCase{
+		EvidenceGraph: domain.EvidenceGraph{},
+	}
+	verified := v.VerifyFalse(context.Background(), c, claim, cond)
+	if verified.NegativeVerification == nil || verified.NegativeVerification.Status != domain.NegativeInsufficientScope {
+		t.Fatalf("expected NegativeInsufficientScope for interface method, got %+v", verified.NegativeVerification)
+	}
+}

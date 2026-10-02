@@ -28,7 +28,17 @@ func (v Verifier) VerifyFalse(ctx context.Context, c *domain.AnalysisCase, claim
 	cond domain.Condition) domain.Claim {
 
 	if claim.Falsifier == domain.FalsifierLocusFunctionUnreached {
-		return v.verifyLocusFunctionUnreached(ctx, c, claim, cond)
+		out := v.verifyLocusFunctionUnreached(ctx, c, claim, cond)
+		if out.NegativeVerification != nil &&
+			out.NegativeVerification.Status == domain.NegativeVerified &&
+			v.Source != nil {
+			subjects := append([]domain.SymbolRef{}, cond.Subjects...)
+			if cond.Subject != nil {
+				subjects = append(subjects, *cond.Subject)
+			}
+			v.extendNegativeScope(ctx, c, out.NegativeVerification, subjects)
+		}
+		return out
 	}
 
 	// The locus falsifier is verified against the persisted build-graph
