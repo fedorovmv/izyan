@@ -194,7 +194,7 @@ func packageImportSet(c *domain.AnalysisCase) (map[string]bool, domain.EvidenceI
 //  3. If source index is available, product entry points and call sites do not invoke
 //     the subject, and dynamic markers (reflection, interface dispatch, func values,
 //     go:linkname) do not escape to the subject.
-func (v Verifier) verifyLocusFunctionUnreached(c *domain.AnalysisCase, claim domain.Claim,
+func (v Verifier) verifyLocusFunctionUnreached(ctx context.Context, c *domain.AnalysisCase, claim domain.Claim,
 	cond domain.Condition) domain.Claim {
 
 	subjects := append([]domain.SymbolRef{}, cond.Subjects...)
@@ -270,8 +270,6 @@ func (v Verifier) verifyLocusFunctionUnreached(c *domain.AnalysisCase, claim dom
 	if hasSource {
 		productImports, linknamePragmas = scanProductSource(repoDir)
 	}
-
-	ctx := context.Background()
 
 	for _, subj := range subjects {
 		isInternal := isInternalPkg(subj.Package)
@@ -482,7 +480,7 @@ func frameMatches(cs domain.CallSite, sym domain.SymbolRef) bool {
 	}
 	if i := strings.LastIndexByte(sym.Symbol, '.'); i >= 0 {
 		recv, fn := sym.Symbol[:i], sym.Symbol[i+1:]
-		if cs.Function == fn && normalizeReceiver(cs.Receiver) == recv {
+		if cs.Function == fn && normalizeReceiver(cs.Receiver) == normalizeReceiver(recv) {
 			return true
 		}
 	}

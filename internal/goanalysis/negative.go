@@ -28,7 +28,7 @@ func (v Verifier) VerifyFalse(ctx context.Context, c *domain.AnalysisCase, claim
 	cond domain.Condition) domain.Claim {
 
 	if claim.Falsifier == domain.FalsifierLocusFunctionUnreached {
-		return v.verifyLocusFunctionUnreached(c, claim, cond)
+		return v.verifyLocusFunctionUnreached(ctx, c, claim, cond)
 	}
 
 	// The locus falsifier is verified against the persisted build-graph
