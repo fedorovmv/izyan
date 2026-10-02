@@ -752,7 +752,7 @@ func machineAssessment(c *domain.AnalysisCase) string {
 	}
 
 	var b strings.Builder
-	b.WriteString("Отклонить уязвимость из-за отсутствия пакетов в сборке можно только при условии, что для каждой функции из advisory в *попавших в сборку* пакетах подтверждено решение о безопасности (код не содержит дефекта / `non_locus`):\n\n")
+	b.WriteString("Отклонить уязвимость из-за отсутствия пакетов в сборке можно только при условии, что для каждой функции из advisory в *попавших в сборку* пакетах подтверждено решение о безопасности (код не содержит дефекта и признан безопасным):\n\n")
 	var pending, proposedN, flagged int
 	for _, s := range c.Exploit.LocusSubjects {
 		name := "`" + s.Package + "." + s.Symbol + "`"
@@ -763,7 +763,7 @@ func machineAssessment(c *domain.AnalysisCase) string {
 		pending++
 		if d, ok := proposed[s]; ok {
 			proposedN++
-			fmt.Fprintf(&b, "- %s — пакет входит в сборку — **рекомендуется исключить** (`non_locus`): %s\n", name, d.Basis)
+			fmt.Fprintf(&b, "- %s — пакет входит в сборку — **рекомендуется исключить** (код безопасен): %s\n", name, d.Basis)
 			continue
 		}
 		if d, ok := annotated[s]; ok {
@@ -779,7 +779,7 @@ func machineAssessment(c *domain.AnalysisCase) string {
 		b.WriteString("**Предлагаемая оценка: МОЖНО ОТКЛОНИТЬ** — ни один из пакетов с уязвимым кодом не входит в граф сборки приложения.\n")
 	case flagged == 0 && pending == proposedN:
 		fmt.Fprintf(&b,
-			"**Предлагаемая оценка: МОЖНО ОТКЛОНИТЬ ПОСЛЕ ПОДТВЕРЖДЕНИЯ** — подтвердите %d рекомендаций об исключении как безопасных (`non_locus`); остальные пакеты в сборку не входят → вердикт `NO_EXPLOIT_PATH_FOUND` (для автоматического применения рекомендаций используйте флаг `--accept-locus-proposals`).\n",
+			"**Предлагаемая оценка: МОЖНО ОТКЛОНИТЬ ПОСЛЕ ПОДТВЕРЖДЕНИЯ** — подтвердите %d рекомендаций об исключении как безопасных; остальные пакеты в сборку не входят → вердикт `NO_EXPLOIT_PATH_FOUND` (для автоматического применения рекомендаций используйте флаг `--accept-locus-proposals`).\n",
 			pending)
 	case flagged == 0:
 		fmt.Fprintf(&b,

@@ -829,10 +829,16 @@ func TestReportClarityAndProvenance(t *testing.T) {
 					Basis:     "helper dispatcher (accepted-machine-proposal)",
 				},
 			},
+			LocusSubjects: []domain.SymbolRef{
+				{Package: "example.com/mod/vulnpkg", Symbol: "FaultyFunc"},
+			},
 		},
 		EvidenceGraph: domain.EvidenceGraph{
 			ToolExecutions: []domain.ToolExecution{
 				{Tool: "govulncheck", Args: []string{"./..."}, ExitCode: 0, DurationMs: 120, StdoutSHA256: "abcdef123456"},
+			},
+			Evidence: []domain.Evidence{
+				{Kind: domain.EvidencePackageList, Content: "example.com/mod/vulnpkg\n"},
 			},
 		},
 	}
@@ -917,5 +923,9 @@ func TestReportClarityAndProvenance(t *testing.T) {
 		if !strings.Contains(md, phrase) {
 			t.Errorf("provenance breakdown missing expected phrase: %q", phrase)
 		}
+	}
+
+	if strings.Contains(md, "non_locus") {
+		t.Errorf("Russian report should not contain raw 'non_locus' jargon, got:\n%s", md)
 	}
 }
