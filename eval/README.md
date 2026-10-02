@@ -29,15 +29,15 @@ Baseline-таблица govulncheck-vs-analyzer (последний прогон
 | real-yaml-file | INCONCLUSIVE | reachable | нет — unresolved |
 | real-yaml-http-fixed | NOT_AFFECTED | silent | **да — deterministic** |
 | real-md-render | EXPLOITABLE | reachable | нет |
-| real-getter-fetch | INCONCLUSIVE | reachable | нет |
-| real-getter-const | INCONCLUSIVE | reachable | нет — protocol-switch через X-Terraform-Get держит GitGetter reachable; прежняя negative ground truth исправлена |
+| real-getter-fetch | EXPLOITABLE | reachable | нет |
+| real-getter-const | EXPLOITABLE | reachable | нет — protocol-switch через X-Terraform-Get держит GitGetter reachable |
 | real-ssh-server | EXPLOITABLE | reachable | нет |
-| real-ssh-keyparse | INCONCLUSIVE | package-level | нет — sinks unexported; «zero product refs» вакуумен, dep-internal graph opaque |
+| real-ssh-keyparse | NO_EXPLOIT_PATH_FOUND | package-level | **да — govulncheck-silence + проверка недостижимости неэкспортированных субъектов в dep-коде** |
 | real-jose-decrypt | EXPLOITABLE | reachable | нет |
 | real-jwt-auth | INCONCLUSIVE | package-level | нет — missing-call гейт: `VerifyAudience` мёртв, но sibling-пайплайн `MapClaims.Valid` жив → отсутствие вызова не доказывает безопасность |
 | real-http2-server | NOT_AFFECTED | silent | **да — deterministic** |
 | real-dns-zone | EXPLOITABLE | reachable | нет |
-| real-getter-file | INCONCLUSIVE | reachable | нет — dispatch-key const `file`, eval-полнота не дожимает |
+| real-getter-file | EXPLOITABLE | reachable | нет |
 | real-getter-fixed | NOT_AFFECTED | silent | **да — deterministic** |
 | real-yaml-const | INCONCLUSIVE | reachable | нет — payload constant, но reflective value operations в ingress cone не доказаны безопасными |
 | real-yaml3-http | EXPLOITABLE | reachable | нет |
@@ -46,7 +46,7 @@ Baseline-таблица govulncheck-vs-analyzer (последний прогон
 | real-protojson-const | INCONCLUSIVE | reachable | нет — advisory symbols имеют scope KNOWN_ONLY; отдельного контракта полноты sink set нет, ingress содержит автономные и непроверенные источники |
 | real-protojson-fixed | NOT_AFFECTED | silent | **да — deterministic** |
 | real-dns-fixed | NOT_AFFECTED | silent | **да — deterministic** |
-| real-dns-marshal | INCONCLUSIVE | package-level | нет — sinks частично unexported; та же vacuous-refs проблема |
+| real-dns-marshal | NO_EXPLOIT_PATH_FOUND | package-level | **да — dep-internal invocation мёртв, вызовы через интерфейсы исключены** |
 | real-md-fixed | NOT_AFFECTED | silent | **да — deterministic** |
 | real-ssh-fixed | NOT_AFFECTED | silent | **да — deterministic** |
 | real-jose-fixed | NOT_AFFECTED | silent | **да — deterministic** |
@@ -69,17 +69,16 @@ Baseline-таблица govulncheck-vs-analyzer (последний прогон
 `NOT_AFFECTED` (deterministic affected-chain) или `NO_EXPLOIT_PATH_FOUND`
 (VERIFIED falsifier на mandatory-условии). `EXPLOITABLE`, `INCONCLUSIVE` и
 `UNKNOWN` оставляют кейс на человеке — для triage «reachable» и
-«не доказали безопасность» эквивалентны. Текущий прогон: **13/37 cleared**:
+«не доказали безопасность» эквивалентны. Текущий прогон: **15/38 cleared**:
 11×NOT_AFFECTED deterministic (в том числе `real-micro-plain` при
-module-only finding govulncheck) и два verified-негатива NEPF:
+module-only finding govulncheck) и четыре verified-негатива NEPF:
 `real-unix-stat` — продукт не трогает `unix.Faccessat`,
 а единственный dep-internal caller `unix.Access` доказанно мёртв —
 нет product refs, нет caller'ов внутри `x/sys`, сторонних модулей,
-импортирующих пакет, в dep-графе нет. NEPF без referenceable-субъектов
-не выносится (`productReferenceable` гейт), а dep-internal invocation
-учитывается transitively (`depSiteLive`): ssh-keyparse и dns-marshal в
-INCONCLUSIVE — их прежний NEPF стоял на vacuous «zero product refs»;
-jwt-auth — missing-call гейт. Второй NEPF — `real-micro-plain-6443x`
+импортирующих пакет, в dep-графе нет; `real-ssh-keyparse` и
+`real-dns-marshal` — недостижимость неэкспортированных/конкретных
+методов в dep-коде и отсутствие динамической диспетчеризации через
+интерфейсы; `real-micro-plain-6443x` —
 по контракту defect-locus (B30, spec §8): `L` = advisory-declared set
 минус записанные экспертные non-locus решения (`non_locus` в кейсе —
 основание с authority; автоматическое исключение запрещено — текстовое
