@@ -126,6 +126,9 @@ func NewClient(cfg Config) *Client {
 func (c *Client) Retries() int { return c.cfg.BuildMaxRetries }
 
 func (c *Client) modelFor(role ModelRole) string {
+	if c == nil {
+		return ""
+	}
 	if role == Build && c.cfg.BuildModel != "" {
 		return c.cfg.BuildModel
 	}
@@ -204,6 +207,9 @@ func (c *Client) CompleteMessages(ctx context.Context, role ModelRole, system st
 
 // Chat runs a chat completion with full message history and optional native tools.
 func (c *Client) Chat(ctx context.Context, role ModelRole, system string, messages []ChatMessage, tools []ToolDefinition) (ChatMessage, string, error) {
+	if c == nil {
+		return ChatMessage{}, "", fmt.Errorf("llm client is nil")
+	}
 	var allMessages []ChatMessage
 	if system != "" {
 		allMessages = append(allMessages, ChatMessage{Role: "system", Content: system})

@@ -23,7 +23,7 @@ func ActResearchCVE(ctx context.Context, c *domain.AnalysisCase, resolver cveana
 		}
 	}
 
-	if client == nil {
+	if isNilClient(client) {
 		if c.StrictLLM {
 			return fmt.Errorf("strict-llm: llm client is required for cve analysis")
 		}
@@ -71,4 +71,14 @@ func ActResearchCVE(ctx context.Context, c *domain.AnalysisCase, resolver cveana
 	dossier := justification.Build(c)
 	c.Justification = &dossier
 	return nil
+}
+
+func isNilClient(c llm.Completer) bool {
+	if c == nil {
+		return true
+	}
+	if cl, ok := c.(*llm.Client); ok && cl == nil {
+		return true
+	}
+	return false
 }
