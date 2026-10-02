@@ -75,9 +75,13 @@ func (v Verifier) VerifyFalse(ctx context.Context, c *domain.AnalysisCase, claim
 
 	allSites := map[string][]domain.CallSite{}
 	anyExported := false
+	anyExportedMethod := false
 	for _, s := range subjects {
 		if symbolExported(s) {
 			anyExported = true
+			if symbolIsMethod(s) {
+				anyExportedMethod = true
+			}
 		}
 	}
 	dynSeen := map[string]bool{}
@@ -124,17 +128,29 @@ func (v Verifier) VerifyFalse(ctx context.Context, c *domain.AnalysisCase, claim
 					return setNeg(claim, nv)
 				}
 				strayLinkname++
-			case "reflect", "unsafe", "plugin":
-				// reflect/plugin can only look up *exported* identifiers; an
-				// unexported sink is unreachable to them.
-				// For guard-based FALSE claims bare reflect/unsafe imports
-				// are irrelevant: an import cannot write the guarded value —
-				// only reflect_write (Value.Set*) and unsafe_write
-				// (store through unsafe.Pointer deref) markers can.
-				if (m.Kind == "reflect" || m.Kind == "unsafe") &&
-					claim.Falsifier == domain.FalsifierGuards {
+			case "reflect":
+				// In Go, package-level standalone functions cannot be invoked
+				// dynamically via reflect by name — Go reflection has no package
+				// registry. Only exported methods on struct/interface types
+				// (MethodByName) can be dispatched dynamically. If no subject is an
+				// exported method, bare reflect import does not widen the call graph to it.
+				if claim.Falsifier == domain.FalsifierGuards {
 					continue
 				}
+				if !anyExportedMethod {
+					continue
+				}
+				if !dynSeen[m.Kind] {
+					dynSeen[m.Kind] = true
+					nv.Limitations = append(nv.Limitations,
+						m.Kind+" usage in product widens the call graph; static negative verification is weaker")
+				}
+			case "unsafe":
+				// Bare unsafe import does not invoke functions or widen call graphs;
+				// unsafe_write / unsafe_ptr markers handle pointer mutations.
+				continue
+			case "plugin":
+				// Go plugin.Open + Lookup can look up any exported symbol (function or var).
 				if anyExported && !dynSeen[m.Kind] {
 					dynSeen[m.Kind] = true
 					nv.Limitations = append(nv.Limitations,
@@ -891,6 +907,13 @@ func symbolExported(s domain.SymbolRef) bool {
 		name = name[i+1:]
 	}
 	return name != "" && name[0] >= 'A' && name[0] <= 'Z'
+}
+
+// symbolIsMethod reports whether the subject name represents a method on a type
+// (receiver-qualified, e.g. "Type.Method" or "(*Type).Method") rather than a
+// package-level standalone function.
+func symbolIsMethod(s domain.SymbolRef) bool {
+	return strings.Contains(s.Symbol, ".")
 }
 
 // unreferenceable returns the subjects product code cannot legally name:
