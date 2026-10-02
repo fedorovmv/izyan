@@ -132,21 +132,54 @@ func (c *Client) modelFor(role ModelRole) string {
 	return c.cfg.AnalyzeModel
 }
 
-type chatRequest struct {
-	Model       string        `json:"model"`
-	Messages    []chatMessage `json:"messages"`
-	Temperature float64       `json:"temperature"`
-	MaxTokens   int           `json:"max_tokens"`
+// ToolDefinition defines a function tool available to the model.
+type ToolDefinition struct {
+	Type     string       `json:"type"` // "function"
+	Function FunctionSpec `json:"function"`
 }
 
-type chatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+// FunctionSpec describes a tool function signature and schema.
+type FunctionSpec struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	Parameters  json.RawMessage `json:"parameters,omitempty"`
+}
+
+// ToolCall represents a model's request to execute a tool.
+type ToolCall struct {
+	ID       string       `json:"id"`
+	Type     string       `json:"type"` // "function"
+	Function FunctionCall `json:"function"`
+}
+
+// FunctionCall describes the function name and arguments to invoke.
+type FunctionCall struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
+// ChatMessage represents a single message in an OpenAI-compatible chat transcript.
+type ChatMessage struct {
+	Role       string     `json:"role"`
+	Content    string     `json:"content"`
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string     `json:"tool_call_id,omitempty"`
+}
+
+type chatMessage = ChatMessage
+
+type chatRequest struct {
+	Model       string           `json:"model"`
+	Messages    []ChatMessage    `json:"messages"`
+	Temperature float64          `json:"temperature"`
+	MaxTokens   int              `json:"max_tokens"`
+	Tools       []ToolDefinition `json:"tools,omitempty"`
+	ToolChoice  any              `json:"tool_choice,omitempty"`
 }
 
 type chatResponse struct {
 	Choices []struct {
-		Message      chatMessage `json:"message"`
+		Message      ChatMessage `json:"message"`
 		FinishReason string      `json:"finish_reason"`
 	} `json:"choices"`
 	Error *struct {
@@ -158,24 +191,39 @@ type chatResponse struct {
 // content and the provider's finish_reason so callers can tell a
 // truncated or filtered response apart from malformed output.
 func (c *Client) Complete(ctx context.Context, role ModelRole, system, user string) (string, string, error) {
-	return c.CompleteMessages(ctx, role, system, []chatMessage{{Role: "user", Content: user}})
+	return c.CompleteMessages(ctx, role, system, []ChatMessage{{Role: "user", Content: user}})
 }
 
 // CompleteMessages runs a multi-turn chat completion: system prompt plus
 // the given transcript (used by the bounded agent loop — per condition,
 // never a global chat history).
-func (c *Client) CompleteMessages(ctx context.Context, role ModelRole, system string, messages []chatMessage) (string, string, error) {
+func (c *Client) CompleteMessages(ctx context.Context, role ModelRole, system string, messages []ChatMessage) (string, string, error) {
+	msg, finish, err := c.Chat(ctx, role, system, messages, nil)
+	return msg.Content, finish, err
+}
+
+// Chat runs a chat completion with full message history and optional native tools.
+func (c *Client) Chat(ctx context.Context, role ModelRole, system string, messages []ChatMessage, tools []ToolDefinition) (ChatMessage, string, error) {
+	var allMessages []ChatMessage
+	if system != "" {
+		allMessages = append(allMessages, ChatMessage{Role: "system", Content: system})
+	}
+	allMessages = append(allMessages, messages...)
 	req := chatRequest{
 		Model:       c.modelFor(role),
-		Messages:    append([]chatMessage{{Role: "system", Content: system}}, messages...),
+		Messages:    allMessages,
 		Temperature: 0,
 		MaxTokens:   c.cfg.MaxTokens,
+		Tools:       tools,
+	}
+	if len(tools) > 0 {
+		req.ToolChoice = "auto"
 	}
 	body, _ := json.Marshal(req)
 	url := strings.TrimRight(c.cfg.BaseURL, "/") + "/chat/completions"
 	hreq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		return "", "", err
+		return ChatMessage{}, "", err
 	}
 	hreq.Header.Set("Content-Type", "application/json")
 	if c.cfg.APIKey != "" {
@@ -183,27 +231,27 @@ func (c *Client) CompleteMessages(ctx context.Context, role ModelRole, system st
 	}
 	resp, err := c.http.Do(hreq)
 	if err != nil {
-		return "", "", fmt.Errorf("llm request: %w", err)
+		return ChatMessage{}, "", fmt.Errorf("llm request: %w", err)
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
-		return "", "", fmt.Errorf("llm read: %w", err)
+		return ChatMessage{}, "", fmt.Errorf("llm read: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return "", "", fmt.Errorf("llm status %d: %.300s", resp.StatusCode, raw)
+		return ChatMessage{}, "", fmt.Errorf("llm status %d: %.300s", resp.StatusCode, raw)
 	}
 	var out chatResponse
 	if err := json.Unmarshal(raw, &out); err != nil {
-		return "", "", fmt.Errorf("llm decode: %w", err)
+		return ChatMessage{}, "", fmt.Errorf("llm decode: %w", err)
 	}
 	if out.Error != nil {
-		return "", "", fmt.Errorf("llm error: %s", out.Error.Message)
+		return ChatMessage{}, "", fmt.Errorf("llm error: %s", out.Error.Message)
 	}
 	if len(out.Choices) == 0 {
-		return "", "", fmt.Errorf("llm: empty choices")
+		return ChatMessage{}, "", fmt.Errorf("llm: empty choices")
 	}
-	return out.Choices[0].Message.Content, out.Choices[0].FinishReason, nil
+	return out.Choices[0].Message, out.Choices[0].FinishReason, nil
 }
 
 // ExtractJSON pulls the first JSON object/array out of an LLM response,

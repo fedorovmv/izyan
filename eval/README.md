@@ -554,3 +554,12 @@ Covers при `&x.f` address-taken — запись через pointer-alias н�
 записанное evidence, а отказ от FALSE — на конкретный маркер
 (unsafe_ptr/unsafe_write/address-taken/exported-reflect-write), а не на
 «не нашли путь».
+
+## CVE Analysis & Autonomous Research (--cve-analysis, --strict-llm)
+
+- **`--cve-analysis <off|assist|verified>`**:
+  - `assist`: автономный исследователь (Researcher) с OpenAI native function calling (`read_patch_diff`, `inspect_source_file`, `analyze_product_scope`), селектор стратегии (StrategyPlanner) и семантический рецензент (MechanismReviewer) формируют структурированное техническое досье (§13 спеки `llm-cve-analysis-spec.md`) и Human Remainder (точный остаток ручной работы для эксперта). Профиль `assist` не усиливает вердикт (не создает ложных отрицательных выводов и не сужает locus-множество автономно).
+  - `verified`: включает строгую валидацию обязательств (Proof Obligations).
+- **`--strict-llm`**:
+  - Флаг fail-fast для тестирования и валидации LLM-слоя. При возникновении ошибки LLM API, превышении бюджета или отказе фильтров модель не переключается скрытно на детерминистический код, а немедленно завершает кейс со статусом ошибки и префиксом `strict-llm:`.
+

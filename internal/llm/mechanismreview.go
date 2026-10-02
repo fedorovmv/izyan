@@ -34,12 +34,23 @@ func (m *MechanismReviewer) Review(ctx context.Context, caseData *domain.Analysi
 	}
 	caseData.IncLLMCalls()
 
-	prompt := fmt.Sprintf("Review proposal for %s against patch diff. Respond with JSON: {\"passed\":true|false,\"findings\":[\"...\"]}",
-		caseData.Vulnerability.ID)
+	propJSON, _ := json.Marshal(prop)
+	patchSnippet := ""
+	if caseData.CVEAnalysisBundle != nil {
+		patchSnippet = caseData.CVEAnalysisBundle.PatchDiff
+		if len(patchSnippet) > 2000 {
+			patchSnippet = patchSnippet[:2000]
+		}
+	}
+	prompt := fmt.Sprintf("Advisory: %s\nProposal: %s\nPatch snippet: %s\nReview whether the proposal misinterprets the patch. Respond with strict JSON: {\"passed\":true,\"findings\":[]}",
+		caseData.Vulnerability.Summary, string(propJSON), patchSnippet)
 
-	resp, _, err := m.client.Complete(ctx, Analyze, "You are an adversarial reviewer checking for patch misinterpretation.", prompt)
+	resp, finish, err := m.client.Complete(ctx, Analyze, "You are a code review assistant evaluating a defect analysis proposal. Do not invoke tools. Output JSON only.", prompt)
 	if err != nil {
 		return rev, err
+	}
+	if IsRefusal(resp, finish) {
+		return rev, fmt.Errorf("llm refusal in mechanism review: %s", DescribeBadOutput(resp, finish))
 	}
 
 	clean := ExtractJSON(resp)

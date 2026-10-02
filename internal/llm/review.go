@@ -43,6 +43,13 @@ Never propose a different verdict. Only flag gaps a human would check.`
 func (rv Reviewer) Review(c *domain.AnalysisCase, proposed domain.VerdictResult) domain.Review {
 	r := domain.Review{Result: domain.ReviewAccept}
 	if rv.Client == nil || llmBudgetExhausted(c) {
+		if c.StrictLLM {
+			r.Result = domain.ReviewRevise
+			r.Findings = append(r.Findings, domain.ReviewFinding{
+				TargetType: "verdict", Severity: "high",
+				Problem: "strict-llm: llm client unavailable or budget exhausted for review",
+			})
+		}
 		return r
 	}
 	payload := reviewPayload(c, proposed)
@@ -50,9 +57,16 @@ func (rv Reviewer) Review(c *domain.AnalysisCase, proposed domain.VerdictResult)
 	c.IncLLMCalls()
 	out, finish, err := rv.Client.Complete(context.Background(), Analyze, reviewSystem, string(user))
 	if err != nil {
+		sev := "low"
+		prob := "llm review unavailable: " + err.Error()
+		if c.StrictLLM {
+			sev = "high"
+			prob = "strict-llm: " + prob
+			r.Result = domain.ReviewRevise
+		}
 		r.Findings = append(r.Findings, domain.ReviewFinding{
-			TargetType: "verdict", Severity: "low",
-			Problem: "llm review unavailable: " + err.Error(),
+			TargetType: "verdict", Severity: sev,
+			Problem: prob,
 		})
 		return r
 	}
@@ -61,9 +75,16 @@ func (rv Reviewer) Review(c *domain.AnalysisCase, proposed domain.VerdictResult)
 		Findings []domain.ReviewFinding `json:"findings"`
 	}
 	if j := ExtractJSON(out); j == "" || json.Unmarshal([]byte(j), &resp) != nil {
+		sev := "low"
+		prob := "llm review response unusable: " + DescribeBadOutput(out, finish)
+		if c.StrictLLM {
+			sev = "high"
+			prob = "strict-llm: " + prob
+			r.Result = domain.ReviewRevise
+		}
 		r.Findings = append(r.Findings, domain.ReviewFinding{
-			TargetType: "verdict", Severity: "low",
-			Problem: "llm review response unusable: " + DescribeBadOutput(out, finish),
+			TargetType: "verdict", Severity: sev,
+			Problem: prob,
 		})
 		return r
 	}

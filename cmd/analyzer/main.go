@@ -78,6 +78,7 @@ options:
   --knowledge <path>     extend the ecosystem knowledge base (JSON, additive)
   --non-locus-basis <path> JSON file with expert non-locus basis decisions
   --accept-locus-proposals adopt machine-generated non_locus recommendations into expert basis
+  --cve-analysis <off|assist|verified>  LLM CVE analysis profile (default: off)
   --deterministic-only   disable all LLM-backed states`)
 	os.Exit(2)
 }
@@ -98,11 +99,13 @@ type analyzeOpts struct {
 	tags          string
 	binary        string
 	releaseGo     string
+	cveAnalysis   string
 	exploitModel  string
 	llmEnv        string
 	knowledge     string
 	detOnly       bool
 	allowExec     bool
+	strictLLM     bool
 	memLimit      string
 	rootCauseArgs []string
 	// manualRC carries already-parsed root causes (eval corpus entries
@@ -138,8 +141,10 @@ func commonFlags(fs *flag.FlagSet, o *analyzeOpts) {
 	fs.StringVar(&o.tags, "build-tags", "", "comma-separated build tags")
 	fs.StringVar(&o.binary, "binary", "", "release-built Go binary: govulncheck -mode binary + embedded toolchain")
 	fs.StringVar(&o.releaseGo, "release-go-version", "", "toolchain version that built the release (e.g. from the ticket)")
+	fs.StringVar(&o.cveAnalysis, "cve-analysis", "off", "LLM CVE analysis profile: off, assist, verified")
 	fs.BoolVar(&o.detOnly, "deterministic-only", false, "disable LLM-backed states")
 	fs.BoolVar(&o.allowExec, "allow-exec", false, "permit executing repository code for build/test evidence (run_build/run_tests)")
+	fs.BoolVar(&o.strictLLM, "strict-llm", false, "fail fast on LLM errors/refusals without fallback to deterministic code")
 	fs.StringVar(&o.llmEnv, "llm-env", "", "path to LLM .env file (default: .env in cwd or repo)")
 	fs.StringVar(&o.knowledge, "knowledge", "", "extend the ecosystem knowledge base with a JSON file (see internal/goanalysis/knowledge.go)")
 	fs.StringVar(&o.memLimit, "mem-limit", "4GiB", "analyzer memory ceiling (e.g. 4GiB, 512MiB; 0 disables) — real products can pull very large dependency graphs into the index")
@@ -230,6 +235,9 @@ func runAnalyze(args []string) error {
 		return err
 	}
 	printCase(c, o.caseDir)
+	if o.strictLLM && c.Workflow.State == domain.StateFailed {
+		return fmt.Errorf("strict-llm: analysis failed in state %s", c.Workflow.State)
+	}
 	return nil
 }
 
@@ -299,6 +307,12 @@ func analyzeCase(ctx context.Context, o analyzeOpts) (*domain.AnalysisCase, erro
 	}
 	c.NonLocusBasis = o.nonLocusBasis
 	c.AcceptLocusProposals = o.acceptLocusProposals
+	c.StrictLLM = o.strictLLM
+	if o.cveAnalysis != "" {
+		c.CVEAnalysisProfile = domain.AnalysisProfile(o.cveAnalysis)
+	} else {
+		c.CVEAnalysisProfile = domain.ProfileOff
+	}
 	if o.nonLocusFile != "" {
 		b, err := os.ReadFile(o.nonLocusFile)
 		if err != nil {
@@ -352,6 +366,9 @@ func analyzeCase(ctx context.Context, o analyzeOpts) (*domain.AnalysisCase, erro
 	// deterministic. Without LLM_ENABLED the pure deterministic path runs.
 	loadLLMEnv(o.llmEnv, absRepo)
 	llmCfg := llm.ConfigFromEnv()
+	if o.strictLLM && (!llmCfg.Enabled || o.detOnly) {
+		return nil, fmt.Errorf("strict-llm: cannot use --strict-llm when LLM is disabled or --deterministic-only is set")
+	}
 	var rcResolver states.RootCauseResolver = &rootcause.Resolver{Fix: fix.Resolver{}, Patch: fix.HTTPProvider{}}
 	var builder states.ExploitBuilder = &exploit.Builder{Source: srcIndex}
 	reviewers := review.Multi{review.Structural{}}
@@ -374,8 +391,10 @@ func analyzeCase(ctx context.Context, o analyzeOpts) (*domain.AnalysisCase, erro
 	}
 	var fallbackEval evaluator.ConditionEvaluator
 	var gapPlanner states.HypothesisPlanner
+	var llmClient *llm.Client
 	if llmCfg.Enabled && !o.detOnly {
 		client := llm.NewClient(llmCfg)
+		llmClient = client
 		tools := llm.Tools{
 			Source:      srcIndex,
 			Vuln:        src,
@@ -413,9 +432,10 @@ func analyzeCase(ctx context.Context, o analyzeOpts) (*domain.AnalysisCase, erro
 		states.ResolveVulnerability{Source: src, ID: o.vulnID},
 		states.CheckAffected{Resolver: affected.GoResolver{Tool: goTool}},
 		states.ResolveRootCause{
-			Manual:   append(o.manualRC, parseRootCauses(o.rootCauseArgs)...),
-			Resolver: rcResolver,
-			Verifier: &rootcause.Verifier{Source: srcIndex},
+			Manual:    append(o.manualRC, parseRootCauses(o.rootCauseArgs)...),
+			Resolver:  rcResolver,
+			Verifier:  &rootcause.Verifier{Source: srcIndex},
+			LLMClient: llmClient,
 		},
 		states.BuildExploitModel{
 			ModelPath: o.exploitModel,

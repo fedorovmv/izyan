@@ -300,3 +300,53 @@ func TestDescribeBadOutput(t *testing.T) {
 		t.Errorf("snippet unbounded or missing: %q…", d[:60])
 	}
 }
+
+func TestStrictLLMExploitBuilderFailFast(t *testing.T) {
+	// Refusal reply
+	reply := `This request was blocked by Gemini's filters.`
+	client, srv := mockServer(t, reply)
+	defer srv.Close()
+
+	fb := stubBuilder{model: &domain.ExploitModel{
+		MandatoryConditions: []domain.Condition{{ID: "C-REACH"}},
+	}}
+	b := ExploitModelBuilder{Client: client, Fallback: fb}
+	c := newCase()
+	c.StrictLLM = true
+	rc := &domain.RootCauseModel{
+		Status:     domain.RootCauseResolved,
+		RootCauses: []domain.RootCause{{Package: "p", Symbol: "S", Role: domain.RootCauseSink}},
+	}
+	m, lims := b.Build(context.Background(), c, domain.Vulnerability{}, rc)
+	if m != nil {
+		t.Fatalf("expected nil model under StrictLLM, got %+v", m)
+	}
+	joined := strings.Join(lims, " ")
+	if !strings.Contains(joined, "strict-llm:") {
+		t.Fatalf("expected strict-llm limitation, got %v", lims)
+	}
+}
+
+func TestStrictLLMReviewerFailFast(t *testing.T) {
+	reply := `This request was blocked by Gemini's filters.`
+	client, srv := mockServer(t, reply)
+	defer srv.Close()
+
+	rv := Reviewer{Client: client}
+	c := newCase()
+	c.StrictLLM = true
+	r := rv.Review(c, domain.VerdictResult{Verdict: domain.VerdictExploitable})
+	if r.Result != domain.ReviewRevise {
+		t.Fatalf("expected ReviewRevise under StrictLLM refusal, got %v", r.Result)
+	}
+	found := false
+	for _, f := range r.Findings {
+		if strings.HasPrefix(f.Problem, "strict-llm:") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected finding with strict-llm: prefix, got %+v", r.Findings)
+	}
+}

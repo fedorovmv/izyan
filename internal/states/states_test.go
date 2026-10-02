@@ -18,6 +18,7 @@ import (
 	"example.com/vuln-analyzer/internal/exploit"
 	"example.com/vuln-analyzer/internal/fix"
 	"example.com/vuln-analyzer/internal/goanalysis"
+	"example.com/vuln-analyzer/internal/llm"
 	"example.com/vuln-analyzer/internal/persistence/filesystem"
 	"example.com/vuln-analyzer/internal/repository"
 	"example.com/vuln-analyzer/internal/review"
@@ -2345,5 +2346,59 @@ func TestCheckAffectedUnionsSelectedModules(t *testing.T) {
 	}
 	if len(c.Vulnerability.AffectedPackages) != 2 {
 		t.Fatalf("packages=%+v", c.Vulnerability.AffectedPackages)
+	}
+}
+
+type failingBuilder struct{}
+
+func (failingBuilder) Build(context.Context, *domain.AnalysisCase, domain.Vulnerability, *domain.RootCauseModel) (*domain.ExploitModel, []string) {
+	return nil, []string{"strict-llm: builder failed"}
+}
+
+func TestBuildExploitModelStrictLLMFailsFast(t *testing.T) {
+	c := &domain.AnalysisCase{
+		StrictLLM: true,
+		RootCause: &domain.RootCauseModel{Status: domain.RootCauseResolved},
+	}
+	tr, err := states.BuildExploitModel{Builder: failingBuilder{}}.Run(context.Background(), c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tr.Next != domain.StateFailed {
+		t.Fatalf("want transition to FAILED under StrictLLM, got %+v", tr)
+	}
+	if !strings.Contains(tr.Reason, "strict-llm:") {
+		t.Fatalf("want reason with strict-llm:, got %s", tr.Reason)
+	}
+}
+
+type fakeCVECompleter struct{}
+
+func (fakeCVECompleter) Complete(ctx context.Context, role llm.ModelRole, system, user string) (string, string, error) {
+	if strings.Contains(user, "Review whether") {
+		return `{"passed":true,"findings":[]}`, "stop", nil
+	}
+	if strings.Contains(user, "verification strategy plan") {
+		return `{"selected_strategy":"LOCUS_ABSENT","obligations":[]}`, "stop", nil
+	}
+	return `{"action":"final","proposal":{"id":"P-1","confidence":"HIGH","mechanisms":[{"id":"M-1","summary":"xDS panic","faulting_sites":["pkg.Fault"],"auxiliary_sites":["pkg.Aux"]}]}}`, "stop", nil
+}
+
+func TestActResearchCVE_ProfileVerifiedAdoptsProposals(t *testing.T) {
+	c := &domain.AnalysisCase{
+		CVEAnalysisProfile: domain.ProfileVerified,
+		Vulnerability: domain.Vulnerability{
+			ID: "GO-2026-6443",
+		},
+	}
+	err := states.ActResearchCVE(context.Background(), c, nil, fakeCVECompleter{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !c.AcceptLocusProposals {
+		t.Errorf("expected AcceptLocusProposals to be true under ProfileVerified with passed review")
+	}
+	if c.SemanticReview == nil || !c.SemanticReview.Passed {
+		t.Errorf("expected SemanticReview to be present and passed")
 	}
 }

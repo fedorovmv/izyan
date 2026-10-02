@@ -1181,6 +1181,8 @@ type AnalysisCase struct {
 	// AcceptLocusProposals instructs the exploit model builder to adopt
 	// machine-generated non_locus proposals into NonLocusBasis.
 	AcceptLocusProposals bool `json:"accept_locus_proposals,omitempty"`
+	// StrictLLM causes the analyzer to fail fast on LLM errors/refusals without falling back to deterministic code.
+	StrictLLM bool `json:"strict_llm,omitempty"`
 	// PriorCase references the previous stored run of the same
 	// vulnerability/repository pair — the reproducibility-diff baseline.
 	PriorCase CaseID         `json:"prior_case,omitempty"`

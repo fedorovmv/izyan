@@ -12,10 +12,13 @@ import (
 	"strings"
 
 	"example.com/vuln-analyzer/internal/affected"
+	"example.com/vuln-analyzer/internal/cveanalysis"
 	"example.com/vuln-analyzer/internal/domain"
 	"example.com/vuln-analyzer/internal/evaluator"
 	"example.com/vuln-analyzer/internal/exposure"
 	"example.com/vuln-analyzer/internal/goanalysis"
+	"example.com/vuln-analyzer/internal/justification"
+	"example.com/vuln-analyzer/internal/llm"
 	"example.com/vuln-analyzer/internal/report"
 	"example.com/vuln-analyzer/internal/repository"
 	"example.com/vuln-analyzer/internal/review"
@@ -188,9 +191,10 @@ type RootCauseResolver interface {
 }
 
 type ResolveRootCause struct {
-	Manual   []domain.RootCause
-	Resolver RootCauseResolver
-	Verifier *rootcause.Verifier
+	Manual    []domain.RootCause
+	Resolver  RootCauseResolver
+	Verifier  *rootcause.Verifier
+	LLMClient llm.Completer
 }
 
 func (ResolveRootCause) State() domain.WorkflowState { return domain.StateResolveRootCause }
@@ -253,10 +257,24 @@ func (h ResolveRootCause) Run(ctx context.Context, c *domain.AnalysisCase) (work
 		}
 	}
 	if model.Status != domain.RootCauseResolved {
+		nextState := domain.StateInconclusive
+		if c.StrictLLM {
+			nextState = domain.StateFailed
+		}
 		return workflow.Transition{
-			Next:   domain.StateInconclusive,
+			Next:   nextState,
 			Reason: fmt.Sprintf("root cause %s: %s", model.Status, strings.Join(model.Limitations, "; ")),
 		}, nil
+	}
+	if c.CVEAnalysisProfile == domain.ProfileAssist || c.CVEAnalysisProfile == domain.ProfileVerified {
+		if err := ActResearchCVE(ctx, c, cveanalysis.NewDefaultSourceResolver(""), h.LLMClient); err != nil {
+			if c.StrictLLM {
+				return workflow.Transition{
+					Next:   domain.StateFailed,
+					Reason: fmt.Sprintf("strict-llm: cve analysis failed: %v", err),
+				}, nil
+			}
+		}
 	}
 	return workflow.Transition{Next: domain.StateBuildExploitModel, Reason: "root cause resolved from advisory/fix evidence"}, nil
 }
@@ -303,8 +321,12 @@ func (h BuildExploitModel) Run(ctx context.Context, c *domain.AnalysisCase) (wor
 	}
 	m, limitations := h.Builder.Build(ctx, c, c.Vulnerability, c.RootCause)
 	if m == nil {
+		nextState := domain.StateInconclusive
+		if c.StrictLLM {
+			nextState = domain.StateFailed
+		}
 		return workflow.Transition{
-			Next:   domain.StateInconclusive,
+			Next:   nextState,
 			Reason: "exploit model could not be built: " + strings.Join(limitations, "; "),
 		}, nil
 	}
@@ -1220,6 +1242,16 @@ func (h Review) Run(_ context.Context, c *domain.AnalysisCase) (workflow.Transit
 	if rev.Result != domain.ReviewRevise {
 		return workflow.Transition{Next: domain.StateEvaluateVerdict, Reason: "review ACCEPT"}, nil
 	}
+	if c.StrictLLM {
+		for _, f := range rev.Findings {
+			if strings.HasPrefix(f.Problem, "strict-llm:") {
+				return workflow.Transition{
+					Next:   domain.StateFailed,
+					Reason: f.Problem,
+				}, nil
+			}
+		}
+	}
 	// REVISE routes through the repair state; after bounded repair the case
 	// re-enters REVIEW so the reviewer audits the repaired claim set.
 	return workflow.Transition{Next: domain.StateRepairAnalysis, Reason: "review REVISE"}, nil
@@ -1511,6 +1543,10 @@ func (BuildReport) State() domain.WorkflowState { return domain.StateBuildReport
 func (h BuildReport) Run(ctx context.Context, c *domain.AnalysisCase) (workflow.Transition, error) {
 	if h.Prior != nil {
 		diffToolExecutions(c, h.Prior)
+	}
+	if c.CVEAnalysisProfile == domain.ProfileAssist || c.CVEAnalysisProfile == domain.ProfileVerified || c.Justification != nil {
+		dossier := justification.Build(c)
+		c.Justification = &dossier
 	}
 	if err := report.Write(h.Dir, c); err != nil {
 		return workflow.Transition{}, fmt.Errorf("build report: %w", err)

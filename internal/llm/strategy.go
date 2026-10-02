@@ -33,12 +33,15 @@ func (p *StrategyPlanner) Plan(ctx context.Context, caseData *domain.AnalysisCas
 	}
 	caseData.IncLLMCalls()
 
-	prompt := fmt.Sprintf("Formulate a verification strategy plan for %s. Respond with JSON: {\"selected_strategy\":\"...\",\"obligations\":[\"...\"]}",
-		caseData.Vulnerability.ID)
+	prompt := fmt.Sprintf("Advisory: %s\nVulnerability: %s\nFormulate a verification strategy plan. Respond with strict JSON: {\"selected_strategy\":\"...\",\"obligations\":[\"...\"]}",
+		caseData.Vulnerability.Summary, caseData.Vulnerability.ID)
 
-	resp, _, err := p.client.Complete(ctx, Analyze, "You are a verification planner.", prompt)
+	resp, finish, err := p.client.Complete(ctx, Analyze, "You are a verification planner for Go static analysis. Do not invoke tools. Output JSON only.", prompt)
 	if err != nil {
 		return plan, err
+	}
+	if IsRefusal(resp, finish) {
+		return plan, fmt.Errorf("llm refusal in strategy planning: %s", DescribeBadOutput(resp, finish))
 	}
 
 	clean := ExtractJSON(resp)

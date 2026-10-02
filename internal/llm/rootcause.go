@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"example.com/vuln-analyzer/internal/domain"
@@ -56,6 +57,9 @@ func (r *RootCauseResolver) Resolve(ctx context.Context, c *domain.AnalysisCase,
 func (r *RootCauseResolver) Propose(ctx context.Context, c *domain.AnalysisCase, v domain.Vulnerability) ([]domain.RootCause, []string, error) {
 	var lims []string
 	if r.Client == nil || llmBudgetExhausted(c) || r.proposed {
+		if c.StrictLLM && !r.proposed {
+			return nil, nil, fmt.Errorf("strict-llm: llm client unavailable or budget exhausted for root cause")
+		}
 		return nil, nil, nil
 	}
 	r.proposed = true
@@ -75,9 +79,9 @@ func (r *RootCauseResolver) Propose(ctx context.Context, c *domain.AnalysisCase,
 	}
 	parseOK := false
 	var raw, finish string
+	var callErr error
 	for attempt := 0; attempt <= r.Client.Retries(); attempt++ {
 		c.IncLLMCalls()
-		var callErr error
 		raw, finish, callErr = r.Client.Complete(ctx, Build, rootCauseSystem, string(user))
 		if callErr != nil {
 			lims = append(lims, "llm root cause proposal failed: "+callErr.Error())
@@ -92,7 +96,11 @@ func (r *RootCauseResolver) Propose(ctx context.Context, c *domain.AnalysisCase,
 		}
 	}
 	if !parseOK {
-		return nil, append(lims, "llm root cause proposal unusable: "+DescribeBadOutput(raw, finish)), nil
+		msg := "llm root cause proposal unusable: " + DescribeBadOutput(raw, finish)
+		if c.StrictLLM {
+			return nil, append(lims, "strict-llm: "+msg), fmt.Errorf("strict-llm: %s", msg)
+		}
+		return nil, append(lims, msg), nil
 	}
 	var out []domain.RootCause
 	for i, p := range props {
