@@ -62,7 +62,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
   vuln-analyzer analyze --repo <path> --vuln <GO-/CVE-/GHSA-id> [options]
   vuln-analyzer scan    --repo <path> [options]   # all advisories for all modules
-  vuln-analyzer eval    --corpus <path> --repo <path> [options]  # corpus regression run
+  vuln-analyzer eval    --corpus <path> [--repo <path>] [--case <id|glob>] [-j <n>] [--clean] [options]  # corpus regression run
   vuln-analyzer remediate --repo <path> --vuln <id> [--apply] [--run-tests]  # plan/apply fix + re-analyze
   vuln-analyzer knowledge [--knowledge <path>]  # dump the effective ecosystem knowledge base
 
@@ -71,6 +71,9 @@ options:
   --ticket <path>        generic tracker ticket JSON (see internal/tracker/intake.go)
   --osv-url <url>        override OSV API base URL
   --case-dir <dir>       analysis state directory (default .vuln-analyzer)
+  --case <id|glob>       filter cases to run in eval (comma-separated or glob)
+  -j <n>                 parallel worker pool concurrency for eval (default: 4)
+  --clean                force re-materialization of generated modules in eval
   --goos/--goarch        target platform (default: host)
   --build-tags a,b       build tags
   --root-cause p.Sym     manual root cause symbol (repeatable, comma-separated)

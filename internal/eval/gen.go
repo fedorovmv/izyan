@@ -8,6 +8,8 @@ package eval
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -24,6 +26,7 @@ import (
 type Gen struct {
 	GoBin string
 	Env   []string
+	Force bool
 }
 
 // Materialize builds the runnable module for a product case into
@@ -50,6 +53,17 @@ func (g Gen) Materialize(ctx context.Context, c Case, corpusDir, genRoot string)
 		filepath.Dir(dst) != filepath.Clean(genRoot) {
 		return "", fmt.Errorf("case %s: unsafe generated dir name %q", c.Label(), name)
 	}
+
+	sig, sigErr := computeGenSig(src, c)
+	if sigErr == nil && !g.Force {
+		sigPath := filepath.Join(dst, ".gen-sig")
+		if oldSig, err := os.ReadFile(sigPath); err == nil && string(oldSig) == sig {
+			if _, err := os.Stat(filepath.Join(dst, "go.mod")); err == nil {
+				return dst, nil
+			}
+		}
+	}
+
 	if err := copyProduct(src, dst); err != nil {
 		return "", fmt.Errorf("case %s: %w", c.Label(), err)
 	}
@@ -64,7 +78,42 @@ func (g Gen) Materialize(ctx context.Context, c Case, corpusDir, genRoot string)
 	if err != nil {
 		return "", fmt.Errorf("case %s: go mod tidy: %w: %s", c.Label(), err, strings.TrimSpace(string(stderr)))
 	}
+	if sig != "" {
+		_ = os.WriteFile(filepath.Join(dst, ".gen-sig"), []byte(sig), 0o644)
+	}
 	return dst, nil
+}
+
+func computeGenSig(src string, c Case) (string, error) {
+	h := sha256.New()
+	fmt.Fprintf(h, "mod:%s;go:%s\n", c.Module, c.GoVersion)
+	keys := make([]string, 0, len(c.Deps))
+	for k := range c.Deps {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		fmt.Fprintf(h, "dep:%s=%s\n", k, c.Deps[k])
+	}
+	err := filepath.WalkDir(src, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(src, p)
+		fmt.Fprintf(h, "f:%s;sz:%d;mtime:%d\n", rel, info.Size(), info.ModTime().UnixNano())
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // copyProduct clones the product source tree into dst, refusing any

@@ -23,14 +23,9 @@ const (
 	BaselineError        = "error"     // govulncheck did not run cleanly
 )
 
-// Baseline runs standalone govulncheck on dir and classifies what it
-// reports about v. The runner must not be the corpus-wide caching one —
-// generated products differ per case.
-func Baseline(ctx context.Context, r goanalysis.Runner, dir string, v domain.Vulnerability, build domain.ProductSnapshot) string {
-	raw, err := r.RunGovulncheck(ctx, dir, build)
-	if err != nil {
-		return fmt.Sprintf("%s: %v", BaselineError, err)
-	}
+// BaselineFromOutput classifies what raw govulncheck JSON output reports
+// about v, avoiding repeated subprocess executions when output is already cached.
+func BaselineFromOutput(raw []byte, v domain.Vulnerability) string {
 	res, err := goanalysis.Parse(raw)
 	if err != nil {
 		return fmt.Sprintf("%s: %v", BaselineError, err)
@@ -57,4 +52,15 @@ func Baseline(ctx context.Context, r goanalysis.Runner, dir string, v domain.Vul
 		return BaselineSilent
 	}
 	return BaselineNotInDB
+}
+
+// Baseline runs standalone govulncheck on dir and classifies what it
+// reports about v. The runner must not be the corpus-wide caching one —
+// generated products differ per case.
+func Baseline(ctx context.Context, r goanalysis.Runner, dir string, v domain.Vulnerability, build domain.ProductSnapshot) string {
+	raw, err := r.RunGovulncheck(ctx, dir, build)
+	if err != nil {
+		return fmt.Sprintf("%s: %v", BaselineError, err)
+	}
+	return BaselineFromOutput(raw, v)
 }

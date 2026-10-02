@@ -73,13 +73,14 @@ vuln-analyzer remediate --repo /src/product --vuln GO-2025-3595 [--apply] [--run
 ## eval — регрессионный корпус (для разработчиков)
 
 ```bash
-vuln-analyzer eval --corpus eval/corpus.json [--out report.md] [--json report.json] [--with-llm]
+vuln-analyzer eval --corpus eval/corpus.json [--case <id|glob>] [-j <n>] [--clean] [--out report.md] [--json report.json] [--with-llm]
 ```
 
 Прогоняет корпус кейсов через пайплайн, считает метрики
 (`false_safe` — стоп-критерий, должен быть 0). Exit code 1 при любом
 false-safe/expect-fail/claims-fail/error — пригоден для CI.
 По умолчанию детерминистичен; `--with-llm` — opt-in замер LLM-варианта.
+Флаг `--case <id|glob>` фильтрует кейсы (например `--case real-yaml*` или `--case real-yaml-const`), `-j <n>` задаёт размер параллельного пула воркеров (по умолчанию 4), `--clean` форсирует перегенерацию модулей в `.gen/`.
 Пути в корпусе — относительно файла корпуса, `${VAR}` раскрывается
 ([`eval/README.md`](../eval/README.md)).
 

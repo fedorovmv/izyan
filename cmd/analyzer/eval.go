@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"example.com/vuln-analyzer/internal/affected"
@@ -23,6 +24,7 @@ import (
 // reports the spec's quality metrics — the false-safe count above all.
 //
 //	vuln-analyzer eval --corpus eval/corpus.json [--repo <path>]
+//	    [--case <id|glob>] [-j <jobs>] [--clean]
 //	    [--out report.md] [--json report.json] [common flags]
 //
 // Exit code is 1 when any case is false-safe or fails its expectation;
@@ -32,6 +34,9 @@ func runEval(args []string) error {
 	var o analyzeOpts
 	commonFlags(fs, &o)
 	corpusPath := fs.String("corpus", "", "evaluation corpus JSON")
+	caseFilter := fs.String("case", "", "comma-separated list or pattern of case IDs to run (e.g. 'real-yaml*', 'real-yaml-const')")
+	jobs := fs.Int("j", 4, "number of parallel case evaluations (default 4; 1 for sequential)")
+	clean := fs.Bool("clean", false, "force re-materialization of generated product modules (wipe .gen)")
 	outMD := fs.String("out", "", "write markdown report to file")
 	outJSON := fs.String("json", "", "write JSON report to file")
 	// Regression runs must be reproducible: LLM proposals are
@@ -84,6 +89,39 @@ func runEval(args []string) error {
 		corpus.Cases[i].ExploitModel = resolve(corpus.Cases[i].ExploitModel)
 		corpus.Cases[i].Product = resolve(corpus.Cases[i].Product)
 	}
+
+	if *caseFilter != "" {
+		patterns := strings.Split(*caseFilter, ",")
+		for i := range patterns {
+			patterns[i] = strings.TrimSpace(patterns[i])
+		}
+		var filtered []eval.Case
+		for _, c := range corpus.Cases {
+			lbl := c.Label()
+			matched := false
+			for _, pat := range patterns {
+				if pat == "" {
+					continue
+				}
+				if pat == lbl {
+					matched = true
+					break
+				}
+				if m, _ := filepath.Match(pat, lbl); m {
+					matched = true
+					break
+				}
+			}
+			if matched {
+				filtered = append(filtered, c)
+			}
+		}
+		if len(filtered) == 0 {
+			return fmt.Errorf("no cases matching --case %q", *caseFilter)
+		}
+		corpus.Cases = filtered
+	}
+
 	repo := o.repo
 	if repo == "" {
 		repo = corpus.Repo
@@ -136,119 +174,83 @@ func runEval(args []string) error {
 	}
 	ctx, stop := applyMemoryLimit(context.Background(), budget)
 	defer stop()
-	gen := eval.Gen{GoBin: o.toolchain.GoBin, Env: o.toolchain.Env}
+	gen := eval.Gen{GoBin: o.toolchain.GoBin, Env: o.toolchain.Env, Force: *clean}
 	genRoot := filepath.Join(base, ".gen")
+
+	total := len(corpus.Cases)
+	outcomes := make([]caseOutcome, total)
+
+	concurrency := *jobs
+	if concurrency < 1 {
+		concurrency = 1
+	}
+	if concurrency > total {
+		concurrency = total
+	}
+
+	tasks := make(chan int, total)
+	results := make(chan caseOutcome, total)
+
+	for i := 0; i < total; i++ {
+		tasks <- i
+	}
+	close(tasks)
+
+	var wg sync.WaitGroup
+	for w := 0; w < concurrency; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for idx := range tasks {
+				c := corpus.Cases[idx]
+				outcomes := runCase(ctx, idx, total, c, o, base, genRoot, gen)
+				results <- outcomes
+			}
+		}()
+	}
+
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
 	var rep eval.Report
-	for i, c := range corpus.Cases {
-		fmt.Fprintf(os.Stderr, "→ case %d/%d %s\n", i+1, len(corpus.Cases), c.Label())
-		caseStart := time.Now()
-		co := o
-		co.vulnID = c.Vuln
-		co.vulnFile = c.VulnFile
-		co.exploitModel = c.ExploitModel
-		// Platform overrides change the build shape — package selection,
-		// dep graph and source index all differ per GOOS/GOARCH/tags, so
-		// corpus-level caches computed under the default platform are
-		// invalid for this case even when the repo is unchanged.
-		platformOverride := false
-		if c.GOOS != "" {
-			co.goos = c.GOOS
-			platformOverride = true
-		}
-		if c.GOARCH != "" {
-			co.goarch = c.GOARCH
-			platformOverride = true
-		}
-		if len(c.BuildTags) > 0 {
-			co.tags = strings.Join(c.BuildTags, ",")
-			platformOverride = true
-		}
-		if c.GoVersion != "" {
-			// Per-case toolchain: shared tools/index carry the corpus-level
-			// env — rebuild under this case's toolchain instead.
-			co.releaseGo = c.GoVersion
-			co.toolchain = toolchain.Toolchain{}
-			co.srcIndex = nil
-			co.goTool = nil
-			co.gvRunner = nil
-		}
-		co.manualRC = nil
-		for _, rc := range c.RootCauses {
-			co.manualRC = append(co.manualRC, rc.RootCause)
-		}
-		co.nonLocusBasis = c.NonLocus
-		var productDir string
-		switch {
-		case c.Product != "" && c.Repo != "":
-			rep.Record(c, "", "", nil, fmt.Errorf("case sets both repo and product — they are mutually exclusive"))
-			continue
-		case c.Product == "" && (c.Module != "" || len(c.Deps) > 0):
-			rep.Record(c, "", "", nil, fmt.Errorf("module/deps declared without a product"))
-			continue
-		case c.Product != "":
-			// Generated-manifest product: sources are committed, the
-			// vulnerable manifest is generated under .gen/.
-			dir, err := gen.Materialize(ctx, c, base, genRoot)
-			if err != nil {
-				rep.Record(c, "", "", nil, err)
-				continue
-			}
-			productDir = dir
-			co.repo = dir
-		}
-		if c.Repo != "" {
-			absCase, err := filepath.Abs(c.Repo)
-			if err != nil {
-				rep.Record(c, "", "", nil, err)
-				continue
-			}
-			co.repo = absCase
-		}
-		if co.repo != o.repo || platformOverride {
-			// Per-repo/per-platform tools cannot share corpus-level
-			// caches: a cached `go list`/govulncheck output names the
-			// first configuration's module graph and package selection,
-			// which is wrong for any other product or target platform.
-			co.srcIndex = nil
-			co.goTool = nil
-			co.gvRunner = nil
-		}
-		cs, err := analyzeCase(ctx, co)
-		var verdict domain.Verdict
-		var reason string
-		claims := map[string]string{}
-		if cs != nil {
-			if cs.Verdict != nil {
-				verdict = cs.Verdict.Verdict
-				reason = cs.Verdict.Reason
-			}
-			for _, cl := range cs.Claims {
-				claims[string(cl.ConditionID)] = string(cl.Result)
-			}
-		}
-		rep.Record(c, verdict, reason, claims, err)
-		if productDir != "" {
-			// Baseline: what standalone govulncheck says about this
-			// advisory on this product — differentiation evidence.
-			rep.RecordBaseline(eval.Baseline(ctx,
-				goanalysis.ExecRunner{Env: co.toolchain.Env}, productDir,
-				baselineVuln(ctx, c, cs), domain.ProductSnapshot{
-					GOOS: co.goos, GOARCH: co.goarch, BuildTags: splitCSV(co.tags),
-				}))
-		}
-		res := rep.Results[len(rep.Results)-1]
+	completed := 0
+	for outcome := range results {
+		completed++
+		outcomes[outcome.idx] = outcome
+
 		mark := "  "
-		if res.FalseSafe {
-			mark = "!!"
-		} else if res.ExpectOK != nil && !*res.ExpectOK {
-			mark = "!!"
-		} else if res.Err != "" {
+		if outcome.err != nil {
 			mark = "??"
+		} else {
+			ok := false
+			for _, want := range outcome.c.Expect {
+				if string(outcome.verdict) == want {
+					ok = true
+					break
+				}
+			}
+			if len(outcome.c.Expect) > 0 && !ok {
+				mark = "!!"
+			}
 		}
-		fmt.Printf("%s %-28s %-22s %s (%.0fs)\n", mark, c.Label(),
-			firstNonEmpty(res.Verdict, res.Err), res.Reason, time.Since(caseStart).Seconds())
-		if cs != nil {
-			fmt.Fprintf(os.Stderr, "  states: %s\n", topTimings(cs.Workflow.Timings, 3))
+		errStr := ""
+		if outcome.err != nil {
+			errStr = outcome.err.Error()
+		}
+		fmt.Printf("%s [%d/%d] %-28s %-22s %s (%.0fs)\n", mark, completed, total, outcome.c.Label(),
+			firstNonEmpty(string(outcome.verdict), errStr), outcome.reason, outcome.duration.Seconds())
+		if outcome.topTimingsStr != "" {
+			fmt.Fprintf(os.Stderr, "  states: %s\n", outcome.topTimingsStr)
+		}
+	}
+
+	// Record in original corpus order
+	for _, outcome := range outcomes {
+		rep.Record(outcome.c, outcome.verdict, outcome.reason, outcome.claims, outcome.err)
+		if outcome.baseline != "" {
+			rep.RecordBaseline(outcome.baseline)
 		}
 	}
 
@@ -321,4 +323,136 @@ func baselineVuln(ctx context.Context, c eval.Case, cs *domain.AnalysisCase) dom
 		}
 	}
 	return domain.Vulnerability{ID: c.Vuln}
+}
+
+type caseOutcome struct {
+	idx           int
+	c             eval.Case
+	verdict       domain.Verdict
+	reason        string
+	claims        map[string]string
+	err           error
+	baseline      string
+	duration      time.Duration
+	topTimingsStr string
+}
+
+func runCase(ctx context.Context, idx, total int, c eval.Case, o analyzeOpts, base, genRoot string, gen eval.Gen) caseOutcome {
+	caseStart := time.Now()
+	co := o
+	co.vulnID = c.Vuln
+	co.vulnFile = c.VulnFile
+	co.exploitModel = c.ExploitModel
+	platformOverride := false
+	if c.GOOS != "" {
+		co.goos = c.GOOS
+		platformOverride = true
+	}
+	if c.GOARCH != "" {
+		co.goarch = c.GOARCH
+		platformOverride = true
+	}
+	if len(c.BuildTags) > 0 {
+		co.tags = strings.Join(c.BuildTags, ",")
+		platformOverride = true
+	}
+	if c.GoVersion != "" {
+		co.releaseGo = c.GoVersion
+		co.toolchain = toolchain.Toolchain{}
+		co.srcIndex = nil
+		co.goTool = nil
+		co.gvRunner = nil
+	}
+	co.manualRC = nil
+	for _, rc := range c.RootCauses {
+		co.manualRC = append(co.manualRC, rc.RootCause)
+	}
+	co.nonLocusBasis = c.NonLocus
+	var productDir string
+	switch {
+	case c.Product != "" && c.Repo != "":
+		return caseOutcome{idx: idx, c: c, err: fmt.Errorf("case sets both repo and product — they are mutually exclusive"), duration: time.Since(caseStart)}
+	case c.Product == "" && (c.Module != "" || len(c.Deps) > 0):
+		return caseOutcome{idx: idx, c: c, err: fmt.Errorf("module/deps declared without a product"), duration: time.Since(caseStart)}
+	case c.Product != "":
+		dir, err := gen.Materialize(ctx, c, base, genRoot)
+		if err != nil {
+			return caseOutcome{idx: idx, c: c, err: err, duration: time.Since(caseStart)}
+		}
+		productDir = dir
+		co.repo = dir
+	}
+	if c.Repo != "" {
+		absCase, err := filepath.Abs(c.Repo)
+		if err != nil {
+			return caseOutcome{idx: idx, c: c, err: err, duration: time.Since(caseStart)}
+		}
+		co.repo = absCase
+	}
+	if co.repo != o.repo || platformOverride {
+		co.srcIndex = nil
+		co.goTool = nil
+		co.gvRunner = nil
+	}
+	if o.caseDir != "" {
+		co.caseDir = filepath.Join(o.caseDir, sanitizeCaseName(c.Label()))
+	}
+	cs, err := analyzeCase(ctx, co)
+	var verdict domain.Verdict
+	var reason string
+	claims := map[string]string{}
+	var topTimingsStr string
+	if cs != nil {
+		if cs.Verdict != nil {
+			verdict = cs.Verdict.Verdict
+			reason = cs.Verdict.Reason
+		}
+		for _, cl := range cs.Claims {
+			claims[string(cl.ConditionID)] = string(cl.Result)
+		}
+		topTimingsStr = topTimings(cs.Workflow.Timings, 3)
+	}
+
+	var baseline string
+	if productDir != "" {
+		var gvRaw []byte
+		if cs != nil {
+			for _, ev := range cs.EvidenceGraph.Evidence {
+				if ev.Kind == domain.EvidenceGovulncheck && ev.Content != "" {
+					gvRaw = []byte(ev.Content)
+					break
+				}
+			}
+		}
+		if len(gvRaw) > 0 {
+			baseline = eval.BaselineFromOutput(gvRaw, baselineVuln(ctx, c, cs))
+		} else {
+			baseline = eval.Baseline(ctx,
+				goanalysis.ExecRunner{Env: co.toolchain.Env}, productDir,
+				baselineVuln(ctx, c, cs), domain.ProductSnapshot{
+					GOOS: co.goos, GOARCH: co.goarch, BuildTags: splitCSV(co.tags),
+				})
+		}
+	}
+
+	return caseOutcome{
+		idx:           idx,
+		c:             c,
+		verdict:       verdict,
+		reason:        reason,
+		claims:        claims,
+		err:           err,
+		baseline:      baseline,
+		duration:      time.Since(caseStart),
+		topTimingsStr: topTimingsStr,
+	}
+}
+
+func sanitizeCaseName(s string) string {
+	return strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			return r
+		}
+		return '_'
+	}, s)
 }

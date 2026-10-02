@@ -29,6 +29,10 @@ func TestBaselineSeparatesModulePackageAndReachableFindings(t *testing.T) {
 			if got != tc.want {
 				t.Fatalf("baseline=%q want %q", got, tc.want)
 			}
+			fromOutput := eval.BaselineFromOutput([]byte(tc.raw), domain.Vulnerability{ID: "V-1"})
+			if fromOutput != tc.want {
+				t.Fatalf("fromOutput=%q want %q", fromOutput, tc.want)
+			}
 		})
 	}
 }

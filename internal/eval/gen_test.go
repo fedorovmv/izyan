@@ -148,3 +148,43 @@ func TestMaterializeRequiresModule(t *testing.T) {
 		t.Fatalf("want module-required error, got %v", err)
 	}
 }
+
+func TestMaterializeCachesIdenticalModule(t *testing.T) {
+	root := t.TempDir()
+	prod := filepath.Join(root, "products", "demo")
+	writeProduct(t, prod, map[string]string{
+		"main.go": "package main\nfunc main() {}\n",
+	})
+	c := eval.Case{ID: "demo-cache", Vuln: "GO-X", Product: "products/demo", Module: "example.com/demo"}
+	gen := eval.Gen{GoBin: "go"}
+	dir, err := gen.Materialize(context.Background(), c, root, filepath.Join(root, ".gen"))
+	if err != nil {
+		t.Fatalf("first Materialize: %v", err)
+	}
+	marker := filepath.Join(dir, "cache-marker.txt")
+	if err := os.WriteFile(marker, []byte("cached"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Second Materialize should hit cache and preserve marker
+	dir2, err := gen.Materialize(context.Background(), c, root, filepath.Join(root, ".gen"))
+	if err != nil {
+		t.Fatalf("second Materialize: %v", err)
+	}
+	if dir2 != dir {
+		t.Fatalf("dir changed: %s vs %s", dir, dir2)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("expected marker file to survive cached Materialize: %v", err)
+	}
+
+	// With Force: true, should re-materialize and wipe marker
+	genForce := eval.Gen{GoBin: "go", Force: true}
+	_, err = genForce.Materialize(context.Background(), c, root, filepath.Join(root, ".gen"))
+	if err != nil {
+		t.Fatalf("forced Materialize: %v", err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("expected marker file to be wiped with Force: true")
+	}
+}
