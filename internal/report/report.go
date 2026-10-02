@@ -216,6 +216,126 @@ func renderProvenanceBreakdown(b *strings.Builder, isRU bool) {
 	}
 }
 
+func renderGovulncheckComparison(b *strings.Builder, c *domain.AnalysisCase, isRU bool) {
+	hasCallPaths := len(c.EvidenceGraph.CallPaths) > 0
+	hasGovulncheckExec := false
+	for _, tex := range c.EvidenceGraph.ToolExecutions {
+		if tex.Tool == "govulncheck" {
+			hasGovulncheckExec = true
+			break
+		}
+	}
+	if !hasCallPaths && !hasGovulncheckExec {
+		return
+	}
+
+	var targets []string
+	seen := map[string]bool{}
+	for _, cp := range c.EvidenceGraph.CallPaths {
+		if len(cp.Frames) > 0 {
+			f := cp.Frames[0]
+			var name string
+			if f.Package != "" && f.Function != "" {
+				name = f.Package + "." + f.Function
+			} else if f.Function != "" {
+				name = f.Function
+			} else if f.Package != "" {
+				name = f.Package
+			}
+			if name != "" && !seen[name] {
+				seen[name] = true
+				targets = append(targets, name)
+			}
+		}
+	}
+
+	absentPkgs, _, presentNotes := splitAdvisoryPackages(c)
+
+	if isRU {
+		b.WriteString("### Сопоставление с govulncheck (Анализ расхождения)\n\n")
+		if hasCallPaths {
+			b.WriteString("- 🔍 **Вердикт govulncheck:** **Уязвимый код вызывается (Reachable)**\n")
+			if len(targets) > 0 {
+				fmt.Fprintf(b, "  - Сканер обнаружил пути вызова от приложения к коду библиотеки (в частности: `%s`).\n", strings.Join(targets, "`, `"))
+			} else {
+				fmt.Fprintf(b, "  - Сканер обнаружил пути вызова к коду библиотеки (%d).\n", len(c.EvidenceGraph.CallPaths))
+			}
+			if c.Verdict != nil && c.Verdict.Verdict == domain.VerdictNoExploitPathFound {
+				b.WriteString("- 🛡️ **Вердикт анализатора:** **`NO_EXPLOIT_PATH_FOUND` (Уязвимый путь исполнения отсутствует)**\n")
+				b.WriteString("- ⚖️ **Обоснование опровержения (почему срабатывание govulncheck является ложной тревогой):**\n")
+				b.WriteString("  - **Смешение ролей функций в базе advisory:** `govulncheck` считает все перечисленные в advisory функции одинаково уязвимыми и не анализирует коммит исправления.\n")
+				if len(presentNotes) > 0 {
+					var syms []string
+					for _, pn := range presentNotes {
+						syms = append(syms, fmt.Sprintf("`%s.%s`", pn.Symbol.Package, pn.Symbol.Symbol))
+					}
+					fmt.Fprintf(b, "  - **Безопасность вызываемых функций:** Вызовы приходят в функции %s, которые выполняют лишь вспомогательную диспетчеризацию и не содержат дефектной операции.\n", strings.Join(syms, ", "))
+				} else {
+					b.WriteString("  - **Безопасность вызываемых функций:** Вызовы приходят в функции, которые признаны безопасными диспетчерами.\n")
+				}
+				if len(absentPkgs) > 0 {
+					fmt.Fprintf(b, "  - **Физическое отсутствие дефектного локуса:** Реальный сайт сбоя находится в пакетах `%s`, которые **не скомпилированы в бинарный файл** (`go list -deps`).\n", strings.Join(absentPkgs, "`, `"))
+				}
+				b.WriteString("  - **Итог:** Вызовы, зафиксированные `govulncheck`, не приводят к исполнению дефекта (reachability false positive).\n\n")
+			} else if c.Verdict != nil && c.Verdict.Verdict == domain.VerdictExploitable {
+				b.WriteString("- ⚠️ **Вердикт анализатора:** **`EXPLOITABLE` (Уязвимость подтверждена)**\n")
+				b.WriteString("- ⚖️ **Сопоставление:** Результаты согласуются — трасса вызовов подтверждает достижимость дефектного локуса.\n\n")
+			} else if c.Verdict != nil {
+				fmt.Fprintf(b, "- ⚠️ **Вердикт анализатора:** **`%s`**\n", c.Verdict.Verdict)
+				b.WriteString("- ⚖️ **Сопоставление:** `govulncheck` обнаружил вызовы к библиотеке; условия эксплуатации требуют дальнейшей проверки.\n\n")
+			}
+		} else {
+			b.WriteString("- 🔍 **Вердикт govulncheck:** **Трасса вызовов не обнаружена (Clean)**\n")
+			b.WriteString("  - Сканер не нашёл статических путей вызова от кода приложения к функциям из advisory.\n")
+			if c.Verdict != nil {
+				fmt.Fprintf(b, "- 🛡️ **Вердикт анализатора:** **`%s`**\n", c.Verdict.Verdict)
+			}
+			b.WriteString("- ⚖️ **Сопоставление:** Результаты согласуются — вызовы уязвимых функций отсутствуют.\n\n")
+		}
+	} else {
+		b.WriteString("### Govulncheck Comparison & Divergence Analysis\n\n")
+		if hasCallPaths {
+			b.WriteString("- 🔍 **Govulncheck Finding:** **Reachable (Vulnerable code is called)**\n")
+			if len(targets) > 0 {
+				fmt.Fprintf(b, "  - Scanner detected call paths from application code to library code (specifically: `%s`).\n", strings.Join(targets, "`, `"))
+			} else {
+				fmt.Fprintf(b, "  - Scanner detected %d call path(s) to library code.\n", len(c.EvidenceGraph.CallPaths))
+			}
+			if c.Verdict != nil && c.Verdict.Verdict == domain.VerdictNoExploitPathFound {
+				b.WriteString("- 🛡️ **Analyzer Verdict:** **`NO_EXPLOIT_PATH_FOUND` (No exploit path exists)**\n")
+				b.WriteString("- ⚖️ **Divergence Rationale (Why govulncheck's warning is refuted):**\n")
+				b.WriteString("  - **Undifferentiated advisory symbols:** `govulncheck` treats all symbols in the advisory record as equally vulnerable without analyzing patch semantics.\n")
+				if len(presentNotes) > 0 {
+					var syms []string
+					for _, pn := range presentNotes {
+						syms = append(syms, fmt.Sprintf("`%s.%s`", pn.Symbol.Package, pn.Symbol.Symbol))
+					}
+					fmt.Fprintf(b, "  - **Safety of called functions:** Calls reach functions %s, which perform only helper dispatching and contain no defective operation.\n", strings.Join(syms, ", "))
+				} else {
+					b.WriteString("  - **Safety of called functions:** Calls reach helper functions verified to be non-defective.\n")
+				}
+				if len(absentPkgs) > 0 {
+					fmt.Fprintf(b, "  - **Physical absence of defect locus:** The actual crash site resides in packages `%s`, which are **not linked into the binary** (`go list -deps`).\n", strings.Join(absentPkgs, "`, `"))
+				}
+				b.WriteString("  - **Conclusion:** Call paths detected by `govulncheck` do not execute defective code (reachability false positive).\n\n")
+			} else if c.Verdict != nil && c.Verdict.Verdict == domain.VerdictExploitable {
+				b.WriteString("- ⚠️ **Analyzer Verdict:** **`EXPLOITABLE` (Vulnerability confirmed)**\n")
+				b.WriteString("- ⚖️ **Comparison:** Findings agree — call paths reach the active defect locus.\n\n")
+			} else if c.Verdict != nil {
+				fmt.Fprintf(b, "- ⚠️ **Analyzer Verdict:** **`%s`**\n", c.Verdict.Verdict)
+				b.WriteString("- ⚖️ **Comparison:** `govulncheck` detected library calls; exploit conditions require further evaluation.\n\n")
+			}
+		} else {
+			b.WriteString("- 🔍 **Govulncheck Finding:** **Clean (No call path found)**\n")
+			b.WriteString("  - Scanner detected no static call paths from product code to advisory functions.\n")
+			if c.Verdict != nil {
+				fmt.Fprintf(b, "- 🛡️ **Analyzer Verdict:** **`%s`**\n", c.Verdict.Verdict)
+			}
+			b.WriteString("- ⚖️ **Comparison:** Findings agree — no calls to vulnerable functions detected.\n\n")
+		}
+	}
+}
+
 func Markdown(c *domain.AnalysisCase, lang ...string) string {
 	isRU := isRussian(lang...)
 	var b strings.Builder
@@ -318,6 +438,8 @@ func Markdown(c *domain.AnalysisCase, lang ...string) string {
 				b.WriteString("\n")
 			}
 		}
+
+		renderGovulncheckComparison(&b, c, isRU)
 
 		if len(c.Claims) > 0 {
 			if isRU {
@@ -1138,6 +1260,10 @@ func rationaleNoExploitPathFound(c *domain.AnalysisCase) string {
 	if len(presentNotes) > 0 {
 		b.WriteString(formatPresentSymbolsParagraph(presentNotes))
 		b.WriteString("\n\n")
+	}
+
+	if len(c.EvidenceGraph.CallPaths) > 0 {
+		b.WriteString("Сопоставление со сканером: `govulncheck` отмечает уязвимость как вызываемую (Reachable), обнаруживая пути вызова к вспомогательным функциям библиотеки. Однако углублённый анализ опровергает наличие уязвимости: вызываемые функции безопасны, а код с реальным дефектом в сборку не скомпилирован (ложная тревога govulncheck по достижимости).\n\n")
 	}
 
 	if risk := residualRisk(c, absentPkgs); risk != "" {

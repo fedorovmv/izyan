@@ -929,3 +929,103 @@ func TestReportClarityAndProvenance(t *testing.T) {
 		t.Errorf("Russian report should not contain raw 'non_locus' jargon, got:\n%s", md)
 	}
 }
+
+func TestGovulncheckComparisonAndDivergence(t *testing.T) {
+	c := &domain.AnalysisCase{
+		ID: "GO-2026-6443-test",
+		Vulnerability: domain.Vulnerability{
+			ID:     "GO-2026-6443",
+			Module: "google.golang.org/grpc",
+		},
+		Product: domain.ProductSnapshot{
+			Repository: "my-service",
+			Commit:     "b740a8b0cf1e",
+			GoVersion:  "go1.26.1",
+			GOOS:       "darwin",
+			GOARCH:     "arm64",
+		},
+		Verdict: &domain.VerdictResult{
+			Verdict: domain.VerdictNoExploitPathFound,
+			Reason:  "mandatory exploit condition is proven false",
+		},
+		Affected: &domain.AffectedResult{
+			VersionAffected: domain.ClaimTrue,
+			ResolvedVersion: "v1.83.0",
+			ModulePresent:   domain.ClaimTrue,
+			PackagePresent:  domain.ClaimTrue,
+			BuildRelevant:   domain.ClaimTrue,
+		},
+		Exploit: &domain.ExploitModel{
+			Class:  "RESOURCE_EXHAUSTION",
+			Impact: "Server panic",
+			NonLocusBasis: []domain.LocusDecision{
+				{
+					Symbol:    domain.SymbolRef{Package: "google.golang.org/grpc/internal/transport", Symbol: "HandleStreams"},
+					Authority: "accepted-machine-proposal",
+					Basis:     "helper dispatcher (accepted-machine-proposal)",
+				},
+			},
+			LocusSubjects: []domain.SymbolRef{
+				{Package: "google.golang.org/grpc/internal/transport", Symbol: "HandleStreams"},
+				{Package: "google.golang.org/grpc/internal/xds/server", Symbol: "RouteAndProcess"},
+			},
+		},
+		EvidenceGraph: domain.EvidenceGraph{
+			CallPaths: []domain.CallPath{
+				{
+					Frames: []domain.CallSite{
+						{Package: "google.golang.org/grpc/internal/transport", Function: "HandleStreams", File: "internal/transport/http2_server.go", Line: 639},
+						{Package: "main", Function: "main", File: "main.go", Line: 27},
+					},
+				},
+			},
+			Evidence: []domain.Evidence{
+				{Kind: domain.EvidencePackageList, Content: "google.golang.org/grpc/internal/transport\n"},
+			},
+			ToolExecutions: []domain.ToolExecution{
+				{Tool: "govulncheck", Args: []string{"./..."}, ExitCode: 0, DurationMs: 150},
+			},
+		},
+	}
+
+	// 1. Russian report
+	mdRU := Markdown(c, "ru")
+	if !strings.Contains(mdRU, "### Сопоставление с govulncheck (Анализ расхождения)") {
+		t.Errorf("missing Russian divergence header")
+	}
+	if !strings.Contains(mdRU, "🔍 **Вердикт govulncheck:** **Уязвимый код вызывается (Reachable)**") {
+		t.Errorf("missing govulncheck reachable verdict in Russian")
+	}
+	if !strings.Contains(mdRU, "google.golang.org/grpc/internal/transport.HandleStreams") {
+		t.Errorf("missing called symbol in govulncheck section")
+	}
+	if !strings.Contains(mdRU, "🛡️ **Вердикт анализатора:** **`NO_EXPLOIT_PATH_FOUND` (Уязвимый путь исполнения отсутствует)**") {
+		t.Errorf("missing analyzer verdict in divergence section")
+	}
+	if !strings.Contains(mdRU, "Обоснование опровержения (почему срабатывание govulncheck является ложной тревогой):") {
+		t.Errorf("missing refutation rationale header in Russian")
+	}
+	if !strings.Contains(mdRU, "reachability false positive") {
+		t.Errorf("missing reachability false positive conclusion")
+	}
+
+	// In Tracker Rationale (## Резюме):
+	if !strings.Contains(mdRU, "Сопоставление со сканером: `govulncheck` отмечает уязвимость как вызываемую (Reachable)") {
+		t.Errorf("missing govulncheck refutation in tracker rationale")
+	}
+
+	// 2. English report
+	mdEN := Markdown(c, "en")
+	if !strings.Contains(mdEN, "### Govulncheck Comparison & Divergence Analysis") {
+		t.Errorf("missing English divergence header")
+	}
+	if !strings.Contains(mdEN, "Govulncheck Finding:** **Reachable (Vulnerable code is called)**") {
+		t.Errorf("missing govulncheck reachable verdict in English")
+	}
+	if !strings.Contains(mdEN, "Divergence Rationale (Why govulncheck's warning is refuted):") {
+		t.Errorf("missing refutation rationale header in English")
+	}
+	if !strings.Contains(mdEN, "reachability false positive") {
+		t.Errorf("missing reachability false positive conclusion in English")
+	}
+}
