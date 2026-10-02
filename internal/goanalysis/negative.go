@@ -27,6 +27,10 @@ type Verifier struct {
 func (v Verifier) VerifyFalse(ctx context.Context, c *domain.AnalysisCase, claim domain.Claim,
 	cond domain.Condition) domain.Claim {
 
+	if claim.Falsifier == domain.FalsifierLocusFunctionUnreached {
+		return v.verifyLocusFunctionUnreached(c, claim, cond)
+	}
+
 	// The locus falsifier is verified against the persisted build-graph
 	// evidence, not the source index — it applies even when no index is
 	// configured, and package absence cannot be escaped by any dispatch.

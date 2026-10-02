@@ -2,6 +2,8 @@ package goanalysis
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"example.com/vuln-analyzer/internal/domain"
@@ -68,5 +70,237 @@ func TestVerifyLocusAbsentNoEvidence(t *testing.T) {
 	if out.NegativeVerification == nil ||
 		out.NegativeVerification.Status != domain.NegativeInsufficientScope {
 		t.Fatalf("nv=%+v", out.NegativeVerification)
+	}
+}
+
+func TestVerifyLocusFunctionUnreached(t *testing.T) {
+	ix := &Index{
+		Dir: t.TempDir(),
+	}
+	v := Verifier{Source: ix}
+	claim := domain.Claim{
+		ID:          "CL-C-LOCUS",
+		ConditionID: "C-LOCUS",
+		Result:      domain.ClaimFalse,
+		Falsifier:   domain.FalsifierLocusFunctionUnreached,
+	}
+	cond := domain.Condition{
+		ID: "C-LOCUS",
+		Subjects: []domain.SymbolRef{
+			{Package: "google.golang.org/grpc/internal/xds/server", Symbol: "RouteAndProcess"},
+		},
+	}
+	c := &domain.AnalysisCase{
+		EvidenceGraph: domain.EvidenceGraph{},
+	}
+	verified := v.VerifyFalse(context.Background(), c, claim, cond)
+	if verified.NegativeVerification == nil || verified.NegativeVerification.Status != domain.NegativeVerified {
+		t.Fatalf("expected NegativeVerified, got %+v", verified.NegativeVerification)
+	}
+}
+
+func TestVerifyLocusFunctionUnreached_ContradictedByCallPath(t *testing.T) {
+	v := Verifier{}
+	claim := domain.Claim{
+		ID:          "CL-C-LOCUS",
+		ConditionID: "C-LOCUS",
+		Result:      domain.ClaimFalse,
+		Falsifier:   domain.FalsifierLocusFunctionUnreached,
+	}
+	cond := domain.Condition{
+		ID: "C-LOCUS",
+		Subjects: []domain.SymbolRef{
+			{Package: "google.golang.org/grpc/internal/xds/server", Symbol: "RouteAndProcess"},
+		},
+	}
+	c := &domain.AnalysisCase{
+		EvidenceGraph: domain.EvidenceGraph{
+			CallPaths: []domain.CallPath{
+				{
+					Frames: []domain.CallSite{
+						{Package: "example.com/app", Function: "main"},
+						{Package: "google.golang.org/grpc/internal/xds/server", Function: "RouteAndProcess"},
+					},
+				},
+			},
+		},
+	}
+	verified := v.VerifyFalse(context.Background(), c, claim, cond)
+	if verified.NegativeVerification == nil || verified.NegativeVerification.Status != domain.NegativeContradicted {
+		t.Fatalf("expected NegativeContradicted, got %+v", verified.NegativeVerification)
+	}
+	if verified.Result != domain.ClaimUnknown {
+		t.Fatalf("expected ClaimUnknown after contradiction, got %s", verified.Result)
+	}
+}
+
+func TestVerifyLocusFunctionUnreached_ContradictedByModuleReachable(t *testing.T) {
+	v := Verifier{}
+	claim := domain.Claim{
+		ID:          "CL-C-LOCUS",
+		ConditionID: "C-LOCUS",
+		Result:      domain.ClaimFalse,
+		Falsifier:   domain.FalsifierLocusFunctionUnreached,
+	}
+	cond := domain.Condition{
+		ID: "C-LOCUS",
+		Subjects: []domain.SymbolRef{
+			{Package: "google.golang.org/grpc/internal/xds/server", Symbol: "RouteAndProcess"},
+		},
+	}
+	c := &domain.AnalysisCase{
+		EvidenceGraph: domain.EvidenceGraph{
+			ModuleReachable: map[string][]string{
+				"google.golang.org/grpc/internal/xds/server.RouteAndProcess": {"Entry", "RouteAndProcess"},
+			},
+		},
+	}
+	verified := v.VerifyFalse(context.Background(), c, claim, cond)
+	if verified.NegativeVerification == nil || verified.NegativeVerification.Status != domain.NegativeContradicted {
+		t.Fatalf("expected NegativeContradicted, got %+v", verified.NegativeVerification)
+	}
+	if verified.Result != domain.ClaimUnknown {
+		t.Fatalf("expected ClaimUnknown after contradiction, got %s", verified.Result)
+	}
+}
+
+func TestVerifyLocusFunctionUnreached_ContradictedByModuleUsage(t *testing.T) {
+	v := Verifier{}
+	claim := domain.Claim{
+		ID:          "CL-C-LOCUS",
+		ConditionID: "C-LOCUS",
+		Result:      domain.ClaimFalse,
+		Falsifier:   domain.FalsifierLocusFunctionUnreached,
+	}
+	cond := domain.Condition{
+		ID: "C-LOCUS",
+		Subjects: []domain.SymbolRef{
+			{Package: "google.golang.org/grpc/internal/xds/server", Symbol: "RouteAndProcess"},
+		},
+	}
+	c := &domain.AnalysisCase{
+		EvidenceGraph: domain.EvidenceGraph{
+			ModuleUsages: []domain.CallSite{
+				{
+					Callee: "google.golang.org/grpc/internal/xds/server.RouteAndProcess",
+					File:   "main.go",
+					Line:   42,
+				},
+			},
+		},
+	}
+	verified := v.VerifyFalse(context.Background(), c, claim, cond)
+	if verified.NegativeVerification == nil || verified.NegativeVerification.Status != domain.NegativeContradicted {
+		t.Fatalf("expected NegativeContradicted, got %+v", verified.NegativeVerification)
+	}
+}
+
+func TestVerifyLocusFunctionUnreached_ContradictedByDirectImport(t *testing.T) {
+	dir := t.TempDir()
+	src := `package main
+import _ "google.golang.org/grpc/internal/xds/server"
+func main() {}
+`
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	ix := &Index{Dir: dir}
+	v := Verifier{Source: ix}
+	claim := domain.Claim{
+		ID:          "CL-C-LOCUS",
+		ConditionID: "C-LOCUS",
+		Result:      domain.ClaimFalse,
+		Falsifier:   domain.FalsifierLocusFunctionUnreached,
+	}
+	cond := domain.Condition{
+		ID: "C-LOCUS",
+		Subjects: []domain.SymbolRef{
+			{Package: "google.golang.org/grpc/internal/xds/server", Symbol: "RouteAndProcess"},
+		},
+	}
+	c := &domain.AnalysisCase{
+		EvidenceGraph: domain.EvidenceGraph{},
+	}
+	verified := v.VerifyFalse(context.Background(), c, claim, cond)
+	if verified.NegativeVerification == nil || verified.NegativeVerification.Status != domain.NegativeContradicted {
+		t.Fatalf("expected NegativeContradicted, got %+v", verified.NegativeVerification)
+	}
+}
+
+func TestVerifyLocusFunctionUnreached_ContradictedByLinkname(t *testing.T) {
+	dir := t.TempDir()
+	src := `package main
+//go:linkname customRoute google.golang.org/grpc/internal/xds/server.RouteAndProcess
+func customRoute()
+func main() {}
+`
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	ix := &Index{Dir: dir}
+	v := Verifier{Source: ix}
+	claim := domain.Claim{
+		ID:          "CL-C-LOCUS",
+		ConditionID: "C-LOCUS",
+		Result:      domain.ClaimFalse,
+		Falsifier:   domain.FalsifierLocusFunctionUnreached,
+	}
+	cond := domain.Condition{
+		ID: "C-LOCUS",
+		Subjects: []domain.SymbolRef{
+			{Package: "google.golang.org/grpc/internal/xds/server", Symbol: "RouteAndProcess"},
+		},
+	}
+	c := &domain.AnalysisCase{
+		EvidenceGraph: domain.EvidenceGraph{},
+	}
+	verified := v.VerifyFalse(context.Background(), c, claim, cond)
+	if verified.NegativeVerification == nil || verified.NegativeVerification.Status != domain.NegativeContradicted {
+		t.Fatalf("expected NegativeContradicted, got %+v", verified.NegativeVerification)
+	}
+}
+
+func TestVerifyLocusFunctionUnreached_NoSubjects(t *testing.T) {
+	v := Verifier{}
+	claim := domain.Claim{
+		ID:          "CL-C-LOCUS",
+		ConditionID: "C-LOCUS",
+		Result:      domain.ClaimFalse,
+		Falsifier:   domain.FalsifierLocusFunctionUnreached,
+	}
+	cond := domain.Condition{
+		ID: "C-LOCUS",
+	}
+	c := &domain.AnalysisCase{
+		EvidenceGraph: domain.EvidenceGraph{},
+	}
+	verified := v.VerifyFalse(context.Background(), c, claim, cond)
+	if verified.NegativeVerification == nil || verified.NegativeVerification.Status != domain.NegativeInsufficientScope {
+		t.Fatalf("expected NegativeInsufficientScope, got %+v", verified.NegativeVerification)
+	}
+}
+
+func TestVerifyLocusFunctionUnreached_NonInternalNoSource(t *testing.T) {
+	v := Verifier{} // no source index
+	claim := domain.Claim{
+		ID:          "CL-C-LOCUS",
+		ConditionID: "C-LOCUS",
+		Result:      domain.ClaimFalse,
+		Falsifier:   domain.FalsifierLocusFunctionUnreached,
+	}
+	cond := domain.Condition{
+		ID: "C-LOCUS",
+		Subjects: []domain.SymbolRef{
+			{Package: "google.golang.org/grpc/xds", Symbol: "PublicFunc"},
+		},
+	}
+	c := &domain.AnalysisCase{
+		EvidenceGraph: domain.EvidenceGraph{},
+	}
+	verified := v.VerifyFalse(context.Background(), c, claim, cond)
+	if verified.NegativeVerification == nil || verified.NegativeVerification.Status != domain.NegativeInsufficientScope {
+		t.Fatalf("expected NegativeInsufficientScope, got %+v", verified.NegativeVerification)
 	}
 }
