@@ -196,7 +196,7 @@
    "deps": {
     "gopkg.in/yaml.v2": "v2.2.2"
    },
-   "_note": "document is a build-time constant — attacker-control falsifier candidate",
+   "_note": "payload is constant, internal reflection on destination struct does not invalidate constant provenance — attacker-control falsifier candidate",
    "expect": [
     "NO_EXPLOIT_PATH_FOUND",
     "INCONCLUSIVE"
@@ -225,6 +225,7 @@
    "deps": {
     "gopkg.in/yaml.v3": "v3.0.0-20210107192922-496545a6307b"
    },
+   "_note": "payload is constant, internal reflection on destination struct does not invalidate constant provenance",
    "expect": [
     "NO_EXPLOIT_PATH_FOUND",
     "INCONCLUSIVE"
@@ -253,7 +254,7 @@
    "deps": {
     "google.golang.org/protobuf": "v1.32.0"
    },
-   "_note": "payload is a const literal — attacker-control falsifier candidate",
+   "_note": "payload is a const literal — internal reflection on destination struct does not invalidate constant provenance",
    "expect": [
     "NO_EXPLOIT_PATH_FOUND",
     "INCONCLUSIVE"
@@ -484,8 +485,9 @@
    "deps": {
     "google.golang.org/grpc": "v1.83.0"
    },
-   "_note": "pkg-present boundary: xds package in build graph but RouteAndProcess not called by product; expert basis narrows L to RouteAndProcess → C-LOCUS UNKNOWN (package-absent falsifier not applicable) → INCONCLUSIVE required",
+   "_note": "pkg-present boundary: xds package in build graph but RouteAndProcess not called by product; expert basis narrows L to RouteAndProcess → function-unreached proof on internal locus function verifies C-LOCUS falsifier → NO_EXPLOIT_PATH_FOUND",
    "expect": [
+    "NO_EXPLOIT_PATH_FOUND",
     "INCONCLUSIVE"
    ],
    "non_locus": [

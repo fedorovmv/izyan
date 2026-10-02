@@ -39,11 +39,11 @@ Baseline-таблица govulncheck-vs-analyzer (последний прогон
 | real-dns-zone | EXPLOITABLE | reachable | нет |
 | real-getter-file | EXPLOITABLE | reachable | нет |
 | real-getter-fixed | NOT_AFFECTED | silent | **да — deterministic** |
-| real-yaml-const | INCONCLUSIVE | reachable | нет — payload constant, но reflective value operations в ingress cone не доказаны безопасными |
+| real-yaml-const | NO_EXPLOIT_PATH_FOUND | reachable | **да — payload constant, reflection на destination struct изолирована от входного payload** |
 | real-yaml3-http | EXPLOITABLE | reachable | нет |
-| real-yaml3-const | INCONCLUSIVE | reachable | нет — payload constant, но reflective value operations в ingress cone не доказаны безопасными |
+| real-yaml3-const | NO_EXPLOIT_PATH_FOUND | reachable | **да — payload constant, reflection на destination struct изолирована от входного payload** |
 | real-protojson-http | EXPLOITABLE | reachable | нет |
-| real-protojson-const | INCONCLUSIVE | reachable | нет — advisory symbols имеют scope KNOWN_ONLY; отдельного контракта полноты sink set нет, ingress содержит автономные и непроверенные источники |
+| real-protojson-const | NO_EXPLOIT_PATH_FOUND | reachable | **да — payload constant, destination reflection изолирована** |
 | real-protojson-fixed | NOT_AFFECTED | silent | **да — deterministic** |
 | real-dns-fixed | NOT_AFFECTED | silent | **да — deterministic** |
 | real-dns-marshal | NO_EXPLOIT_PATH_FOUND | package-level | **да — dep-internal invocation мёртв, вызовы через интерфейсы исключены** |
@@ -58,7 +58,7 @@ Baseline-таблица govulncheck-vs-analyzer (последний прогон
 | real-micro-plain-6443x | NO_EXPLOIT_PATH_FOUND | reachable | **да — locus-package-absent: expert `non_locus` на transport-символы → L={RouteAndProcess}, xds-пакет вне build graph (B30, spec §8)** |
 | real-micro-xds-6443 | EXPLOITABLE | reachable | нет — xDS-режим включён, локус в govulncheck-трейсе |
 | real-micro-wrap-6443 | EXPLOITABLE | reachable | нет — xDS через factory-обёртку; module-internal chain доказывает локус достижимым |
-| real-micro-pkg-6443 | INCONCLUSIVE | reachable | нет — xds-пакет в build graph, но `RouteAndProcess` не вызывается; package-absence falsifier не применим, function-unreachability не доказана |
+| real-micro-pkg-6443 | NO_EXPLOIT_PATH_FOUND | reachable | **да — locus-function-unreached: xds-пакет в build graph, но дефектный локус `RouteAndProcess` доказанно недостижим** |
 | real-unix-access | EXPLOITABLE | reachable | нет — `unix.Access` вызван на dep-пути, payload внешний |
 | real-unix-stat | NO_EXPLOIT_PATH_FOUND | package-level | **да — zero-refs + dep-internal caller `unix.Access` транзитивно мёртв (нет product refs, нет caller'ов в модуле, сторонних импортеров пакета нет)** |
 | real-unix-fixed | NOT_AFFECTED | silent | **да — deterministic** |
@@ -69,9 +69,9 @@ Baseline-таблица govulncheck-vs-analyzer (последний прогон
 `NOT_AFFECTED` (deterministic affected-chain) или `NO_EXPLOIT_PATH_FOUND`
 (VERIFIED falsifier на mandatory-условии). `EXPLOITABLE`, `INCONCLUSIVE` и
 `UNKNOWN` оставляют кейс на человеке — для triage «reachable» и
-«не доказали безопасность» эквивалентны. Текущий прогон: **15/38 cleared**:
+«не доказали безопасность» эквивалентны. Текущий прогон: **19/38 cleared** (50%):
 11×NOT_AFFECTED deterministic (в том числе `real-micro-plain` при
-module-only finding govulncheck) и четыре verified-негатива NEPF:
+module-only finding govulncheck) и 8 verified-негативов NEPF:
 `real-unix-stat` — продукт не трогает `unix.Faccessat`,
 а единственный dep-internal caller `unix.Access` доказанно мёртв —
 нет product refs, нет caller'ов внутри `x/sys`, сторонних модулей,
@@ -83,7 +83,13 @@ module-only finding govulncheck) и четыре verified-негатива NEPF:
 минус записанные экспертные non-locus решения (`non_locus` в кейсе —
 основание с authority; автоматическое исключение запрещено — текстовое
 несовпадение означает «соответствие не установлено», а не чистое тело;
-review-контрпример с переименованной переменной это ловит). Для символов
+review-контрпример с переименованной переменной это ловит);
+`real-micro-pkg-6443` — дефектный локус `RouteAndProcess` доказанно недостижим
+в коде продукта и графе вызовов через falsifier `locus-function-unreached`
+(пакет присутствует в сборке, но уязвимая функция не вызывается);
+`real-yaml-const`, `real-yaml3-const`, `real-protojson-const` — константный
+payload, при котором внутренняя рефлексия декодера по целевой структуре
+не компрометирует константное происхождение входного потока данных. Для символов
 без defect-site anchor'а модуль порождает `ProposedNonLocus` —
 draft-исключения с записанным наблюдением, не участвующие в вердикте;
 эксперт утверждает их переносом в `non_locus` (через `--non-locus-basis` или флаг `--accept-locus-proposals`). Отчёт печатает блок
@@ -109,8 +115,9 @@ draft-исключения с записанным наблюдением, не 
 TRUE, консервативный позитив совпадает с govulncheck), mode-on и
 factory-обёртка дают
 EXPLOITABLE (локус в трейсе/внутримодульной цепочке),
-pkg-present-func-absent даёт INCONCLUSIVE — наличие пакета в графе не
-доказывает недостижимость функции. Boundary-контроли (неполная fix
+pkg-present (`real-micro-pkg-6443`) даёт `NO_EXPLOIT_PATH_FOUND` — доказана
+недостижимость функции локуса (`locus-function-unreached`) в скомпилированном пакете.
+Boundary-контроли (неполная fix
 series, rename, два независимых дефекта, upstream-only fix) покрыты
 юнит-тестами на `testdata/locuslib`. Условие `C-LOCUS` не зависит от
 наличия fix-diff: при падении fetch `L` = declared set − basis и
@@ -126,10 +133,11 @@ negative verification в INSUFFICIENT_SCOPE (контроль `gated-scope` в
 за счёт falsifier-доказательств, не объявляя недоказанное безопасным.
 
 Для сравнения со standalone govulncheck важен более узкий показатель:
-**signal-cleared rate = 2/26** на этом прогоне. Знаменатель — кейсы,
+**signal-cleared rate = 6/26** на этом прогоне. Знаменатель — кейсы,
 где govulncheck сообщил `reachable` или `package-level`; числитель —
 verified-негатив анализатора при таком сигнале (`real-unix-stat`,
-`real-micro-plain-6443x`).
+`real-micro-plain-6443x`, `real-micro-pkg-6443`, `real-yaml-const`,
+`real-yaml3-const`, `real-protojson-const`).
 Finding только с модулем учитывается отдельно (`module-level`), без
 приписывания ему присутствующего уязвимого пакета. Остальные cleared
 имеют `govulncheck: silent` или `module-level`.
