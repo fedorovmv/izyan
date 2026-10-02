@@ -1767,7 +1767,7 @@ func (ix *Index) ModuleInternalReach(ctx context.Context, module string, entries
 	if err != nil {
 		return nil, false, err
 	}
-	edges, opaque := ix.moduleEdges(pkgs, module)
+	edges, opaqueCallers := ix.moduleEdges(pkgs, module)
 
 	out := map[string][]string{}
 	for _, subj := range subjects {
@@ -1779,16 +1779,33 @@ func (ix *Index) ModuleInternalReach(ctx context.Context, module string, entries
 			}
 		}
 	}
+	// Opaque dispatch (func values, dynamic calls) only invalidates reachability
+	// if an opaque call site is actually reachable from the product's used API
+	// entries — opaque calls in dead code or unrelated sub-packages do not
+	// execute during product runs.
+	opaque := false
+	for _, e := range entries {
+		for oc := range opaqueCallers {
+			if bfsChain(edges, e, oc) != nil {
+				opaque = true
+				break
+			}
+		}
+		if opaque {
+			break
+		}
+	}
 	return out, opaque, nil
 }
 
 // moduleEdges builds the intra-module call graph: caller-qualified-name ->
 // set of callee-qualified-names, plus interface-method -> implementation
 // edges for every module-local impl of invoked interface methods. The
-// bool reports opaque dispatch — calls resolving to no function at all
-// (func values), which make the graph incomplete.
-func (ix *Index) moduleEdges(pkgs []*packages.Package, module string) (map[string]map[string]bool, bool) {
+// map returns the set of qualified caller names that contain opaque dispatch —
+// calls resolving to no function at all (func values).
+func (ix *Index) moduleEdges(pkgs []*packages.Package, module string) (map[string]map[string]bool, map[string]bool) {
 	edges := map[string]map[string]bool{}
+	opaqueCallers := map[string]bool{}
 	// Interface dispatch call sites, recorded for per-site impl narrowing:
 	// a site `g.M()` where g = registry[key] with an evaluable key reaches
 	// only the impls registered at the key's values, not every impl.
@@ -1798,7 +1815,6 @@ func (ix *Index) moduleEdges(pkgs []*packages.Package, module string) (map[strin
 		call *ast.CallExpr
 	}
 	ifaceSites := map[*types.Named]map[string][]ifaceSite{}
-	opaque := false
 	addEdge := func(key, callee string) {
 		if edges[key] == nil {
 			edges[key] = map[string]bool{}
@@ -1837,7 +1853,7 @@ func (ix *Index) moduleEdges(pkgs []*packages.Package, module string) (map[strin
 					switch obj.(type) {
 					case *types.Builtin, *types.TypeName:
 					default:
-						opaque = true
+						opaqueCallers[pkg.PkgPath+"."+caller] = true
 					}
 					return true
 				}
@@ -1864,7 +1880,7 @@ func (ix *Index) moduleEdges(pkgs []*packages.Package, module string) (map[strin
 							// call resolves to the interface method but
 							// no impl edges are enumerable — the graph
 							// is incomplete, not "no path".
-							opaque = true
+							opaqueCallers[pkg.PkgPath+"."+caller] = true
 						}
 					}
 				}
@@ -1942,11 +1958,19 @@ func (ix *Index) moduleEdges(pkgs []*packages.Package, module string) (map[strin
 				// loaded graph (invisible instantiation, unloaded impl
 				// package) leaves the callee unreached — that is unknown
 				// reachability, not disproven.
-				opaque = true
+				for _, s := range sites {
+					if s.enc != nil && s.enc.Name != nil {
+						fnName := s.enc.Name.Name
+						if s.enc.Recv != nil && len(s.enc.Recv.List) > 0 {
+							fnName = recvDeclName(s.enc.Recv.List[0].Type) + "." + fnName
+						}
+						opaqueCallers[s.pkg.PkgPath+"."+fnName] = true
+					}
+				}
 			}
 		}
 	}
-	return edges, opaque
+	return edges, opaqueCallers
 }
 
 // namedKey canonicalizes a named type across load instances — the same
@@ -2103,17 +2127,7 @@ func (ix *Index) depCone(module string) map[string]bool {
 	if err != nil {
 		return nil
 	}
-	edges, opaque := ix.moduleEdges(pkgs, module)
-	if opaque {
-		// Func values and unresolved dynamic calls make the edge set
-		// incomplete: dropping off-cone sites could fabricate absence for
-		// negative verification — the cone must not restrict anything.
-		if ix.coneCache == nil {
-			ix.coneCache = map[string]map[string]bool{}
-		}
-		ix.coneCache[module] = nil
-		return nil
-	}
+	edges, opaqueCallers := ix.moduleEdges(pkgs, module)
 	// Seed with every product call site whose callee lands in the module —
 	// the same callee-key format moduleEdges produces.
 	entries := map[string]bool{}
@@ -2161,6 +2175,15 @@ func (ix *Index) depCone(module string) map[string]bool {
 				cone[next] = true
 				stack = append(stack, next)
 			}
+		}
+	}
+	for c := range cone {
+		if opaqueCallers[c] {
+			if ix.coneCache == nil {
+				ix.coneCache = map[string]map[string]bool{}
+			}
+			ix.coneCache[module] = nil
+			return nil
 		}
 	}
 	if ix.coneCache == nil {

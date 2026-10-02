@@ -3,6 +3,8 @@ package goanalysis
 import (
 	"context"
 	"testing"
+
+	"example.com/vuln-analyzer/internal/domain"
 )
 
 // Receiver-binding union: an iface call whose receiver is bound by more
@@ -92,5 +94,31 @@ func TestDepConeOpaqueIsUnrestricted(t *testing.T) {
 	}
 	if cone := ix.depCone("example.com/dyndep"); cone != nil {
 		t.Fatalf("opaque module produced a restricting cone: %v", cone)
+	}
+}
+
+func TestModuleInternalReachOpaqueScoping(t *testing.T) {
+	ix := fixture(t, "dynprod")
+	if err := ix.load(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// Case 1: Entry calls RunWith, which contains a func-value call.
+	// Opaque must be true because opaque dispatch is reachable from entry.
+	_, opaque1, err := ix.ModuleInternalReach(context.Background(), "example.com/dyndep", []string{"example.com/dyndep/dyn.RunWith"}, []domain.SymbolRef{{Package: "example.com/dyndep/dyn", Symbol: "Vulnerable"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !opaque1 {
+		t.Fatal("expected opaque=true when entry calls function with func-value dispatch")
+	}
+
+	// Case 2: Entry calls Vulnerable, which is isolated from RunWith and AnonRunner.
+	// Opaque must be false because the opaque callers are not reachable from Vulnerable.
+	_, opaque2, err := ix.ModuleInternalReach(context.Background(), "example.com/dyndep", []string{"example.com/dyndep/dyn.Vulnerable"}, []domain.SymbolRef{{Package: "example.com/dyndep/dyn", Symbol: "Vulnerable"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opaque2 {
+		t.Fatal("expected opaque=false when entry does not reach any opaque callers")
 	}
 }
