@@ -149,6 +149,13 @@ func DecodeModules(b []byte) ([]Module, error) {
 }
 
 func decodePackages(b []byte) ([]Package, error) {
+	trimmed := bytes.TrimSpace(b)
+	if len(trimmed) > 0 && trimmed[0] == '[' {
+		var out []Package
+		if err := json.Unmarshal(trimmed, &out); err == nil {
+			return out, nil
+		}
+	}
 	dec := json.NewDecoder(bytes.NewReader(b))
 	var out []Package
 	for dec.More() {

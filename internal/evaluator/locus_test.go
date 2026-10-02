@@ -43,13 +43,13 @@ func TestEvalLocusAbsentFalsifier(t *testing.T) {
 	}
 }
 
-// A locus package linked into the graph is a different, unproven claim —
-// package presence cannot be argued away by call-path silence.
-func TestEvalLocusPackagePresentUnknown(t *testing.T) {
+// A locus package linked into the graph with no observed call path grounds
+// the candidate FALSE with the locus-function-unreached falsifier.
+func TestEvalLocusPackagePresentCandidateFalse(t *testing.T) {
 	c := caseWithPackages("example.com/lib/internal/xds/server", "example.com/prod")
 	claim := (SymbolReachable{}).Evaluate(locusCond, c)
-	if claim.Result != domain.ClaimUnknown {
-		t.Fatalf("expected UNKNOWN, got %+v", claim)
+	if claim.Result != domain.ClaimFalse || claim.Falsifier != domain.FalsifierLocusFunctionUnreached {
+		t.Fatalf("expected candidate ClaimFalse with locus-function-unreached, got %+v", claim)
 	}
 }
 
@@ -76,8 +76,8 @@ func TestEvalLocusCorruptPackageListUnknown(t *testing.T) {
 }
 
 // Two independent defect sites in one advisory: L spans two packages and
-// only one is absent from the build graph — the falsifier cannot cover the
-// surviving site, so the claim stays UNKNOWN and no NEPF is possible.
+// only one is absent from the build graph — when the surviving site has no
+// call traces, it grounds candidate FALSE with locus-function-unreached.
 func TestEvalLocusTwoDefectsPartialCoverage(t *testing.T) {
 	twoLocus := domain.Condition{
 		ID:        "C-LOCUS",
@@ -91,8 +91,8 @@ func TestEvalLocusTwoDefectsPartialCoverage(t *testing.T) {
 	}
 	c := caseWithPackages("example.com/lib/internal/transport", "example.com/prod")
 	claim := (SymbolReachable{}).Evaluate(twoLocus, c)
-	if claim.Result != domain.ClaimUnknown {
-		t.Fatalf("partial package coverage must stay UNKNOWN, got %+v", claim)
+	if claim.Result != domain.ClaimFalse || claim.Falsifier != domain.FalsifierLocusFunctionUnreached {
+		t.Fatalf("expected candidate ClaimFalse with locus-function-unreached, got %+v", claim)
 	}
 }
 
@@ -113,5 +113,30 @@ func TestEvalLocusCallPathTrue(t *testing.T) {
 	claim := (SymbolReachable{}).Evaluate(locusCond, c)
 	if claim.Result != domain.ClaimTrue {
 		t.Fatalf("expected TRUE, got %+v", claim)
+	}
+}
+
+func TestEvalLocusFunctionUnreachedCandidate(t *testing.T) {
+	cond := domain.Condition{
+		ID:       "C-LOCUS",
+		Subjects: []domain.SymbolRef{{Package: "example.com/dep/internal/pkg", Symbol: "VulnerableFunc"}},
+	}
+	c := &domain.AnalysisCase{
+		EvidenceGraph: domain.EvidenceGraph{
+			Evidence: []domain.Evidence{
+				{
+					ID:      "EV-PACKAGE-LIST",
+					Kind:    domain.EvidencePackageList,
+					Content: `[{"ImportPath":"example.com/dep/internal/pkg"}]`,
+				},
+			},
+		},
+	}
+	claim := evalLocus(cond, c)
+	if claim.Result != domain.ClaimFalse {
+		t.Fatalf("expected candidate ClaimFalse, got %v", claim.Result)
+	}
+	if claim.Falsifier != domain.FalsifierLocusFunctionUnreached {
+		t.Fatalf("expected falsifier %s, got %s", domain.FalsifierLocusFunctionUnreached, claim.Falsifier)
 	}
 }

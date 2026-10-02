@@ -487,6 +487,11 @@ const (
 	// linked in and cannot execute through any path, including wrappers,
 	// callbacks and dynamic dispatch.
 	FalsifierLocusPackageAbsent = "locus-package-absent"
+	// FalsifierLocusFunctionUnreached grounds FALSE for a locus-reachability
+	// condition: locus packages are present in the product's build graph, but
+	// the vulnerable functions have no observed call traces or module chains,
+	// requiring negative verification of callers and dynamic markers.
+	FalsifierLocusFunctionUnreached = "locus-function-unreached"
 )
 
 type EvidenceQuality string

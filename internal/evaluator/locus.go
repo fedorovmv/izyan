@@ -10,12 +10,10 @@ import (
 
 // evalLocus evaluates a C-LOCUS condition — reachability of the defect
 // locus set L (spec §8). TRUE follows the usual call-path evidence. FALSE
-// is a candidate grounded on one falsifier only: every locus package absent
-// from the snapshot's `go list -deps` build graph — code not linked cannot
-// execute through any path, wrapper, callback or dispatch. A locus package
-// present in the graph with no observed call path is UNKNOWN: absence of a
-// package proves code is missing; a present-but-unreached function is a
-// different, unproven claim.
+// is a candidate grounded on two falsifiers: every locus package absent from
+// the snapshot's `go list -deps` build graph (locus-package-absent), or locus
+// packages linked into the graph but symbols in L having zero call traces or
+// module chains (locus-function-unreached).
 func evalLocus(cond domain.Condition, c *domain.AnalysisCase) domain.Claim {
 	claim := domain.Claim{
 		ID:          domain.ClaimID("CL-" + string(cond.ID)),
@@ -77,7 +75,8 @@ func evalLocus(cond domain.Condition, c *domain.AnalysisCase) domain.Claim {
 		}
 	}
 
-	// Negative basis: complete build-graph absence of every locus package.
+	// Negative basis: complete build-graph absence of every locus package,
+	// or function unreachability when locus packages are linked.
 	set, ids, err := packageImportSet(c)
 	if err != nil {
 		claim.Limitations = append(claim.Limitations, err.Error())
@@ -90,6 +89,39 @@ func evalLocus(cond domain.Condition, c *domain.AnalysisCase) domain.Claim {
 		}
 	}
 	if len(present) > 0 {
+		hasCallPath := false
+		for _, cp := range c.EvidenceGraph.CallPaths {
+			for _, fr := range cp.Frames {
+				for _, sym := range symbols {
+					if frameMatches(fr, sym) {
+						hasCallPath = true
+						break
+					}
+				}
+			}
+		}
+		hasModuleReach := false
+		for _, subj := range symbols {
+			want := subj.Package + "." + subj.Symbol
+			if _, ok := c.EvidenceGraph.ModuleReachable[want]; ok {
+				hasModuleReach = true
+				break
+			}
+		}
+		if !hasCallPath && !hasModuleReach {
+			claim.Result = domain.ClaimFalse
+			claim.Falsifier = domain.FalsifierLocusFunctionUnreached
+			claim.EvidenceIDs = ids
+			claim.Explanation = fmt.Sprintf(
+				"пакеты с уязвимым кодом входят в сборку, но функции дефектного локуса (%d) не имеют обнаруженных трасс вызовов; требуется верификация недостижимости",
+				len(symbols))
+			claim.Limitations = append(claim.Limitations,
+				"FALSE (предварительно): недостижимость функции в скомпилированном пакете требует негативной верификации")
+			if proposed != "" {
+				claim.Limitations = append(claim.Limitations, proposed)
+			}
+			return claim
+		}
 		claim.Limitations = append(claim.Limitations, fmt.Sprintf(
 			"пакеты с уязвимым кодом входят в граф сборки (%s); код включён в бинарник, недостижимость на уровне функции не доказана",
 			strings.Join(present, ", ")))
