@@ -125,6 +125,97 @@ func rootCauseStatus(status domain.RootCauseStatus, isRU bool) string {
 	}
 }
 
+func localizeAffectedBool(r domain.ClaimResult, isRU bool) string {
+	if !isRU {
+		return string(r)
+	}
+	switch r {
+	case domain.ClaimTrue:
+		return "Да"
+	case domain.ClaimFalse:
+		return "Нет"
+	case domain.ClaimUnknown:
+		return "Не определено"
+	default:
+		if strings.EqualFold(string(r), "true") {
+			return "Да"
+		}
+		if strings.EqualFold(string(r), "false") {
+			return "Нет"
+		}
+		return string(r)
+	}
+}
+
+func localizeClaimResult(r domain.ClaimResult, isRU bool) string {
+	if !isRU {
+		return string(r)
+	}
+	switch r {
+	case domain.ClaimTrue:
+		return "Подтверждено (TRUE)"
+	case domain.ClaimFalse:
+		return "Опровергнуто (FALSE)"
+	case domain.ClaimUnknown:
+		return "Не определено (UNKNOWN)"
+	default:
+		if strings.EqualFold(string(r), "true") {
+			return "Подтверждено (TRUE)"
+		}
+		if strings.EqualFold(string(r), "false") {
+			return "Опровергнуто (FALSE)"
+		}
+		return string(r)
+	}
+}
+
+func govulncheckSummary(c *domain.AnalysisCase, isRU bool) string {
+	if len(c.EvidenceGraph.CallPaths) > 0 {
+		if isRU {
+			return fmt.Sprintf("Обнаружены пути вызова к уязвимому коду (%d)", len(c.EvidenceGraph.CallPaths))
+		}
+		return fmt.Sprintf("Call path(s) to vulnerable code detected (%d)", len(c.EvidenceGraph.CallPaths))
+	}
+	if isRU {
+		return "Трасса вызовов от кода продукта не обнаружена (чисто)"
+	}
+	return "No call path from product code found (clean)"
+}
+
+func rootCauseMechanism(mech string, isRU bool) string {
+	if isRU {
+		if mech == "advisory-listed affected symbol" {
+			return "заявлена как уязвимая в базе (advisory)"
+		}
+		return strings.ReplaceAll(mech, "advisory-listed affected symbol", "заявлена как уязвимая в базе (advisory)")
+	}
+	return mech
+}
+
+func renderProvenanceBreakdown(b *strings.Builder, isRU bool) {
+	if isRU {
+		b.WriteString("### Источники и методы проверки (Методология)\n\n")
+		b.WriteString("- ⚙️ **Детерминированные проверки компилятора Go:**\n")
+		b.WriteString("  - Зависимости (`go.mod` / `go list -m`): версия модуля зафиксирована в сборке.\n")
+		b.WriteString("  - Граф сборки (`go list -deps`): физическое отсутствие пакетов локуса дефекта в скомпилированном бинарнике.\n")
+		b.WriteString("  - Статический анализ вызовов (`govulncheck`): проверка отсутствия пути вызова от приложения к уязвимым функциям.\n")
+		b.WriteString("  - Анализ точек входа (AST): вызов стандартных безопасных конструкторов.\n")
+		b.WriteString("- 🤖 **Семантический анализ LLM (AI-исследование):**\n")
+		b.WriteString("  - Архитектурный анализ уязвимости: исследование патча, разделение функций на сайт паники и вспомогательные функции.\n")
+		b.WriteString("  - Семантическое рецензирование: подтверждение логики работы компонентов.\n\n")
+	} else {
+		b.WriteString("### Verification Sources & Methods (Methodology)\n\n")
+		b.WriteString("- ⚙️ **Go compiler deterministic checks:**\n")
+		b.WriteString("  - Dependencies (`go.mod` / `go list -m`): module version pinned in build.\n")
+		b.WriteString("  - Build graph (`go list -deps`): physical absence of defect locus packages in compiled binary.\n")
+		b.WriteString("  - Static call analysis (`govulncheck`): verification of no call path from application to vulnerable functions.\n")
+		b.WriteString("  - Entrypoint analysis (AST): standard safe constructors invoked.\n")
+		b.WriteString("- 🤖 **LLM semantic analysis (AI research):**\n")
+		b.WriteString("  - Vulnerability architectural analysis: patch investigation, separating panic sites from helper functions.\n")
+		b.WriteString("  - Semantic review: component operational logic validation.\n\n")
+	}
+}
+
 func Markdown(c *domain.AnalysisCase, lang ...string) string {
 	isRU := isRussian(lang...)
 	var b strings.Builder
@@ -171,16 +262,19 @@ func Markdown(c *domain.AnalysisCase, lang ...string) string {
 			b.WriteString("## Evidence Dossier\n\n")
 		}
 
+		renderProvenanceBreakdown(&b, isRU)
+
 		if c.Affected != nil {
 			a := c.Affected
 			if isRU {
 				fmt.Fprintf(&b, "### Применимость (Affected Analysis)\n\n")
 				fmt.Fprintf(&b, "| Проверка | Результат |\n|---|---|\n")
-				fmt.Fprintf(&b, "| Наличие модуля в зависимостях | %s |\n", a.ModulePresent)
+				fmt.Fprintf(&b, "| Наличие модуля в зависимостях | %s |\n", localizeAffectedBool(a.ModulePresent, true))
 				fmt.Fprintf(&b, "| Разрешённая версия в go.mod | `%s` |\n", a.ResolvedVersion)
-				fmt.Fprintf(&b, "| Версия входит в диапазон уязвимых | %s |\n", a.VersionAffected)
-				fmt.Fprintf(&b, "| Уязвимый пакет входит в сборку | %s |\n", a.PackagePresent)
-				fmt.Fprintf(&b, "| Код компилируется для целевой платформы | %s |\n", a.BuildRelevant)
+				fmt.Fprintf(&b, "| Версия входит в диапазон уязвимых | %s |\n", localizeAffectedBool(a.VersionAffected, true))
+				fmt.Fprintf(&b, "| Уязвимый пакет входит в сборку | %s |\n", localizeAffectedBool(a.PackagePresent, true))
+				fmt.Fprintf(&b, "| Код компилируется для целевой платформы | %s |\n", localizeAffectedBool(a.BuildRelevant, true))
+				fmt.Fprintf(&b, "| Статический анализ вызовов (govulncheck) | %s |\n", govulncheckSummary(c, true))
 				if len(a.CheckedModules) > 0 {
 					fmt.Fprintf(&b, "| Проверенные модули | `%s` |\n", strings.Join(a.CheckedModules, "`, `"))
 				}
@@ -205,6 +299,7 @@ func Markdown(c *domain.AnalysisCase, lang ...string) string {
 				fmt.Fprintf(&b, "| version affected | %s |\n", a.VersionAffected)
 				fmt.Fprintf(&b, "| package present | %s |\n", a.PackagePresent)
 				fmt.Fprintf(&b, "| build relevant | %s |\n", a.BuildRelevant)
+				fmt.Fprintf(&b, "| static call analysis (govulncheck) | %s |\n", govulncheckSummary(c, false))
 				if len(a.CheckedModules) > 0 {
 					fmt.Fprintf(&b, "| modules probed | `%s` |\n", strings.Join(a.CheckedModules, "`, `"))
 				}
@@ -228,7 +323,7 @@ func Markdown(c *domain.AnalysisCase, lang ...string) string {
 			if isRU {
 				b.WriteString("### Статус условий эксплуатации (Claims)\n\n| Условие | Результат | Верификация | Доказательства |\n|---|---|---|---|\n")
 				for _, cl := range c.Claims {
-					fmt.Fprintf(&b, "| `%s` | %s | %s | %s |\n", cl.ConditionID, cl.Result,
+					fmt.Fprintf(&b, "| `%s` | %s | %s | %s |\n", cl.ConditionID, localizeClaimResult(cl.Result, true),
 						claimVerification(cl, true), strings.Join(evidenceIDs(cl.EvidenceIDs), ", "))
 				}
 				b.WriteString("\n")
@@ -305,7 +400,7 @@ func Markdown(c *domain.AnalysisCase, lang ...string) string {
 				if isRU {
 					fmt.Fprintf(&b, "#### Первопричина дефекта (Root cause): %s\n\n", rootCauseStatus(c.RootCause.Status, true))
 					for _, rc := range c.RootCause.RootCauses {
-						fmt.Fprintf(&b, "- `%s.%s` (%s) — %s\n", rc.Package, rc.Symbol, rootCauseRole(rc.Role, true), rc.Mechanism)
+						fmt.Fprintf(&b, "- `%s.%s` (%s) — %s\n", rc.Package, rc.Symbol, rootCauseRole(rc.Role, true), rootCauseMechanism(rc.Mechanism, true))
 					}
 					b.WriteString("\n")
 				} else {
@@ -343,14 +438,17 @@ func Markdown(c *domain.AnalysisCase, lang ...string) string {
 
 				if len(c.Exploit.NonLocusBasis) > 0 {
 					if isRU {
-						b.WriteString("#### Экспертные решения non_locus\n\n")
-						b.WriteString("Анализ скорректирован с учётом ранее зафиксированных решений эксперта (ручное подтверждение, не автоматический вывод):\n\n")
+						b.WriteString("#### Функции без дефекта (исключены из анализа уязвимости)\n\n")
+						b.WriteString("Функции из базы уязвимости (advisory), которые признаны безопасными (являются вспомогательными диспетчерами или проверками входных данных) и не содержат дефектной операции:\n\n")
 						for _, d := range c.Exploit.NonLocusBasis {
 							auth := d.Authority
 							if auth == "" {
 								auth = "эксперт"
+							} else if auth == "accepted-machine-proposal" {
+								auth = "принятая рекомендация анализатора"
 							}
-							fmt.Fprintf(&b, "- `%s.%s` — %s (%s)\n", d.Symbol.Package, d.Symbol.Symbol, d.Basis, auth)
+							basis := strings.ReplaceAll(d.Basis, "accepted-machine-proposal", "принятая рекомендация анализатора")
+							fmt.Fprintf(&b, "- `%s.%s` — %s (%s)\n", d.Symbol.Package, d.Symbol.Symbol, basis, auth)
 						}
 						b.WriteString("\n")
 					} else {
@@ -400,9 +498,9 @@ func Markdown(c *domain.AnalysisCase, lang ...string) string {
 
 	if hasAudit {
 		if isRU {
-			b.WriteString("<details>\n<summary><b>Технические детали и аудит (Data Flows, Tool Executions, Limitations)</b></summary>\n\n")
+			b.WriteString("## Технические детали и аудит (Data Flows, Tool Executions, Limitations)\n\n")
 		} else {
-			b.WriteString("<details>\n<summary><b>Technical Details & Audit (Data Flows, Tool Executions, Limitations)</b></summary>\n\n")
+			b.WriteString("## Technical Details & Audit (Data Flows, Tool Executions, Limitations)\n\n")
 		}
 
 		if len(c.EvidenceGraph.DataFlows) > 0 {
@@ -524,14 +622,16 @@ func Markdown(c *domain.AnalysisCase, lang ...string) string {
 			for _, h := range c.Hypotheses {
 				fmt.Fprintf(&b, "- `%s` %s → **%s**: %s", h.ID, h.ConditionID, h.Status, h.Statement)
 				if h.Notes != "" {
-					fmt.Fprintf(&b, " — %s", h.Notes)
+					notes := h.Notes
+					if isRU {
+						notes = strings.ReplaceAll(notes, "accepted-machine-proposal", "принятая рекомендация анализатора")
+					}
+					fmt.Fprintf(&b, " — %s", notes)
 				}
 				b.WriteString("\n")
 			}
 			b.WriteString("\n")
 		}
-
-		b.WriteString("</details>\n")
 	}
 
 	return b.String()
@@ -837,7 +937,7 @@ func defectDescription(c *domain.AnalysisCase) string {
 		var parts []string
 		for _, rc := range c.RootCause.RootCauses {
 			if rc.Mechanism != "" {
-				parts = append(parts, fmt.Sprintf("%s (локализовано в `%s.%s`)", rc.Mechanism, rc.Package, rc.Symbol))
+				parts = append(parts, fmt.Sprintf("%s (локализовано в `%s.%s`)", rootCauseMechanism(rc.Mechanism, true), rc.Package, rc.Symbol))
 			}
 		}
 		if len(parts) > 0 {
@@ -971,6 +1071,7 @@ func formatPresentSymbolsParagraph(notes []locusSymbolNote) string {
 		if basis == "" {
 			basis = "дефектный код отсутствует"
 		}
+		basis = strings.ReplaceAll(basis, "accepted-machine-proposal", "принятая рекомендация анализатора")
 		fmt.Fprintf(&b, "- `%s.%s`: %s\n", n.Symbol.Package, n.Symbol.Symbol, basis)
 	}
 	b.WriteString("Эти функции выполняют лишь диспетчеризацию или вспомогательную проверку, дефектная логика в них отсутствует, поэтому исполнение до дефекта не доходит.")

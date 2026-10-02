@@ -329,14 +329,12 @@ func TestMarkdownStructureInvertedPyramid(t *testing.T) {
 	idxRationale := strings.Index(md, "## Резюме")
 	idxRemediation := strings.Index(md, "## Рекомендации по устранению")
 	idxEvidence := strings.Index(md, "## Доказательная база")
-	idxDetailsOpen := strings.Index(md, "<details>")
-	idxDetailsSummary := strings.Index(md, "<summary><b>Технические детали и аудит (Data Flows, Tool Executions, Limitations)</b></summary>")
+	idxAudit := strings.Index(md, "## Технические детали и аудит (Data Flows, Tool Executions, Limitations)")
 	idxDataFlows := strings.Index(md, "### Потоки данных (Data Flows)")
 	idxToolExec := strings.Index(md, "### Журнал инструментов (Tool Executions)")
-	idxDetailsClose := strings.Index(md, "</details>")
 
 	if idxHeader == -1 || idxVerdict == -1 || idxVerdictBlockquote == -1 || idxRationale == -1 || idxRemediation == -1 ||
-		idxEvidence == -1 || idxDetailsOpen == -1 || idxDetailsSummary == -1 || idxDataFlows == -1 || idxToolExec == -1 || idxDetailsClose == -1 {
+		idxEvidence == -1 || idxAudit == -1 || idxDataFlows == -1 || idxToolExec == -1 {
 		t.Fatalf("one or more expected sections missing from Markdown output:\n%s", md)
 	}
 
@@ -345,13 +343,14 @@ func TestMarkdownStructureInvertedPyramid(t *testing.T) {
 		idxVerdictBlockquote < idxRationale &&
 		idxRationale < idxRemediation &&
 		idxRemediation < idxEvidence &&
-		idxEvidence < idxDetailsOpen &&
-		idxDetailsOpen < idxDetailsSummary &&
-		idxDetailsSummary < idxDataFlows &&
-		idxDataFlows < idxToolExec &&
-		idxToolExec < idxDetailsClose) {
-		t.Fatalf("sections are not in inverted pyramid order. Indices:\nheader=%d, verdict=%d, quote=%d, rationale=%d, remediation=%d, evidence=%d, detailsOpen=%d, summary=%d, dataFlows=%d, toolExec=%d, detailsClose=%d",
-			idxHeader, idxVerdict, idxVerdictBlockquote, idxRationale, idxRemediation, idxEvidence, idxDetailsOpen, idxDetailsSummary, idxDataFlows, idxToolExec, idxDetailsClose)
+		idxEvidence < idxAudit &&
+		idxAudit < idxDataFlows &&
+		idxDataFlows < idxToolExec) {
+		t.Fatalf("sections are not in inverted pyramid order. Indices:\nheader=%d, verdict=%d, quote=%d, rationale=%d, remediation=%d, evidence=%d, audit=%d, dataFlows=%d, toolExec=%d",
+			idxHeader, idxVerdict, idxVerdictBlockquote, idxRationale, idxRemediation, idxEvidence, idxAudit, idxDataFlows, idxToolExec)
+	}
+	if strings.Contains(md, "<details>") || strings.Contains(md, "<summary>") {
+		t.Fatalf("markdown should not contain <details> or <summary> tags")
 	}
 }
 
@@ -446,12 +445,12 @@ func TestMarkdownStructureInvertedPyramid_FullSections(t *testing.T) {
 		"## Резюме",
 		"## Рекомендации по устранению",
 		"## Доказательная база",
+		"### Источники и методы проверки (Методология)",
 		"### Применимость (Affected Analysis)",
 		"### Статус условий эксплуатации (Claims)",
 		"### Точки входа (Exposure Facts)",
 		"### Модель эксплуатации и сайты дефекта",
-		"<details>",
-		"<summary><b>Технические детали и аудит (Data Flows, Tool Executions, Limitations)</b></summary>",
+		"## Технические детали и аудит (Data Flows, Tool Executions, Limitations)",
 		"### Потоки данных (Data Flows)",
 		"### Журнал инструментов (Tool Executions)",
 		"### Ограничения анализа (Limitations)",
@@ -459,7 +458,6 @@ func TestMarkdownStructureInvertedPyramid_FullSections(t *testing.T) {
 		"### Факты среды (Runtime Facts)",
 		"### Сборка и тесты (Build & Test)",
 		"### Рабочие гипотезы (Hypotheses)",
-		"</details>",
 	}
 
 	lastIdx := -1
@@ -622,9 +620,10 @@ func TestMarkdownLocalizationRU(t *testing.T) {
 			"#### Сопутствующие факторы (Supporting factors)",
 			"Сетевая доступность: наличие открытых сетевых портов или исходящих подключений",
 			"Проверка TLS: отключение проверки сертификатов позволяет передавать трафик без доверенного канала",
-			"#### Экспертные решения non_locus",
-			"<details>",
-			"<summary><b>Технические детали и аудит (Data Flows, Tool Executions, Limitations)</b></summary>",
+			"### Источники и методы проверки (Методология)",
+			"| Статический анализ вызовов (govulncheck) |",
+			"#### Функции без дефекта (исключены из анализа уязвимости)",
+			"## Технические детали и аудит (Data Flows, Tool Executions, Limitations)",
 			"### Потоки данных (Data Flows)",
 			"### Журнал инструментов (Tool Executions)",
 			"| Инструмент | Аргументы | Код возврата | Длительность (мс) | SHA-256 вывода |",
@@ -633,7 +632,6 @@ func TestMarkdownLocalizationRU(t *testing.T) {
 			"### Факты среды (Runtime Facts)",
 			"### Сборка и тесты (Build & Test)",
 			"### Рабочие гипотезы (Hypotheses)",
-			"</details>",
 		}
 
 		for _, phrase := range expectedPhrases {
@@ -642,6 +640,9 @@ func TestMarkdownLocalizationRU(t *testing.T) {
 			}
 		}
 
+		if strings.Contains(md, "<details>") || strings.Contains(md, "<summary>") {
+			t.Errorf("RU markdown should not contain <details> or <summary> tags")
+		}
 		if strings.Contains(md, "# Vulnerability analysis:") {
 			t.Errorf("RU markdown should not contain English header '# Vulnerability analysis:'")
 		}
@@ -667,10 +668,12 @@ func TestMarkdownLocalizationEN(t *testing.T) {
 		"## Remediation",
 		"Update `example.com/mod` from `v1.0.0` to `v1.2.0`:",
 		"## Evidence Dossier",
+		"### Verification Sources & Methods (Methodology)",
 		"### Affected Analysis",
 		"| check | result |",
 		"| module present |",
 		"| package present |",
+		"| static call analysis (govulncheck) |",
 		"### Claims Status",
 		"| condition | result | verification | evidence |",
 		"locus-package-absent / VERIFIED",
@@ -682,8 +685,7 @@ func TestMarkdownLocalizationEN(t *testing.T) {
 		"Impact: Remote Code Execution",
 		"#### Mandatory conditions",
 		"#### Supporting factors",
-		"<details>",
-		"<summary><b>Technical Details & Audit (Data Flows, Tool Executions, Limitations)</b></summary>",
+		"## Technical Details & Audit (Data Flows, Tool Executions, Limitations)",
 		"### Data Flows",
 		"### Tool Executions",
 		"| tool | args | exit | ms | stdout sha256 |",
@@ -692,7 +694,6 @@ func TestMarkdownLocalizationEN(t *testing.T) {
 		"### Runtime Facts",
 		"### Build & Test",
 		"### Hypotheses",
-		"</details>",
 	}
 
 	for _, phrase := range expectedPhrases {
@@ -701,6 +702,9 @@ func TestMarkdownLocalizationEN(t *testing.T) {
 		}
 	}
 
+	if strings.Contains(md, "<details>") || strings.Contains(md, "<summary>") {
+		t.Errorf("EN markdown should not contain <details> or <summary> tags")
+	}
 	if strings.Contains(md, "# Анализ уязвимости:") {
 		t.Errorf("EN markdown should not contain Russian header '# Анализ уязвимости:'")
 	}
@@ -738,6 +742,180 @@ func TestReportWriteGeneratesBothRUandEN(t *testing.T) {
 	for _, name := range []string{"report.json", "openvex.json", "cyclonedx.json"} {
 		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
 			t.Fatalf("expected file %s to exist: %v", name, err)
+		}
+	}
+}
+
+func TestReportNoDetailsTags(t *testing.T) {
+	c := sampleCaseForLocalization()
+	for _, lang := range []string{"ru", "en"} {
+		md := Markdown(c, lang)
+		if strings.Contains(md, "<details>") {
+			t.Errorf("[%s] output should not contain <details>", lang)
+		}
+		if strings.Contains(md, "</details>") {
+			t.Errorf("[%s] output should not contain </details>", lang)
+		}
+		if strings.Contains(md, "<summary>") || strings.Contains(md, "</summary>") {
+			t.Errorf("[%s] output should not contain <summary> tags", lang)
+		}
+	}
+
+	mdRU := Markdown(c, "ru")
+	if !strings.Contains(mdRU, "## Технические детали и аудит (Data Flows, Tool Executions, Limitations)") {
+		t.Errorf("RU output missing expected audit header")
+	}
+
+	mdEN := Markdown(c, "en")
+	if !strings.Contains(mdEN, "## Technical Details & Audit (Data Flows, Tool Executions, Limitations)") {
+		t.Errorf("EN output missing expected audit header")
+	}
+}
+
+func TestReportClarityAndProvenance(t *testing.T) {
+	c := &domain.AnalysisCase{
+		ID: "case-clarity-test",
+		Vulnerability: domain.Vulnerability{
+			ID:     "CVE-2026-6443",
+			Module: "example.com/mod",
+			AffectedPackages: []domain.AffectedPackage{
+				{Path: "example.com/mod/vulnpkg"},
+			},
+		},
+		Product: domain.ProductSnapshot{
+			Repository: "example.com/product",
+			Commit:     "1234567890ab",
+			GoVersion:  "1.24.0",
+			GOOS:       "linux",
+			GOARCH:     "amd64",
+		},
+		Verdict: &domain.VerdictResult{
+			Verdict: domain.VerdictNoExploitPathFound,
+			Reason:  "mandatory exploit condition is proven false",
+		},
+		Affected: &domain.AffectedResult{
+			ModulePresent:   domain.ClaimTrue,
+			ResolvedVersion: "v1.0.0",
+			VersionAffected: domain.ClaimTrue,
+			PackagePresent:  domain.ClaimFalse,
+			BuildRelevant:   domain.ClaimTrue,
+		},
+		Claims: []domain.Claim{
+			{ConditionID: "C-LOCUS", Result: domain.ClaimFalse},
+			{ConditionID: "C-REACH", Result: domain.ClaimTrue},
+			{ConditionID: "C-PEER-INPUT", Result: domain.ClaimUnknown},
+		},
+		RootCause: &domain.RootCauseModel{
+			Status: domain.RootCauseResolved,
+			RootCauses: []domain.RootCause{
+				{
+					Package:   "example.com/mod/vulnpkg",
+					Symbol:    "FaultyFunc",
+					Role:      domain.RootCauseSink,
+					Mechanism: "advisory-listed affected symbol",
+				},
+			},
+		},
+		Exploit: &domain.ExploitModel{
+			Class:  "DENIAL_OF_SERVICE",
+			Impact: "Server crash",
+			MandatoryConditions: []domain.Condition{
+				{ID: "C-LOCUS", Kind: "code", Description: "vulnerable function called"},
+			},
+			NonLocusBasis: []domain.LocusDecision{
+				{
+					Symbol:    domain.SymbolRef{Package: "example.com/mod/vulnpkg", Symbol: "SafeDispatcher"},
+					Authority: "accepted-machine-proposal",
+					Basis:     "helper dispatcher (accepted-machine-proposal)",
+				},
+			},
+		},
+		EvidenceGraph: domain.EvidenceGraph{
+			ToolExecutions: []domain.ToolExecution{
+				{Tool: "govulncheck", Args: []string{"./..."}, ExitCode: 0, DurationMs: 120, StdoutSHA256: "abcdef123456"},
+			},
+		},
+	}
+
+	md := Markdown(c, "ru")
+
+	// 1. Humanize Affected Analysis booleans in Russian: TRUE -> Да, FALSE -> Нет, UNKNOWN -> Не определено
+	if !strings.Contains(md, "| Наличие модуля в зависимостях | Да |") {
+		t.Errorf("expected '| Наличие модуля в зависимостях | Да |', got:\n%s", md)
+	}
+	if !strings.Contains(md, "| Версия входит в диапазон уязвимых | Да |") {
+		t.Errorf("expected '| Версия входит в диапазон уязвимых | Да |'")
+	}
+	if !strings.Contains(md, "| Уязвимый пакет входит в сборку | Нет |") {
+		t.Errorf("expected '| Уязвимый пакет входит в сборку | Нет |'")
+	}
+	if !strings.Contains(md, "| Код компилируется для целевой платформы | Да |") {
+		t.Errorf("expected '| Код компилируется для целевой платформы | Да |'")
+	}
+	if strings.Contains(md, "| Наличие модуля в зависимостях | TRUE |") || strings.Contains(md, "| Уязвимый пакет входит в сборку | FALSE |") {
+		t.Errorf("Affected table should not contain raw TRUE/FALSE booleans")
+	}
+
+	// 2. Humanize Claims table in Russian:
+	// TRUE -> Подтверждено (TRUE), FALSE -> Опровергнуто (FALSE), UNKNOWN -> Не определено (UNKNOWN)
+	if !strings.Contains(md, "| `C-LOCUS` | Опровергнуто (FALSE) |") {
+		t.Errorf("expected C-LOCUS to show 'Опровергнуто (FALSE)'")
+	}
+	if !strings.Contains(md, "| `C-REACH` | Подтверждено (TRUE) |") {
+		t.Errorf("expected C-REACH to show 'Подтверждено (TRUE)'")
+	}
+	if !strings.Contains(md, "| `C-PEER-INPUT` | Не определено (UNKNOWN) |") {
+		t.Errorf("expected C-PEER-INPUT to show 'Не определено (UNKNOWN)'")
+	}
+
+	// 3. Root Causes: advisory-listed affected symbol -> заявлена как уязвимая в базе (advisory)
+	if !strings.Contains(md, "заявлена как уязвимая в базе (advisory)") {
+		t.Errorf("expected 'заявлена как уязвимая в базе (advisory)' in root causes")
+	}
+	if strings.Contains(md, "advisory-listed affected symbol") {
+		t.Errorf("should not contain 'advisory-listed affected symbol'")
+	}
+
+	// 4. Locus Exclusions:
+	// Header: #### Функции без дефекта (исключены из анализа уязвимости)
+	// Text: Функции из базы уязвимости (advisory), которые признаны безопасными (являются вспомогательными диспетчерами или проверками входных данных) и не содержат дефектной операции:
+	// Notes: replace accepted-machine-proposal with принятая рекомендация анализатора
+	if !strings.Contains(md, "#### Функции без дефекта (исключены из анализа уязвимости)") {
+		t.Errorf("missing Locus Exclusions header: '#### Функции без дефекта (исключены из анализа уязвимости)'")
+	}
+	if strings.Contains(md, "#### Экспертные решения non_locus") {
+		t.Errorf("should not contain old header '#### Экспертные решения non_locus'")
+	}
+	if !strings.Contains(md, "Функции из базы уязвимости (advisory), которые признаны безопасными (являются вспомогательными диспетчерами или проверками входных данных) и не содержат дефектной операции:") {
+		t.Errorf("missing humanized Locus Exclusions description")
+	}
+	if !strings.Contains(md, "принятая рекомендация анализатора") {
+		t.Errorf("expected 'принятая рекомендация анализатора' in place of 'accepted-machine-proposal'")
+	}
+	if strings.Contains(md, "accepted-machine-proposal") {
+		t.Errorf("should not contain 'accepted-machine-proposal'")
+	}
+
+	// 5. Govulncheck status in Affected Analysis table
+	if !strings.Contains(md, "| Статический анализ вызовов (govulncheck) | Трасса вызовов от кода продукта не обнаружена (чисто) |") {
+		t.Errorf("missing govulncheck status row in Affected Analysis table")
+	}
+
+	// 6. Provenance Breakdown under ## Доказательная база: ### Источники и методы проверки (Методология)
+	expectedProvenancePhrases := []string{
+		"### Источники и методы проверки (Методология)",
+		"⚙️ **Детерминированные проверки компилятора Go:**",
+		"Зависимости (`go.mod` / `go list -m`): версия модуля зафиксирована в сборке.",
+		"Граф сборки (`go list -deps`): физическое отсутствие пакетов локуса дефекта в скомпилированном бинарнике.",
+		"Статический анализ вызовов (`govulncheck`): проверка отсутствия пути вызова от приложения к уязвимым функциям.",
+		"Анализ точек входа (AST): вызов стандартных безопасных конструкторов.",
+		"🤖 **Семантический анализ LLM (AI-исследование):**",
+		"Архитектурный анализ уязвимости: исследование патча, разделение функций на сайт паники и вспомогательные функции.",
+		"Семантическое рецензирование: подтверждение логики работы компонентов.",
+	}
+	for _, phrase := range expectedProvenancePhrases {
+		if !strings.Contains(md, phrase) {
+			t.Errorf("provenance breakdown missing expected phrase: %q", phrase)
 		}
 	}
 }
