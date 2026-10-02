@@ -117,3 +117,91 @@ func ingressHasBlocker(cl domain.IngressClosure, needle string) bool {
 	}
 	return false
 }
+
+func TestConstantPayloadNotInvalidatedByDecoderReflection(t *testing.T) {
+	reflectPkg := types.NewPackage("reflect", "reflect")
+	typeNamed := types.NewNamed(types.NewTypeName(token.NoPos, reflectPkg, "Type", nil), types.NewInterfaceType(nil, nil).Complete(), nil)
+	typeRecv := types.NewVar(token.NoPos, reflectPkg, "t", typeNamed)
+	typeSig := types.NewSignatureType(typeRecv, nil, nil, nil, nil, false)
+
+	valueNamed := types.NewNamed(types.NewTypeName(token.NoPos, reflectPkg, "Value", nil), types.NewStruct(nil, nil), nil)
+	valueRecv := types.NewVar(token.NoPos, reflectPkg, "v", valueNamed)
+	valueSig := types.NewSignatureType(valueRecv, nil, nil, nil, nil, false)
+
+	pkgSig := types.NewSignatureType(nil, nil, nil, nil, nil, false)
+
+	call := &ast.CallExpr{Fun: ast.NewIdent("dummy")}
+	fset := token.NewFileSet()
+	pkg := &packages.Package{
+		TypesInfo: &types.Info{
+			Types: map[ast.Expr]types.TypeAndValue{},
+		},
+	}
+
+	t.Run("reflect.Type metadata methods do not produce blockers or items", func(t *testing.T) {
+		methods := []string{
+			"Kind", "Elem", "NumField", "Field", "Name", "PkgPath",
+			"Implements", "AssignableTo", "Bits", "Size", "Align",
+		}
+		for _, m := range methods {
+			fn := types.NewFunc(token.NoPos, reflectPkg, m, typeSig)
+			s := &ingressScan{ix: &Index{fset: fset}}
+			s.scanStdlibCall(pkg, fnDeclRef{}, call, fn, nil)
+			if len(s.items) != 0 || len(s.blockers) != 0 {
+				t.Errorf("reflect.Type.%s added items=%+v blockers=%v", m, s.items, s.blockers)
+			}
+		}
+	})
+
+	t.Run("reflect.Value non-invocation methods do not produce blockers or items", func(t *testing.T) {
+		methods := []string{
+			"Kind", "Type", "IsValid", "IsNil", "CanSet", "NumField",
+			"Field", "Index", "Len", "Cap", "Elem", "Addr", "Interface",
+			"Set", "SetInt", "SetString", "SetBytes", "SetBool", "SetMapIndex",
+		}
+		for _, m := range methods {
+			fn := types.NewFunc(token.NoPos, reflectPkg, m, valueSig)
+			s := &ingressScan{ix: &Index{fset: fset}}
+			s.scanStdlibCall(pkg, fnDeclRef{}, call, fn, nil)
+			if len(s.items) != 0 || len(s.blockers) != 0 {
+				t.Errorf("reflect.Value.%s added items=%+v blockers=%v", m, s.items, s.blockers)
+			}
+		}
+	})
+
+	t.Run("reflect allocation constructors and helpers do not produce blockers or items", func(t *testing.T) {
+		funcs := []string{"New", "Zero", "MakeSlice", "MakeMap", "Indirect"}
+		for _, f := range funcs {
+			fn := types.NewFunc(token.NoPos, reflectPkg, f, pkgSig)
+			s := &ingressScan{ix: &Index{fset: fset}}
+			s.scanStdlibCall(pkg, fnDeclRef{}, call, fn, nil)
+			if len(s.items) != 0 || len(s.blockers) != 0 {
+				t.Errorf("reflect.%s added items=%+v blockers=%v", f, s.items, s.blockers)
+			}
+		}
+	})
+
+	t.Run("dynamic reflection call dispatches produce blockers", func(t *testing.T) {
+		dispatches := []string{"Call", "CallSlice", "MethodByName"}
+		for _, d := range dispatches {
+			fn := types.NewFunc(token.NoPos, reflectPkg, d, valueSig)
+			s := &ingressScan{ix: &Index{fset: fset}}
+			s.scanStdlibCall(pkg, fnDeclRef{}, call, fn, nil)
+			if len(s.blockers) == 0 {
+				t.Errorf("reflect.Value.%s expected blocker, got none (items=%+v)", d, s.items)
+			}
+		}
+	})
+
+	t.Run("reflect.ValueOf with constant argument does not produce items", func(t *testing.T) {
+		constArg := &ast.BasicLit{Kind: token.STRING, Value: `"safe payload"`}
+		callVal := &ast.CallExpr{Args: []ast.Expr{constArg}}
+		fn := types.NewFunc(token.NoPos, reflectPkg, "ValueOf", pkgSig)
+		ix := &Index{fset: fset}
+		s := &ingressScan{ix: ix}
+		s.scanStdlibCall(pkg, fnDeclRef{}, callVal, fn, nil)
+		if len(s.items) != 0 || len(s.blockers) != 0 {
+			t.Errorf("reflect.ValueOf with constant arg added items=%+v blockers=%v", s.items, s.blockers)
+		}
+	})
+}

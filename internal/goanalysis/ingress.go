@@ -1261,7 +1261,58 @@ func (s *ingressScan) inEdges() map[string][]string {
 // preserve UNKNOWN because they may return data or perform independent effects.
 func (s *ingressScan) scanStdlibCall(pkg *packages.Package, d fnDeclRef, call *ast.CallExpr, fn *types.Func, push func(fnDeclRef)) {
 	key := fn.Pkg().Path() + "." + fn.Name()
-	if fn.Pkg().Path() == "reflect" && (fn.Name() == "TypeOf" || reflectTypeConstructor(fn)) {
+	if fn.Pkg().Path() == "reflect" {
+		sig, isSig := fn.Type().(*types.Signature)
+		if isSig && sig.Recv() != nil {
+			recv := recvTypeName(sig.Recv().Type())
+			_, isIface := sig.Recv().Type().Underlying().(*types.Interface)
+			if recv == "Type" || isIface || recv == "StructTag" {
+				return
+			}
+			if recv == "Value" {
+				switch fn.Name() {
+				case "Call", "CallSlice", "MethodByName":
+					var pos token.Position
+					if s.ix != nil && s.ix.fset != nil {
+						pos = s.ix.fset.Position(call.Pos())
+					}
+					s.blockers = append(s.blockers, fmt.Sprintf(
+						"%s in %s at %s:%d — reflective invocation target is not proven closed",
+						key, d.key, pos.Filename, pos.Line))
+					s.addUnknownCall(pkg, d, call, fn, "reflective value operation may carry or write non-constant data")
+					return
+				default:
+					return
+				}
+			}
+			return
+		}
+
+		if fn.Name() == "ValueOf" {
+			if len(call.Args) == 1 && s.ix != nil {
+				o, why := s.ix.classify(pkg, d.decl, call.Args[0], 0)
+				if !domain.SafeOrigin(o) {
+					s.addItem(domain.IngressItem{
+						CallSite: s.siteAt(pkg, d.decl, call.Pos()), Kind: domain.IngressConeSource,
+						Callee: key, Origin: o, Detail: "reflect.ValueOf carries input provenance: " + why,
+					})
+				}
+			}
+			return
+		}
+		if isReflectSafeFunc(fn.Name()) || reflectTypeConstructor(fn) {
+			return
+		}
+		if fn.Name() == "Call" || fn.Name() == "CallSlice" || fn.Name() == "MethodByName" {
+			var pos token.Position
+			if s.ix != nil && s.ix.fset != nil {
+				pos = s.ix.fset.Position(call.Pos())
+			}
+			s.blockers = append(s.blockers, fmt.Sprintf(
+				"%s in %s at %s:%d — reflective invocation target is not proven closed",
+				key, d.key, pos.Filename, pos.Line))
+		}
+		s.addUnknownCall(pkg, d, call, fn, "reflective value operation may carry or write non-constant data")
 		return
 	}
 	if callHasFunctionArg(pkg, call) {
@@ -1270,26 +1321,6 @@ func (s *ingressScan) scanStdlibCall(pkg *packages.Package, d fnDeclRef, call *a
 	}
 	if formatArgsMayCallUserCode(pkg, call) {
 		s.addUnknownCall(pkg, d, call, fn, "external call may invoke a formatting method with independent provenance")
-		return
-	}
-	if fn.Pkg().Path() == "reflect" {
-		if fn.Name() == "ValueOf" && len(call.Args) == 1 {
-			o, why := s.ix.classify(pkg, d.decl, call.Args[0], 0)
-			if !domain.SafeOrigin(o) {
-				s.addItem(domain.IngressItem{
-					CallSite: s.siteAt(pkg, d.decl, call.Pos()), Kind: domain.IngressConeSource,
-					Callee: key, Origin: o, Detail: "reflect.ValueOf carries input provenance: " + why,
-				})
-			}
-			return
-		}
-		if fn.Name() == "Call" || fn.Name() == "CallSlice" {
-			pos := s.ix.fset.Position(call.Pos())
-			s.blockers = append(s.blockers, fmt.Sprintf(
-				"%s in %s at %s:%d — reflective invocation target is not proven closed",
-				key, d.key, pos.Filename, pos.Line))
-		}
-		s.addUnknownCall(pkg, d, call, fn, "reflective value operation may carry or write non-constant data")
 		return
 	}
 	if o, ok := s.ix.kb().SourceFuncs[key]; ok && o != domain.OriginConstant {
@@ -1399,6 +1430,16 @@ func (s *ingressScan) addDerivedItem(pkg *packages.Package, d fnDeclRef, call *a
 func reflectTypeConstructor(fn *types.Func) bool {
 	switch fn.Name() {
 	case "PtrTo", "PointerTo", "SliceOf", "ArrayOf", "MapOf", "ChanOf", "FuncOf", "StructOf":
+		return true
+	}
+	return false
+}
+
+func isReflectSafeFunc(name string) bool {
+	switch name {
+	case "TypeOf", "New", "Zero", "Indirect",
+		"MakeSlice", "MakeMap", "MakeMapWithSize", "MakeChan",
+		"Append", "AppendSlice", "Copy", "DeepEqual", "Select", "Swapper", "VisibleFields":
 		return true
 	}
 	return false
