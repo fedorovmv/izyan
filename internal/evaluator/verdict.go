@@ -136,7 +136,8 @@ func coversAllDeclared(falsifier string) bool {
 	switch falsifier {
 	case domain.FalsifierGovulncheckSilence,
 		domain.FalsifierNoModuleUsage,
-		domain.FalsifierUnreachedExportedSubject:
+		domain.FalsifierUnreachedExportedSubject,
+		domain.FalsifierTrustedInfrastructure:
 		return true
 	}
 	return false

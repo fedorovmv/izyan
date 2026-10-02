@@ -37,6 +37,16 @@ func (ServerTransportInput) Evaluate(cond domain.Condition, c *domain.AnalysisCa
 
 		Producer: "evaluator.ServerTransportInput",
 	}
+	if c.Product.TrustedPeer && wantsPeerInput(cond, c.Vulnerability) {
+		claim.Result = domain.ClaimFalse
+		claim.Falsifier = domain.FalsifierTrustedInfrastructure
+		claim.Explanation = "deployment infrastructure declared trusted peer communication (--trusted-peer): network traffic and remote peers/brokers are authenticated and trusted"
+		claim.NegativeVerification = &domain.NegativeVerification{
+			Status: domain.NegativeVerified,
+			Notes:  "deployment infrastructure declared trusted peer communication (--trusted-peer)",
+		}
+		return claim
+	}
 	module := c.Vulnerability.Module
 	var frames []string
 	var evIDs []domain.EvidenceID
@@ -88,6 +98,19 @@ func (ServerTransportInput) Evaluate(cond domain.Condition, c *domain.AnalysisCa
 		if e.Kind == "listener" {
 			frames = appendUnique(frames, "listener "+e.Package+"."+e.Function+" ("+e.Detail+")")
 		}
+	}
+	if c.Product.TrustedPeer {
+		claim.Result = domain.ClaimFalse
+		claim.Falsifier = domain.FalsifierTrustedInfrastructure
+		claim.EvidenceIDs = evIDs
+		claim.Explanation = fmt.Sprintf(
+			"reachable server transport (%s) in trusted infrastructure (--trusted-peer): inbound clients are authenticated and trusted",
+			strings.Join(frames, ", "))
+		claim.NegativeVerification = &domain.NegativeVerification{
+			Status: domain.NegativeVerified,
+			Notes:  "deployment infrastructure declared trusted peer communication (--trusted-peer)",
+		}
+		return claim
 	}
 	claim.Result = domain.ClaimTrue
 	claim.EvidenceIDs = evIDs

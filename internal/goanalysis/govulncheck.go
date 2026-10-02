@@ -313,4 +313,3 @@ func (f Finding) CallPath() domain.CallPath {
 	}
 	return cp
 }
-

@@ -801,6 +801,8 @@ func claimVerification(cl domain.Claim, isRU bool) string {
 			switch cl.Falsifier {
 			case "locus-package-absent":
 				f = "Пакет отсутствует в сборке"
+			case "trusted-infrastructure":
+				f = "Доверенная инфраструктура"
 			}
 		}
 		s = f

@@ -24,6 +24,9 @@ type SnapshotOptions struct {
 	// ReleaseGoVersion is the toolchain version that built the release, when
 	// known from the ticket/pipeline metadata.
 	ReleaseGoVersion string
+	// TrustedPeer indicates the service communicates strictly with trusted peers
+	// in trusted infrastructure.
+	TrustedPeer bool
 }
 
 type Snapshotter interface {
@@ -66,6 +69,7 @@ func (Service) Snapshot(ctx context.Context, path string, opts SnapshotOptions) 
 		GOOS:             goos,
 		GOARCH:           goarch,
 		BuildTags:        opts.BuildTags,
+		TrustedPeer:      opts.TrustedPeer,
 	}, nil
 }
 

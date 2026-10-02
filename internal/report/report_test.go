@@ -1069,4 +1069,3 @@ func TestReportGovulncheckCleanComparison(t *testing.T) {
 		t.Errorf("missing Clean govulncheck status in English")
 	}
 }
-

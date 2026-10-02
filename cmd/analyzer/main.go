@@ -120,6 +120,7 @@ type analyzeOpts struct {
 	nonLocusFile  string
 	// acceptLocusProposals adopts machine-generated non_locus proposals as basis.
 	acceptLocusProposals bool
+	trustedPeer          bool
 	// toolchain is the resolved target Go toolchain; zero value = local.
 	toolchain toolchain.Toolchain
 	// tcLims carries resolution notes into the case's limitations.
@@ -152,6 +153,7 @@ func commonFlags(fs *flag.FlagSet, o *analyzeOpts) {
 	fs.StringVar(&o.memLimit, "mem-limit", "4GiB", "analyzer memory ceiling (e.g. 4GiB, 512MiB; 0 disables) — real products can pull very large dependency graphs into the index")
 	fs.StringVar(&o.nonLocusFile, "non-locus-basis", "", "JSON file with expert non-locus decisions: [{\"symbol\":{\"package\":\"pkg\",\"symbol\":\"Type.Name\"},\"basis\":\"why it is not a defect site\",\"authority\":\"review ref\"}]")
 	fs.BoolVar(&o.acceptLocusProposals, "accept-locus-proposals", false, "adopt machine-generated non_locus recommendations into expert basis")
+	fs.BoolVar(&o.trustedPeer, "trusted-peer", false, "declare deployment in trusted infrastructure / communication with trusted peers only (falsifies untrusted peer/network input)")
 	fs.StringVar(&o.lang, "lang", "ru", "report and output language: ru (default) or en")
 }
 
@@ -430,6 +432,7 @@ func analyzeCase(ctx context.Context, o analyzeOpts) (*domain.AnalysisCase, erro
 				BuildTags:        splitCSV(o.tags),
 				BinaryPath:       o.binary,
 				ReleaseGoVersion: o.releaseGo,
+				TrustedPeer:      o.trustedPeer,
 			},
 		},
 		states.ResolveVulnerability{Source: src, ID: o.vulnID},
@@ -649,6 +652,7 @@ func runScan(args []string) error {
 	snap, err := repository.Service{}.Snapshot(ctx, absRepo, repository.SnapshotOptions{
 		GOOS: o.goos, GOARCH: o.goarch, BuildTags: splitCSV(o.tags),
 		BinaryPath: o.binary, ReleaseGoVersion: o.releaseGo,
+		TrustedPeer: o.trustedPeer,
 	})
 	if err != nil {
 		return fmt.Errorf("snapshot: %w", err)

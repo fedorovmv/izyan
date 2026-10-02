@@ -159,6 +159,16 @@ func (ArgumentOrigin) Evaluate(cond domain.Condition, c *domain.AnalysisCase) do
 				fmt.Sprintf("%d externally originated writer-only flow(s); outbound writer capability alone does not establish payload at an unspecified argument index", payloadUnproven))
 		}
 	case deployDependent > 0:
+		if c.Product.TrustedPeer && external == 0 && unknown == 0 {
+			claim.Result = domain.ClaimFalse
+			claim.Falsifier = domain.FalsifierTrustedInfrastructure
+			claim.Explanation = fmt.Sprintf("all %d call site(s) receive config/service-provided input from trusted internal deployment infrastructure (--trusted-peer)", deployDependent)
+			claim.NegativeVerification = &domain.NegativeVerification{
+				Status: domain.NegativeVerified,
+				Notes:  "deployment infrastructure declared trusted peer/service communication (--trusted-peer)",
+			}
+			return claim
+		}
 		claim.Limitations = append(claim.Limitations,
 			fmt.Sprintf("%d call site(s) receive config/service-provided input; attacker control depends on deployment trust boundary — cannot prove non-external", deployDependent))
 	default:

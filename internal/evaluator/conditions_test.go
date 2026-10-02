@@ -188,6 +188,44 @@ func TestServerTransportInputIgnoresProductServe(t *testing.T) {
 	}
 }
 
+func TestServerTransportInputTrustedPeerFalse(t *testing.T) {
+	c := serverCase([]domain.CallSite{
+		{Package: "lib/grpc/internal/transport", Function: "HandleStreams", Receiver: "*http2Server"},
+		{Package: "prod", Function: "Start", Receiver: "*Consumer"},
+	})
+	c.Product.TrustedPeer = true
+	claim := ServerTransportInput{}.Evaluate(domain.Condition{
+		ID: "C-ATTACK", Kind: domain.ConditionAttackerControl,
+	}, c)
+	if claim.Result != domain.ClaimFalse {
+		t.Fatalf("got %s, want FALSE: trusted peer deployment declared", claim.Result)
+	}
+	if claim.Falsifier != domain.FalsifierTrustedInfrastructure {
+		t.Fatalf("got falsifier %q, want %q", claim.Falsifier, domain.FalsifierTrustedInfrastructure)
+	}
+	if claim.NegativeVerification == nil || claim.NegativeVerification.Status != domain.NegativeVerified {
+		t.Fatalf("expected negative verification VERIFIED, got: %+v", claim.NegativeVerification)
+	}
+}
+
+func TestServerTransportInputTrustedPeerWantsPeerInputFalse(t *testing.T) {
+	c := &domain.AnalysisCase{}
+	c.Product.TrustedPeer = true
+	claim := ServerTransportInput{}.Evaluate(domain.Condition{
+		ID: "C-PEER-INPUT", Kind: domain.ConditionAttackerControl,
+		Params: map[string]string{domain.ParamInputSource: domain.InputPeer},
+	}, c)
+	if claim.Result != domain.ClaimFalse {
+		t.Fatalf("got %s, want FALSE: trusted peer deployment declared", claim.Result)
+	}
+	if claim.Falsifier != domain.FalsifierTrustedInfrastructure {
+		t.Fatalf("got falsifier %q, want %q", claim.Falsifier, domain.FalsifierTrustedInfrastructure)
+	}
+	if claim.NegativeVerification == nil || claim.NegativeVerification.Status != domain.NegativeVerified {
+		t.Fatalf("expected negative verification VERIFIED, got: %+v", claim.NegativeVerification)
+	}
+}
+
 func affectedCase(ver string) *domain.AnalysisCase {
 	c := &domain.AnalysisCase{}
 	c.Affected = &domain.AffectedResult{

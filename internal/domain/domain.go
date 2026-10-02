@@ -116,6 +116,7 @@ type ProductSnapshot struct {
 	VendorMode        bool               `json:"vendor_mode"`
 	GoWorkFile        string             `json:"go_work_file,omitempty"`
 	ReplaceDirectives []ReplaceDirective `json:"replace_directives,omitempty"`
+	TrustedPeer       bool               `json:"trusted_peer,omitempty"`
 }
 
 type ReplaceDirective struct {
@@ -476,6 +477,10 @@ const (
 	FalsifierSafeConfigKey            = "safe-config-key"
 	FalsifierGuards                   = "guards"
 	FalsifierConstantOrGeneratedInput = "constant-or-generated-input"
+	// FalsifierTrustedInfrastructure grounds FALSE for transport / peer-input
+	// conditions when the product deployment is explicitly declared to operate
+	// strictly with trusted infrastructure and authenticated peers (--trusted-peer).
+	FalsifierTrustedInfrastructure = "trusted-infrastructure"
 	// FalsifierLocusPackageAbsent grounds FALSE for a locus-reachability
 	// condition: every locus subject's package is absent from the
 	// product's build graph (`go list -deps`), so the defect code is not

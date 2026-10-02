@@ -73,6 +73,13 @@ func (v Verifier) VerifyFalse(ctx context.Context, c *domain.AnalysisCase, claim
 		})
 	}
 
+	if claim.Falsifier == domain.FalsifierTrustedInfrastructure {
+		return setNeg(claim, &domain.NegativeVerification{
+			Status: domain.NegativeVerified,
+			Notes:  "FALSE is decided by product snapshot deployment trust facts (--trusted-peer)",
+		})
+	}
+
 	allSites := map[string][]domain.CallSite{}
 	anyExported := false
 	anyExportedMethod := false
