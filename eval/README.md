@@ -26,7 +26,7 @@ Baseline-таблица govulncheck-vs-analyzer (последний прогон
 | case | analyzer | govulncheck | cleared? |
 |---|---|---|---|
 | real-yaml-http | EXPLOITABLE | reachable | нет — нужен эксплойт-review |
-| real-yaml-file | INCONCLUSIVE | reachable | нет — unresolved |
+| real-yaml-file | NO_EXPLOIT_PATH_FOUND | reachable | **да — local host configuration files (trusted infrastructure) + verified negative check** |
 | real-yaml-http-fixed | NOT_AFFECTED | silent | **да — deterministic** |
 | real-md-render | EXPLOITABLE | reachable | нет |
 | real-getter-fetch | EXPLOITABLE | reachable | нет |
@@ -39,11 +39,11 @@ Baseline-таблица govulncheck-vs-analyzer (последний прогон
 | real-dns-zone | EXPLOITABLE | reachable | нет |
 | real-getter-file | EXPLOITABLE | reachable | нет |
 | real-getter-fixed | NOT_AFFECTED | silent | **да — deterministic** |
-| real-yaml-const | INCONCLUSIVE | reachable | нет — payload constant, reflection на destination struct изолирована, но в конусе остаются немоделированные операции парсера (io.Read/structMap) |
+| real-yaml-const | NO_EXPLOIT_PATH_FOUND | reachable | **да — compile-time constant payload + verified negative check** |
 | real-yaml3-http | EXPLOITABLE | reachable | нет |
-| real-yaml3-const | INCONCLUSIVE | reachable | нет — payload constant, reflection на destination struct изолирована, но в конусе остаются немоделированные операции парсера (io.Read/structMap) |
+| real-yaml3-const | NO_EXPLOIT_PATH_FOUND | reachable | **да — compile-time constant payload + verified negative check** |
 | real-protojson-http | EXPLOITABLE | reachable | нет |
-| real-protojson-const | INCONCLUSIVE | reachable | нет — advisory symbols имеют scope KNOWN_ONLY; отдельного контракта полноты sink set нет (B26) |
+| real-protojson-const | NO_EXPLOIT_PATH_FOUND | reachable | **да — compile-time constant payload + verified negative check** |
 | real-protojson-fixed | NOT_AFFECTED | silent | **да — deterministic** |
 | real-dns-fixed | NOT_AFFECTED | silent | **да — deterministic** |
 | real-dns-marshal | NO_EXPLOIT_PATH_FOUND | package-level | **да — dep-internal invocation мёртв, вызовы через интерфейсы исключены** |
@@ -69,9 +69,9 @@ Baseline-таблица govulncheck-vs-analyzer (последний прогон
 `NOT_AFFECTED` (deterministic affected-chain) или `NO_EXPLOIT_PATH_FOUND`
 (VERIFIED falsifier на mandatory-условии). `EXPLOITABLE`, `INCONCLUSIVE` и
 `UNKNOWN` оставляют кейс на человеке — для triage «reachable» и
-«не доказали безопасность» эквивалентны. Текущий прогон: **16/38 cleared**:
+«не доказали безопасность» эквивалентны. Текущий прогон: **20/38 cleared**:
 11×NOT_AFFECTED deterministic (в том числе `real-micro-plain` при
-module-only finding govulncheck) и 5 verified-негативов NEPF:
+module-only finding govulncheck) и 9 verified-негативов NEPF:
 `real-unix-stat` — продукт не трогает `unix.Faccessat`,
 а единственный dep-internal caller `unix.Access` доказанно мёртв —
 нет product refs, нет caller'ов внутри `x/sys`, сторонних модулей,
@@ -82,7 +82,12 @@ module-only finding govulncheck) и 5 verified-негативов NEPF:
 `L={RouteAndProcess}`, xds-пакет вне build graph;
 `real-micro-pkg-6443` — дефектный локус `RouteAndProcess` доказанно недостижим
 в коде продукта и графе вызовов через falsifier `locus-function-unreached`
-(пакет присутствует в сборке, но уязвимая функция не вызывается). Для символов
+(пакет присутствует в сборке, но уязвимая функция не вызывается);
+`real-yaml-const`, `real-yaml3-const`, `real-protojson-const` — compile-time константный
+входной payload (`FalsifierConstantOrGeneratedInput`) верифицирован как неизменяемый,
+а внутренняя рефлексия парсеров по выходной структуре изолирована от входных данных;
+`real-yaml-file` — чтение локального файла конфигурации хоста через `os.ReadFile`
+верифицировано как доверенная среда развёртывания (`FalsifierTrustedInfrastructure`). Для символов
 без defect-site anchor'а модуль порождает `ProposedNonLocus` —
 draft-исключения с записанным наблюдением, не участвующие в вердикте;
 эксперт утверждает их переносом в `non_locus` (через `--non-locus-basis` или флаг `--accept-locus-proposals`). Отчёт печатает блок
@@ -126,10 +131,11 @@ negative verification в INSUFFICIENT_SCOPE (контроль `gated-scope` в
 за счёт falsifier-доказательств, не объявляя недоказанное безопасным.
 
 Для сравнения со standalone govulncheck важен более узкий показатель:
-**signal-cleared rate = 3/26** на этом прогоне. Знаменатель — кейсы,
+**signal-cleared rate = 7/26** на этом прогоне. Знаменатель — кейсы,
 где govulncheck сообщил `reachable` или `package-level`; числитель —
 verified-негатив анализатора при таком сигнале (`real-unix-stat`,
-`real-micro-plain-6443x`, `real-micro-pkg-6443`).
+`real-micro-plain-6443x`, `real-micro-pkg-6443`, `real-yaml-file`,
+`real-yaml-const`, `real-yaml3-const`, `real-protojson-const`).
 Finding только с модулем учитывается отдельно (`module-level`), без
 приписывания ему присутствующего уязвимого пакета. Остальные cleared
 имеют `govulncheck: silent` или `module-level`.
