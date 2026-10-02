@@ -2125,7 +2125,7 @@ func TestE2EBuildTestEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(md), "## Build & test") {
+	if !strings.Contains(string(md), "Build & Test") {
 		t.Fatal("report.md lacks the Build & test section")
 	}
 }

@@ -280,3 +280,195 @@ func TestTrackerRationale(t *testing.T) {
 		}
 	})
 }
+
+func TestMarkdownStructureInvertedPyramid(t *testing.T) {
+	c := &domain.AnalysisCase{
+		ID: "case-report-test",
+		Vulnerability: domain.Vulnerability{
+			ID:            "GO-2026-6443",
+			Module:        "example.com/mod",
+			FixedVersions: []string{"v1.2.0"},
+		},
+		Product: domain.ProductSnapshot{
+			Repository: "example.com/product",
+			Commit:     "abc12345",
+			GoVersion:  "go1.26.1",
+			GOOS:       "darwin",
+			GOARCH:     "arm64",
+		},
+		Verdict: &domain.VerdictResult{
+			Verdict: domain.VerdictNoExploitPathFound,
+			Reason:  "mandatory exploit condition is proven false",
+		},
+		Affected: &domain.AffectedResult{
+			VersionAffected: domain.ClaimTrue,
+			ResolvedVersion: "v1.0.0",
+		},
+		Exploit: &domain.ExploitModel{
+			Class:  "RESOURCE_EXHAUSTION",
+			Impact: "Server panic (DoS)",
+		},
+		EvidenceGraph: domain.EvidenceGraph{
+			DataFlows: []domain.DataFlow{
+				{Origin: domain.OriginInternalService, Summary: "test dataflow"},
+			},
+			ToolExecutions: []domain.ToolExecution{
+				{Tool: "go", Args: []string{"version"}, ExitCode: 0, DurationMs: 10, StdoutSHA256: "abcdef1234567890"},
+			},
+		},
+	}
+
+	md := Markdown(c)
+
+	// Ensure sections appear in the exact required order:
+	idxHeader := strings.Index(md, "# Vulnerability analysis: GO-2026-6443")
+	idxVerdict := strings.Index(md, "## Verdict: `NO_EXPLOIT_PATH_FOUND`")
+	idxVerdictBlockquote := strings.Index(md, "> **mandatory exploit condition is proven false**")
+	idxRationale := strings.Index(md, "## Резюме для трекера (Tracker-ready rationale)")
+	idxRemediation := strings.Index(md, "## Рекомендации по устранению (Remediation)")
+	idxEvidence := strings.Index(md, "## Доказательная база (Evidence & Claims)")
+	idxDetailsOpen := strings.Index(md, "<details>")
+	idxDetailsSummary := strings.Index(md, "<summary><b>Технические детали и аудит (Data Flows, Tool Executions, Limitations)</b></summary>")
+	idxDataFlows := strings.Index(md, "### Потоки данных (Data Flows)")
+	idxToolExec := strings.Index(md, "### Журнал инструментов (Tool Executions)")
+	idxDetailsClose := strings.Index(md, "</details>")
+
+	if idxHeader == -1 || idxVerdict == -1 || idxVerdictBlockquote == -1 || idxRationale == -1 || idxRemediation == -1 ||
+		idxEvidence == -1 || idxDetailsOpen == -1 || idxDetailsSummary == -1 || idxDataFlows == -1 || idxToolExec == -1 || idxDetailsClose == -1 {
+		t.Fatalf("one or more expected sections missing from Markdown output:\n%s", md)
+	}
+
+	if !(idxHeader < idxVerdict &&
+		idxVerdict < idxVerdictBlockquote &&
+		idxVerdictBlockquote < idxRationale &&
+		idxRationale < idxRemediation &&
+		idxRemediation < idxEvidence &&
+		idxEvidence < idxDetailsOpen &&
+		idxDetailsOpen < idxDetailsSummary &&
+		idxDetailsSummary < idxDataFlows &&
+		idxDataFlows < idxToolExec &&
+		idxToolExec < idxDetailsClose) {
+		t.Fatalf("sections are not in inverted pyramid order. Indices:\nheader=%d, verdict=%d, quote=%d, rationale=%d, remediation=%d, evidence=%d, detailsOpen=%d, summary=%d, dataFlows=%d, toolExec=%d, detailsClose=%d",
+			idxHeader, idxVerdict, idxVerdictBlockquote, idxRationale, idxRemediation, idxEvidence, idxDetailsOpen, idxDetailsSummary, idxDataFlows, idxToolExec, idxDetailsClose)
+	}
+}
+
+func TestMarkdownStructureInvertedPyramid_FullSections(t *testing.T) {
+	c := &domain.AnalysisCase{
+		ID: "case-report-full",
+		Vulnerability: domain.Vulnerability{
+			ID:            "CVE-2026-12345",
+			Module:        "example.com/mod",
+			FixedVersions: []string{"v1.2.0"},
+			AffectedPackages: []domain.AffectedPackage{
+				{Path: "example.com/mod/vulnpkg"},
+			},
+		},
+		Product: domain.ProductSnapshot{
+			Repository: "example.com/product",
+			Commit:     "1234567890ab",
+			GoVersion:  "go1.26.1",
+			GOOS:       "linux",
+			GOARCH:     "amd64",
+		},
+		Verdict: &domain.VerdictResult{
+			Verdict: domain.VerdictNoExploitPathFound,
+			Reason:  "mandatory exploit condition is proven false",
+		},
+		Affected: &domain.AffectedResult{
+			VersionAffected: domain.ClaimTrue,
+			ResolvedVersion: "v1.0.0",
+			ModulePresent:   domain.ClaimTrue,
+			PackagePresent:  domain.ClaimFalse,
+			Limitations:     []string{"affected limitation 1"},
+		},
+		Claims: []domain.Claim{
+			{ConditionID: "C-LOCUS", Result: domain.ClaimFalse},
+		},
+		RootCause: &domain.RootCauseModel{
+			Status: domain.RootCauseResolved,
+			RootCauses: []domain.RootCause{
+				{Package: "example.com/mod/vulnpkg", Symbol: "VulnFunc", Role: domain.RootCauseSink, Mechanism: "out-of-bounds read"},
+			},
+		},
+		Exploit: &domain.ExploitModel{
+			Class:  "MEMORY_CORRUPTION",
+			Impact: "Remote Code Execution",
+			MandatoryConditions: []domain.Condition{
+				{ID: "C-LOCUS", Kind: "code", Description: "vulnerable function called"},
+			},
+			SupportingFactors: []domain.Condition{
+				{ID: "C-INPUT", Kind: "input", Description: "untrusted input provided"},
+			},
+			NonLocusBasis: []domain.LocusDecision{
+				{Symbol: domain.SymbolRef{Package: "example.com/mod/vulnpkg", Symbol: "SafeFunc"}, Authority: "expert", Basis: "safe helper"},
+			},
+		},
+		EvidenceGraph: domain.EvidenceGraph{
+			Exposures: []domain.ExposureFact{
+				{CallSite: domain.CallSite{File: "main.go", Line: 42}, Direction: "inbound", Target: "net/http.ListenAndServe"},
+			},
+			DataFlows: []domain.DataFlow{
+				{Origin: domain.OriginExternalUntrusted, Summary: "query param flows to sink"},
+			},
+			ToolExecutions: []domain.ToolExecution{
+				{Tool: "govulncheck", Args: []string{"./..."}, ExitCode: 0, DurationMs: 150, StdoutSHA256: "fedcba0987654321"},
+			},
+			Runtime: []domain.EvidenceID{"EV-RUNTIME-1"},
+			Evidence: []domain.Evidence{
+				{ID: "EV-RUNTIME-1", Kind: domain.EvidenceRuntime, Source: "runtime-env", Content: "go version go1.26.1"},
+				{ID: "EV-BUILD-1", Kind: domain.EvidenceBuild, Source: "go build", Content: "build successful\nall targets ok"},
+			},
+			Limitations: []string{"graph limitation 1"},
+		},
+		Hypotheses: []domain.Hypothesis{
+			{ID: "H-1", ConditionID: "C-LOCUS", Status: domain.HypothesisRejected, Statement: "package not linked"},
+		},
+		Reviews: []domain.Review{
+			{
+				ID:     "REV-1",
+				Result: domain.ReviewAccept,
+				Findings: []domain.ReviewFinding{
+					{Severity: "LOW", TargetType: "claim", TargetID: "C-LOCUS", Problem: "minor verification note"},
+				},
+			},
+		},
+	}
+
+	md := Markdown(c)
+
+	expectedSectionsInOrder := []string{
+		"# Vulnerability analysis: CVE-2026-12345",
+		"## Verdict: `NO_EXPLOIT_PATH_FOUND`",
+		"> **mandatory exploit condition is proven false**",
+		"## Резюме для трекера (Tracker-ready rationale)",
+		"## Рекомендации по устранению (Remediation)",
+		"## Доказательная база (Evidence & Claims)",
+		"### Применимость (Affected Analysis)",
+		"### Статус условий эксплуатации (Claims)",
+		"### Точки входа (Exposure Facts)",
+		"### Модель эксплуатации и сайты дефекта (Exploit & Locus)",
+		"<details>",
+		"<summary><b>Технические детали и аудит (Data Flows, Tool Executions, Limitations)</b></summary>",
+		"### Потоки данных (Data Flows)",
+		"### Журнал инструментов (Tool Executions)",
+		"### Ограничения анализа (Limitations)",
+		"### Рецензирование (Review Findings)",
+		"### Факты среды (Runtime Facts)",
+		"### Сборка и тесты (Build & Test)",
+		"### Гипотезы (Hypotheses)",
+		"</details>",
+	}
+
+	lastIdx := -1
+	for _, sec := range expectedSectionsInOrder {
+		idx := strings.Index(md, sec)
+		if idx == -1 {
+			t.Fatalf("expected section %q not found in Markdown output:\n%s", sec, md)
+		}
+		if idx <= lastIdx {
+			t.Fatalf("section %q at index %d is out of order (previous at %d)", sec, idx, lastIdx)
+		}
+		lastIdx = idx
+	}
+}
