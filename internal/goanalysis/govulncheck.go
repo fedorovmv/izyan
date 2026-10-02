@@ -283,10 +283,27 @@ func hasString(s []string, v string) bool {
 	return false
 }
 
+// HasCallPath reports whether the finding contains an actual function-level
+// call path (at least one frame has a non-empty Function name). Module-level
+// and package-level presence findings from govulncheck have no function in trace.
+func (f Finding) HasCallPath() bool {
+	for _, fr := range f.Trace {
+		if strings.TrimSpace(fr.Function) != "" {
+			return true
+		}
+	}
+	return false
+}
+
 // CallPath converts a finding trace into the graph's normalized form.
+// Frames without a function name are filtered out as they represent
+// module/package level presence rather than function call sites.
 func (f Finding) CallPath() domain.CallPath {
 	cp := domain.CallPath{Frames: make([]domain.CallSite, 0, len(f.Trace))}
 	for _, fr := range f.Trace {
+		if strings.TrimSpace(fr.Function) == "" {
+			continue
+		}
 		cs := domain.CallSite{Package: fr.Package, Function: fr.Function, Receiver: fr.Receiver}
 		if fr.Position != nil {
 			cs.File = fr.Position.Filename
@@ -296,3 +313,4 @@ func (f Finding) CallPath() domain.CallPath {
 	}
 	return cp
 }
+

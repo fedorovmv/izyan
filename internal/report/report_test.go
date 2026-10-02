@@ -1029,3 +1029,44 @@ func TestGovulncheckComparisonAndDivergence(t *testing.T) {
 		t.Errorf("missing reachability false positive conclusion in English")
 	}
 }
+
+func TestReportGovulncheckCleanComparison(t *testing.T) {
+	c := &domain.AnalysisCase{
+		ID: "CASE-CLEAN",
+		Vulnerability: domain.Vulnerability{
+			ID:     "GO-TEST-2",
+			Module: "example.com/dep",
+		},
+		Verdict: &domain.VerdictResult{
+			Verdict: domain.VerdictNotAffected,
+			Reason:  "package is not linked in build",
+		},
+		Affected: &domain.AffectedResult{
+			VersionAffected: domain.ClaimTrue,
+			ResolvedVersion: "v1.0.0",
+			ModulePresent:   domain.ClaimTrue,
+			PackagePresent:  domain.ClaimFalse,
+			BuildRelevant:   domain.ClaimFalse,
+		},
+		EvidenceGraph: domain.EvidenceGraph{
+			CallPaths: nil, // Clean: zero call paths
+			ToolExecutions: []domain.ToolExecution{
+				{Tool: "govulncheck", Args: []string{"./..."}, ExitCode: 0, DurationMs: 120},
+			},
+		},
+	}
+
+	mdRU := Markdown(c, "ru")
+	if !strings.Contains(mdRU, "Трасса вызовов не обнаружена (Clean)") {
+		t.Errorf("missing Clean govulncheck status in Russian")
+	}
+	if !strings.Contains(mdRU, "Трасса вызовов от кода продукта не обнаружена (чисто)") {
+		t.Errorf("missing clean summary in affected table in Russian")
+	}
+
+	mdEN := Markdown(c, "en")
+	if !strings.Contains(mdEN, "Clean (No call path found)") {
+		t.Errorf("missing Clean govulncheck status in English")
+	}
+}
+

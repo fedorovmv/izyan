@@ -428,7 +428,13 @@ func (h CollectEvidence) runGovulncheck(ctx context.Context, c *domain.AnalysisC
 		c.EvidenceGraph.AddLimitation(lim)
 	}
 	for _, f := range res.ForVulnerability(c.Vulnerability) {
+		if !f.HasCallPath() {
+			continue
+		}
 		cp := f.CallPath()
+		if len(cp.Frames) == 0 {
+			continue
+		}
 		cp.EvidenceID = evID
 		c.EvidenceGraph.AddCallPath(cp)
 	}
