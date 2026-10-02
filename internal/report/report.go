@@ -600,7 +600,11 @@ func claimVerification(cl domain.Claim, isRU bool) string {
 	}
 	if cl.Result == domain.ClaimUnknown && cl.NegativeVerification != nil &&
 		cl.NegativeVerification.Status == domain.NegativeVerified {
-		s += " (demoted)"
+		if isRU {
+			s += " (демотировано)"
+		} else {
+			s += " (demoted)"
+		}
 	}
 	return s
 }

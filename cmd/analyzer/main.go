@@ -79,6 +79,7 @@ options:
   --non-locus-basis <path> JSON file with expert non-locus basis decisions
   --accept-locus-proposals adopt machine-generated non_locus recommendations into expert basis
   --cve-analysis <off|assist|verified>  LLM CVE analysis profile (default: off)
+  --lang <ru|en>         report and output language (default: ru)
   --deterministic-only   disable all LLM-backed states`)
 	os.Exit(2)
 }
@@ -100,6 +101,7 @@ type analyzeOpts struct {
 	binary        string
 	releaseGo     string
 	cveAnalysis   string
+	lang          string
 	exploitModel  string
 	llmEnv        string
 	knowledge     string
@@ -150,6 +152,7 @@ func commonFlags(fs *flag.FlagSet, o *analyzeOpts) {
 	fs.StringVar(&o.memLimit, "mem-limit", "4GiB", "analyzer memory ceiling (e.g. 4GiB, 512MiB; 0 disables) — real products can pull very large dependency graphs into the index")
 	fs.StringVar(&o.nonLocusFile, "non-locus-basis", "", "JSON file with expert non-locus decisions: [{\"symbol\":{\"package\":\"pkg\",\"symbol\":\"Type.Name\"},\"basis\":\"why it is not a defect site\",\"authority\":\"review ref\"}]")
 	fs.BoolVar(&o.acceptLocusProposals, "accept-locus-proposals", false, "adopt machine-generated non_locus recommendations into expert basis")
+	fs.StringVar(&o.lang, "lang", "ru", "report and output language: ru (default) or en")
 }
 
 // loadKnowledgeBase resolves the --knowledge extension: built-in
@@ -234,7 +237,7 @@ func runAnalyze(args []string) error {
 	if err != nil {
 		return err
 	}
-	printCase(c, o.caseDir)
+	printCase(c, o.caseDir, o.lang)
 	if o.strictLLM && c.Workflow.State == domain.StateFailed {
 		return fmt.Errorf("strict-llm: analysis failed in state %s", c.Workflow.State)
 	}
@@ -463,7 +466,8 @@ func analyzeCase(ctx context.Context, o analyzeOpts) (*domain.AnalysisCase, erro
 	return c, nil
 }
 
-func printCase(c *domain.AnalysisCase, caseDir string) {
+func printCase(c *domain.AnalysisCase, caseDir string, lang ...string) {
+	isRU := len(lang) == 0 || lang[0] != "en"
 	fmt.Printf("case: %s\nstate: %s\n", c.ID, c.Workflow.State)
 	if c.Verdict != nil {
 		fmt.Printf("verdict: %s\nreason: %s\n", c.Verdict.Verdict, c.Verdict.Reason)
@@ -478,9 +482,17 @@ func printCase(c *domain.AnalysisCase, caseDir string) {
 		fmt.Printf("timings: %s | total=%.1fs llm_calls=%d\n",
 			strings.Join(parts, " "), total, c.Workflow.Usage.LLMCalls)
 	}
-	fmt.Printf("report: %s\n", filepath.Join(caseDir, string(c.ID), "report.md"))
+	repName := "report.md"
+	if !isRU {
+		repName = "report.en.md"
+	}
+	fmt.Printf("report: %s\n", filepath.Join(caseDir, string(c.ID), repName))
 	if r := report.TrackerRationale(c); r != "" {
-		fmt.Printf("\n--- Обоснование для трекера (Tracker-ready rationale) ---\n%s\n---------------------------------------------------------\n", r)
+		if isRU {
+			fmt.Printf("\n--- Резюме ---\n%s\n--------------\n", r)
+		} else {
+			fmt.Printf("\n--- Executive Summary ---\n%s\n-------------------------\n", r)
+		}
 	}
 }
 

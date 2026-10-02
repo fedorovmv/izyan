@@ -50,7 +50,7 @@ func runRemediate(args []string) error {
 	if err != nil {
 		return err
 	}
-	printCase(before, o.caseDir)
+	printCase(before, o.caseDir, o.lang)
 
 	mod, version, ok := report.FixTarget(before)
 	if !ok {
@@ -108,7 +108,7 @@ func runRemediate(args []string) error {
 	if err != nil {
 		return err
 	}
-	printCase(after, o.caseDir)
+	printCase(after, o.caseDir, o.lang)
 	fmt.Printf("remediate: verdict %s -> %s\n",
 		verdictString(before), verdictString(after))
 	return nil
