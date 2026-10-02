@@ -568,3 +568,24 @@ func TestInputOriginVerificationUnknownValue(t *testing.T) {
 		}
 	}
 }
+
+func TestMethodInAnyInterface(t *testing.T) {
+	ix := fixture(t, "constprod")
+	if err := ix.load(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Standard library interface methods
+	for _, m := range []string{"Read", "Write", "Close", "ServeHTTP", "String"} {
+		if !ix.methodInAnyInterface(m) {
+			t.Errorf("expected %s to be recognized as an interface method", m)
+		}
+	}
+
+	// Concrete non-interface methods
+	for _, m := range []string{"SendFileBytes", "SendFileUncompressed", "NonExistentMethod123"} {
+		if ix.methodInAnyInterface(m) {
+			t.Errorf("expected %s NOT to be recognized as an interface method", m)
+		}
+	}
+}

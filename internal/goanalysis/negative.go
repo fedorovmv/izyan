@@ -136,11 +136,15 @@ func (v Verifier) VerifyFalse(ctx context.Context, c *domain.AnalysisCase, claim
 				}
 				strayLinkname++
 			case "reflect":
+				// Bare reflect import does not invoke functions or widen call graphs;
+				// only reflect_method markers (MethodByName / Method) do.
+				continue
+			case "reflect_method":
+				// Dynamic method dispatch via reflect (MethodByName / Method).
 				// In Go, package-level standalone functions cannot be invoked
 				// dynamically via reflect by name — Go reflection has no package
 				// registry. Only exported methods on struct/interface types
-				// (MethodByName) can be dispatched dynamically. If no subject is an
-				// exported method, bare reflect import does not widen the call graph to it.
+				// can be dispatched dynamically.
 				if claim.Falsifier == domain.FalsifierGuards {
 					continue
 				}
@@ -150,7 +154,7 @@ func (v Verifier) VerifyFalse(ctx context.Context, c *domain.AnalysisCase, claim
 				if !dynSeen[m.Kind] {
 					dynSeen[m.Kind] = true
 					nv.Limitations = append(nv.Limitations,
-						m.Kind+" usage in product widens the call graph; static negative verification is weaker")
+						"reflect method dispatch usage in product widens the call graph; static negative verification is weaker")
 				}
 			case "unsafe":
 				// Bare unsafe import does not invoke functions or widen call graphs;
@@ -377,11 +381,18 @@ func (v Verifier) verifyReachableFalse(ctx context.Context, c *domain.AnalysisCa
 	allSites map[string][]domain.CallSite) domain.Claim {
 
 	if hidden := unreferenceable(subjects); len(hidden) > 0 {
-		nv.Status = domain.NegativeInsufficientScope
-		nv.Notes = fmt.Sprintf("subject(s) %s are internal/unexported — the product cannot reference "+
-			"them at all, so zero product references is forced by visibility and cannot exclude "+
-			"dep-internal dispatch", strings.Join(hidden, ", "))
-		return setNeg(claim, nv)
+		// When the falsifier is govulncheck-silence, govulncheck's whole-program
+		// call graph trace explicitly covers unexported functions too. If the
+		// dependency invocation check confirms that no dep-internal caller
+		// chain is live, the unexported subject cannot execute via dep-internal
+		// dispatch either.
+		if claim.Falsifier != domain.FalsifierGovulncheckSilence {
+			nv.Status = domain.NegativeInsufficientScope
+			nv.Notes = fmt.Sprintf("subject(s) %s are internal/unexported — the product cannot reference "+
+				"them at all, so zero product references is forced by visibility and cannot exclude "+
+				"dep-internal dispatch", strings.Join(hidden, ", "))
+			return setNeg(claim, nv)
+		}
 	}
 	total := 0
 	for _, s := range subjects {

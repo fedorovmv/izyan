@@ -32,6 +32,11 @@ func unsafewrite(c *cfg, v int) {
 	vuln.Parse("z")
 }
 
+func callvia(c *cfg) {
+	// reflect.Value.MethodByName — can invoke methods dynamically.
+	reflect.ValueOf(c).MethodByName("Serve").Call(nil)
+}
+
 func main() {
 	readonly(&cfg{})
 }

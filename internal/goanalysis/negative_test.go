@@ -50,12 +50,12 @@ func TestReflectMarkerStandaloneFunctionScoping(t *testing.T) {
 		t.Fatalf("expected NegativeVerified for standalone function, got: %+v", out1.NegativeVerification)
 	}
 	for _, lim := range out1.NegativeVerification.Limitations {
-		if strings.Contains(lim, "reflect usage in product widens the call graph") {
+		if strings.Contains(lim, "widens the call graph") {
 			t.Fatalf("unexpected reflect call-graph limitation for standalone function: %s", lim)
 		}
 	}
 
-	// 2. Exported method on a type: reflect import DOES add call-graph limitation
+	// 2. Exported method on a type: reflect method call DOES add call-graph limitation
 	methodSym := domain.SymbolRef{Package: "example.com/dep/vuln", Symbol: "Server.Serve"}
 	claim2 := domain.Claim{
 		ConditionID: "C-REACH",
@@ -72,7 +72,7 @@ func TestReflectMarkerStandaloneFunctionScoping(t *testing.T) {
 	hasReflectLim := false
 	if out2.NegativeVerification != nil {
 		for _, lim := range out2.NegativeVerification.Limitations {
-			if strings.Contains(lim, "reflect usage in product widens the call graph") {
+			if strings.Contains(lim, "widens the call graph") {
 				hasReflectLim = true
 				break
 			}
@@ -80,5 +80,40 @@ func TestReflectMarkerStandaloneFunctionScoping(t *testing.T) {
 	}
 	if !hasReflectLim {
 		t.Fatalf("expected reflect call-graph limitation for exported method, got nv=%+v", out2.NegativeVerification)
+	}
+}
+
+func TestGovulncheckSilenceWithUnexportedSubject(t *testing.T) {
+	ix := fixture(t, "constprod")
+	v := Verifier{Source: ix}
+	c := &domain.AnalysisCase{}
+
+	unexportedSym := domain.SymbolRef{Package: "example.com/dep/vuln", Symbol: "internalHelper"}
+
+	// 1. With FalsifierGovulncheckSilence and no live dep callers: verified
+	claim1 := domain.Claim{
+		ConditionID: "C-REACH",
+		Result:      domain.ClaimFalse,
+		Falsifier:   domain.FalsifierGovulncheckSilence,
+	}
+	cond1 := domain.Condition{
+		ID:       "C-REACH",
+		Kind:     domain.ConditionSymbolReachable,
+		Subjects: []domain.SymbolRef{unexportedSym},
+	}
+	out1 := v.VerifyFalse(context.Background(), c, claim1, cond1)
+	if out1.NegativeVerification == nil || out1.NegativeVerification.Status != domain.NegativeVerified {
+		t.Fatalf("expected NegativeVerified for govulncheck silence with unexported symbol, got: %+v", out1.NegativeVerification)
+	}
+
+	// 2. With FalsifierUnreachedExportedSubject: insufficient scope because visibility forces zero refs
+	claim2 := domain.Claim{
+		ConditionID: "C-REACH",
+		Result:      domain.ClaimFalse,
+		Falsifier:   domain.FalsifierUnreachedExportedSubject,
+	}
+	out2 := v.VerifyFalse(context.Background(), c, claim2, cond1)
+	if out2.NegativeVerification == nil || out2.NegativeVerification.Status != domain.NegativeInsufficientScope {
+		t.Fatalf("expected NegativeInsufficientScope for no-product-refs on unexported symbol, got: %+v", out2.NegativeVerification)
 	}
 }

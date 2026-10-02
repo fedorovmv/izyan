@@ -531,6 +531,21 @@ func splitSymbol(sym string) (typeName, name string) {
 	return "", sym
 }
 
+// isCheckMember reports whether a method name suggests a validation, verification,
+// or authorization check whose omission is itself the vulnerable behavior
+// (missing-call shape like GO-2020-0017 MapClaims.VerifyAudience).
+// Non-check methods (action sinks like SendFile, ServeFile, Exec, Write) are
+// execution sites where deadness proves the vulnerable code is never executed.
+func isCheckMember(name string) bool {
+	checkPrefixes := []string{"Verify", "Validate", "Check", "Authenticate", "Authorize", "Is", "Has"}
+	for _, p := range checkPrefixes {
+		if strings.HasPrefix(name, p) {
+			return true
+		}
+	}
+	return false
+}
+
 func findObjectInPkg(fset *token.FileSet, pkg *packages.Package, typeName, name string) *domain.CallSite {
 	if typeName == "" {
 		if obj := pkg.Types.Scope().Lookup(name); obj != nil {
@@ -915,8 +930,8 @@ func (ix *Index) DepInvocationState(ctx context.Context, ref domain.SymbolRef) (
 	if callers > 0 || unbounded {
 		return callers, false, unbounded, nil
 	}
-	typeName, _ := splitSymbol(ref.Symbol)
-	if typeName == "" {
+	typeName, name := splitSymbol(ref.Symbol)
+	if typeName == "" || !isCheckMember(name) {
 		return 0, false, false, nil
 	}
 	pkgs := ix.extrasFor(ref.Package)
@@ -970,6 +985,52 @@ func (ix *Index) modulePkgs(mod string) []*packages.Package {
 // dead.
 const depLiveFuel = 6
 
+// methodInAnyInterface reports whether any interface declared in the product,
+// loaded dependency packages, or well-known standard library interfaces
+// declares a method with the given name. In Go, dynamic interface dispatch
+// is only possible for methods that belong to an interface type.
+func (ix *Index) methodInAnyInterface(name string) bool {
+	switch name {
+	case "Read", "Write", "Close", "Seek", "ReadAt", "WriteAt", "ReadFrom", "WriteTo",
+		"ServeHTTP", "String", "Error", "Format", "Scan", "Reset", "Flush",
+		"Header", "WriteHeader", "Lock", "Unlock", "RLock", "RUnlock",
+		"Timeout", "Temporary", "Len", "Less", "Swap":
+		return true
+	}
+	checkPkg := func(p *packages.Package) bool {
+		if p.Types == nil {
+			return false
+		}
+		scope := p.Types.Scope()
+		for _, n := range scope.Names() {
+			obj := scope.Lookup(n)
+			tn, ok := obj.(*types.TypeName)
+			if !ok {
+				continue
+			}
+			if iface, ok := tn.Type().Underlying().(*types.Interface); ok {
+				for i := 0; i < iface.NumMethods(); i++ {
+					if iface.Method(i).Name() == name {
+						return true
+					}
+				}
+			}
+		}
+		return false
+	}
+	for _, p := range ix.pkgs {
+		if checkPkg(p) {
+			return true
+		}
+	}
+	for _, p := range ix.allExtras() {
+		if checkPkg(p) {
+			return true
+		}
+	}
+	return false
+}
+
 // depSiteLive reports whether the dependency call site sits on a chain
 // some live code can reach. The falsifier "no product references" is
 // only a valid negative when the subject is dead in the effective
@@ -982,19 +1043,24 @@ func (ix *Index) depSiteLive(ctx context.Context, s CallSiteRef, fuel int, seen 
 		return true // package-level/init context runs by construction
 	}
 	name := s.enclosing.Name.Name
-	if name == "init" || (s.enclosing.Recv != nil && len(s.enclosing.Recv.List) > 0) {
-		// Methods may ride interface dispatch whose callers are not
-		// enumerable by name matching; init runs unconditionally.
+	if name == "init" {
 		return true
 	}
-	key := s.pkg.PkgPath + "." + name
+	callerSym := name
+	if s.enclosing.Recv != nil && len(s.enclosing.Recv.List) > 0 {
+		typeName := recvDeclName(s.enclosing.Recv.List[0].Type)
+		if typeName != "" {
+			callerSym = typeName + "." + name
+		}
+	}
+	key := s.pkg.PkgPath + "." + callerSym
 	if seen[key] {
 		return false // cycle cut — this path contributes nothing new
 	}
 	if fuel <= 0 {
 		return true // unexplored remainder — conservative
 	}
-	fref := domain.SymbolRef{Package: s.pkg.PkgPath, Symbol: name}
+	fref := domain.SymbolRef{Package: s.pkg.PkgPath, Symbol: callerSym}
 	if len(ix.productRefsTo(fref)) > 0 {
 		return true // the product itself can invoke the caller
 	}
@@ -1002,8 +1068,49 @@ func (ix *Index) depSiteLive(ctx context.Context, s CallSiteRef, fuel int, seen 
 	if s.pkg.Module != nil {
 		mod = s.pkg.Module.Path
 	}
-	if ast.IsExported(name) && ix.importedByOtherModule(ctx, s.pkg.PkgPath, mod) {
-		return true // callers may hide in dep packages outside the module
+	if ast.IsExported(name) {
+		importers, err := ix.depImporters(ctx)
+		if err != nil {
+			return true
+		}
+		var otherPkgs []string
+		for _, im := range importers[s.pkg.PkgPath] {
+			if !ix.isProductPath(im.path) && im.module != mod {
+				otherPkgs = append(otherPkgs, im.path)
+			}
+		}
+		if len(otherPkgs) > 16 {
+			return true
+		}
+		for _, op := range otherPkgs {
+			opLoaded, lerr := ix.loadExtra(ctx, op)
+			if lerr != nil {
+				return true
+			}
+			otherSites := ix.findCallSitesIn(opLoaded, fref)
+			for _, os := range otherSites {
+				if ix.depSiteLive(ctx, os, fuel-1, seen) {
+					return true
+				}
+			}
+		}
+	}
+	// Check reachability via the module's entry cone:
+	if mod != "" {
+		if cone := ix.depCone(mod); cone != nil {
+			if !cone[key] {
+				return false
+			}
+		} else if s.enclosing.Recv != nil && len(s.enclosing.Recv.List) > 0 && ast.IsExported(name) {
+			// Interface dispatch cannot be ruled out when cone is unavailable and an interface declaring this method exists
+			if ix.methodInAnyInterface(name) {
+				return true
+			}
+		}
+	} else if s.enclosing.Recv != nil && len(s.enclosing.Recv.List) > 0 && ast.IsExported(name) {
+		if ix.methodInAnyInterface(name) {
+			return true
+		}
 	}
 	seen[key] = true
 	defer delete(seen, key)
@@ -2432,6 +2539,15 @@ func (ix *Index) ScanDynamic(ctx context.Context, ref domain.SymbolRef) ([]Dynam
 								Detail: "reflect.Value." + sel.Sel.Name + " call can write fields invisibly",
 							})
 						}
+						// reflect.Value.MethodByName / Method can invoke methods
+						// dynamically — the only reflect shape that can widen the call graph.
+						if (sel.Sel.Name == "MethodByName" || sel.Sel.Name == "Method") &&
+							isReflectValueOrType(pkg.TypesInfo, sel.X) {
+							out = append(out, DynamicMarker{
+								CallSite: pos(call), Kind: "reflect_method",
+								Detail: "reflect." + sel.Sel.Name + " call can invoke methods dynamically",
+							})
+						}
 					}
 				}
 				return true
@@ -2686,6 +2802,30 @@ func isReflectValue(info *types.Info, e ast.Expr) bool {
 		return false
 	}
 	return n.Obj().Pkg().Path() == "reflect" && n.Obj().Name() == "Value"
+}
+
+func isReflectValueOrType(info *types.Info, e ast.Expr) bool {
+	if info == nil {
+		return false
+	}
+	t := info.TypeOf(e)
+	if t == nil {
+		return false
+	}
+	// For interface types like reflect.Type:
+	if iface, ok := t.Underlying().(*types.Interface); ok {
+		if n, ok := t.(*types.Named); ok && n.Obj() != nil && n.Obj().Pkg() != nil {
+			if n.Obj().Pkg().Path() == "reflect" && n.Obj().Name() == "Type" {
+				return true
+			}
+		}
+		_ = iface
+	}
+	n, ok := t.(*types.Named)
+	if !ok || n.Obj() == nil || n.Obj().Pkg() == nil {
+		return false
+	}
+	return n.Obj().Pkg().Path() == "reflect" && (n.Obj().Name() == "Value" || n.Obj().Name() == "Type")
 }
 
 // callsUnsafe reports whether e contains a call to a function from the
