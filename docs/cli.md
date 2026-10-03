@@ -107,8 +107,12 @@ vuln-analyzer knowledge [--knowledge <path>]
 | Флаг | Что делает |
 |---|---|
 | `--case-dir <path>` | каталог состояния кейсов (default `.vuln-analyzer`) |
+| `--lang <ru\|en>` | язык формирования отчётов и вывода CLI (default `ru`) |
 | `--osv-url <url>` | альтернативный OSV API endpoint |
+| `--cve-analysis <mode>` | режим автономного LLM CVE-исследования (`off`, `assist`, `verified`, default `off`) |
+| `--strict-llm` | режим fail-fast: падать с ошибкой при сбое LLM, не переключаясь на детерминистику |
 | `--deterministic-only` | выключить весь LLM-слой |
+| `--mem-limit <size>` | лимит оперативной памяти процесса с watchdog (default `4GiB`) |
 | `--allow-exec` | разрешить запуск кода репозитория (run_build/run_tests в доказательствах). Без флага exec-инструменты недоступны |
 | `--knowledge <path>` | JSON-расширение базы знаний экосистемы — дописывает записи для API, которых нет во встроенной базе (внутренние библиотеки продукта). Формат, валидация и семантика мержа: [`knowledge-base.md`](knowledge-base.md). Дамп базы/шаблон: `vuln-analyzer knowledge` |
 | `--llm-env <path>` | файл с LLM-кредами; иначе `.env` в cwd или корне репо |
