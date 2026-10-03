@@ -34,7 +34,7 @@ Baseline-таблица govulncheck-vs-analyzer (последний прогон
 | real-ssh-server | EXPLOITABLE | reachable | нет |
 | real-ssh-keyparse | NO_EXPLOIT_PATH_FOUND | package-level | **да — govulncheck-silence + проверка недостижимости неэкспортированных субъектов в dep-коде** |
 | real-jose-decrypt | EXPLOITABLE | reachable | нет |
-| real-jwt-auth | INCONCLUSIVE | package-level | нет — missing-call гейт: `VerifyAudience` мёртв, но sibling-пайплайн `MapClaims.Valid` жив → отсутствие вызова не доказывает безопасность |
+| real-jwt-auth | INCONCLUSIVE | package-level | нет — уязвимость в пропуске проверки (missing-call): `VerifyAudience` не вызывается при валидации токена (`MapClaims.Valid`), поэтому отсутствие её вызова не доказывает безопасность |
 | real-http2-server | NOT_AFFECTED | silent | **да — deterministic** |
 | real-dns-zone | EXPLOITABLE | reachable | нет |
 | real-getter-file | EXPLOITABLE | reachable | нет |
