@@ -41,7 +41,7 @@
   неполный `listener_primitives`, чужой `language`, будущую
   `schema_version`.
 - Нет автообнаружения файлов в репозитории продукта — только явный
-  `--knowledge` (план: `dev/plans/knowledge-base-plan.md`).
+  `--knowledge` (архивный план: `dev/history/plans/knowledge-base-plan.md`).
 
 ## Проверка
 

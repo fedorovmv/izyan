@@ -1,7 +1,7 @@
 # Gap analysis: спеки vs реализация
 
 Сопоставление [`dev/specs/governing-spec.md`](../specs/governing-spec.md), [`dev/specs/analyzer-agent-spec.md`](../specs/analyzer-agent-spec.md),
-[`goals-scope.md`](../../goals-scope.md), [`dev/plans/mvp-implementation-plan.md`](../plans/mvp-implementation-plan.md), [`dev/decisions/architecture-decisions.md`](../decisions/architecture-decisions.md)
+[`goals-scope.md`](../../goals-scope.md), [`dev/history/plans/mvp-implementation-plan.md`](../history/plans/mvp-implementation-plan.md), [`dev/decisions/architecture-decisions.md`](../decisions/architecture-decisions.md)
 с кодом по состоянию на HEAD. Содержит только пробелы и бэклог.
 
 ## 1. Открытые пробелы (спека↔код)

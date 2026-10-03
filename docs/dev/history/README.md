@@ -48,3 +48,10 @@ Verdict строится только по состояниям mandatory condit
 - `INCONCLUSIVE` предпочтительнее необоснованного `NOT EXPLOITABLE`;
 - persisted case является source of truth;
 - Reviewer не заменяет deterministic evaluator.
+
+## Структура архива `docs/dev/history/`
+
+- `01-initial-architecture.md`, `go-skeleton-state-machine.md` — начальный bootstrap до реализации ядра.
+- `plans/` — архив завершённых планов реализации раннего MVP (12 планов вертикальных срезов).
+- `specs/` — архив завершённых дизайн-спецификаций реализованных фич (автономное исследование CVE Срез A, дизайн Inverted Pyramid, локализация RU/EN, function locus, изоляция констант парсеров и доверенная инфраструктура).
+

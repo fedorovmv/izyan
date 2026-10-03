@@ -1,6 +1,6 @@
 # Статус реализации MVP
 
-Обновляется по мере продвижения по срезам [`dev/plans/mvp-implementation-plan.md`](../plans/mvp-implementation-plan.md).
+Обновляется по мере продвижения по срезам [`dev/history/plans/mvp-implementation-plan.md`](../history/plans/mvp-implementation-plan.md).
 
 ## Slice 1 — deterministic foundation (done)
 

@@ -29,45 +29,57 @@
 
 ### Для разработчиков (`dev/`)
 
+#### Нормативные спецификации (`dev/specs/`)
+
 | Файл | Статус | Назначение |
 |---|---|---|
 | [`dev/specs/governing-spec.md`](dev/specs/governing-spec.md) | актуальный | Главная спецификация системы |
 | [`dev/specs/analyzer-agent-spec.md`](dev/specs/analyzer-agent-spec.md) | актуальный | Контракт поведения Analyzer Agent |
-| [`dev/specs/incremental-analysis-value-spec.md`](dev/specs/incremental-analysis-value-spec.md) | reviewed draft | Контракт дополнительной ценности поверх govulncheck; первый срез — полное доказательство mandatory input condition; готов к плану реализации |
-| [`dev/specs/llm-dismissal-research-spec.md`](dev/specs/llm-dismissal-research-spec.md) | исследовательская спецификация | LLM-assisted отклонение, экспертное досье, deployment и контекстная критичность; гипотезы не подтверждены |
-| [`dev/specs/llm-cve-analysis-spec.md`](dev/specs/llm-cve-analysis-spec.md) | спецификация следующего направления | Самостоятельное LLM-исследование механизма CVE, стратегии, независимая проверка доказательств, контекстная критичность и обязательное обоснование решения; B31–B33 |
-| [`dev/decisions/architecture-decisions.md`](dev/decisions/architecture-decisions.md) | актуальный | Ключевые архитектурные решения и запреты |
-| [`dev/decisions/reference-projects-analysis.md`](dev/decisions/reference-projects-analysis.md) | актуальный | Разбор VEX Toolset/VulnReach/amihit/govulncheck — обоснование решений |
-| [`dev/current/analysis-internals.md`](dev/current/analysis-internals.md) | актуальный | Механика реализации: evaluators, NV, pattern library, toolchain, audit |
-| [`dev/current/implementation-status.md`](dev/current/implementation-status.md) | живой | Статус срезов MVP, что сделано/что дальше |
+| [`dev/specs/incremental-analysis-value-spec.md`](dev/specs/incremental-analysis-value-spec.md) | reviewed draft | Контракт дополнительной ценности поверх govulncheck; доказательство mandatory input condition |
+| [`dev/specs/llm-cve-analysis-spec.md`](dev/specs/llm-cve-analysis-spec.md) | актуальный | Автономное LLM-исследование механизма CVE, стратегии, валидация доказательств, контекстная критичность; B31–B33 |
+| [`dev/specs/llm-dismissal-research-spec.md`](dev/specs/llm-dismissal-research-spec.md) | исследовательская | LLM-assisted отклонение, экспертное досье, deployment и контекстная критичность; B27 |
+
+#### Активные планы развития / роадмапы (`dev/plans/`)
+
+| Файл | Статус | Назначение |
+|---|---|---|
+| [`dev/plans/llm-cve-analysis-plan.md`](dev/plans/llm-cve-analysis-plan.md) | в работе | Поэтапная поставка research/dossier, validated proof capabilities и критичности (задачи 1–6 выполнены, 7–16 в плане); B31–B33 |
+| [`dev/plans/ingress-closure-plan.md`](dev/plans/ingress-closure-plan.md) | в работе | Ingress closure: полный inventory входов в reachable dep cone; falsifier `constant-or-generated-input`; B26 |
+| [`dev/plans/corpus-expansion-plan.md`](dev/plans/corpus-expansion-plan.md) | бэклог | Расширение доказательной базы: generated-manifest продукты, baseline vs govulncheck; B13 |
+| [`dev/plans/llm-dismissal-research-plan.md`](dev/plans/llm-dismissal-research-plan.md) | исследование | Пошаговая проверка локального type gate в jose2go: 4 контрольных продукта, baseline, LLM-прогоны и досье; B27 |
+| [`dev/plans/llm-advisory-plan.md`](dev/plans/llm-advisory-plan.md) | бэклог | LLM advisory-контур (D16): параллельная оценка, llm_assessment.json; B17 |
+
+#### Текущее состояние разработки (`dev/current/`)
+
+| Файл | Статус | Назначение |
+|---|---|---|
 | [`dev/current/gap-analysis.md`](dev/current/gap-analysis.md) | актуальный | Gap analysis спека↔код + канонический бэклог (§2) |
-| [`dev/plans/mvp-implementation-plan.md`](dev/plans/mvp-implementation-plan.md) | актуальный | Порядок реализации и milestones |
-| [`dev/plans/llm-dismissal-research-plan.md`](dev/plans/llm-dismissal-research-plan.md) | план исследования | Пошаговая проверка локального type gate в jose2go: четыре контрольных продукта, baseline, LLM-прогоны и досье; не production-checker |
-| [`dev/plans/llm-cve-analysis-plan.md`](dev/plans/llm-cve-analysis-plan.md) | план реализации | Поэтапная поставка research/dossier, validated proof capabilities и критичности; 16 задач с файлами, интерфейсами, controls и gates |
-| [`dev/plans/pattern-library-plan.md`](dev/plans/pattern-library-plan.md) | done | Exploit Pattern Library: classify → patterns → conditions |
-| [`dev/plans/exposure-facts-plan.md`](dev/plans/exposure-facts-plan.md) | done | Deployment/exposure facts: listeners, dial-sites, `C-EXPOSURE` |
-| [`dev/plans/negative-coverage-plan.md`](dev/plans/negative-coverage-plan.md) | done | NV scope: build-tag-excluded files + interface dispatch |
-| [`dev/plans/config-reading-plan.md`](dev/plans/config-reading-plan.md) | done | Configuration reading: `config_flag`/`config_key`, `C-TLS-VERIFY` |
-| [`dev/plans/eval-harness-plan.md`](dev/plans/eval-harness-plan.md) | done | Eval harness: корпус, метрики, false-safe; `analyzer eval` |
-| [`dev/plans/toolchain-plan.md`](dev/plans/toolchain-plan.md) | done | Target Go toolchain: SDK/GOTOOLCHAIN/docker, toolchain provenance |
-| [`dev/plans/data-origins-plan.md`](dev/plans/data-origins-plan.md) | done | Provenance: DATABASE/INTERNAL_SERVICE origins, populate/passthrough |
-| [`dev/plans/tool-audit-plan.md`](dev/plans/tool-audit-plan.md) | done | `tool_executions` audit: ctx-рекордер, ToolVersion, отчёт |
-| [`dev/plans/gap-loop-plan.md`](dev/plans/gap-loop-plan.md) | done | Gap-analysis: GAP_ANALYSIS state, гипотезы, bounded loop |
-| [`dev/plans/typed-tools-plan.md`](dev/plans/typed-tools-plan.md) | done | Все 17 typed tools §17; exec-gate `--allow-exec` |
-| [`dev/plans/knowledge-base-plan.md`](dev/plans/knowledge-base-plan.md) | done | Knowledge-base таблицы → данные (`--knowledge` JSON); бэклог B12 |
-| [`dev/plans/corpus-expansion-plan.md`](dev/plans/corpus-expansion-plan.md) | plan | Расширение доказательной базы: generated-manifest продукты, baseline vs govulncheck; бэклог B13 |
-| [`dev/plans/ingress-closure-plan.md`](dev/plans/ingress-closure-plan.md) | in progress | Ingress closure: полный inventory входов в reachable dep cone; falsifier `constant-or-generated-input`; бэклог B26 |
-| [`dev/plans/llm-advisory-plan.md`](dev/plans/llm-advisory-plan.md) | spec-draft | LLM advisory-контур (D16): параллельная оценка, llm_assessment.json; бэклог B17 |
-| [`dev/history/go-skeleton-state-machine.md`](dev/history/go-skeleton-state-machine.md) | исторический | Bootstrap-каркас: Go-интерфейсы/структуры до реализации (истина теперь — `internal/`) |
-| [`dev/history/01-initial-architecture.md`](dev/history/01-initial-architecture.md) | исторический | Исходная архитектура до разбора OSS |
-| [`dev/history/README.md`](dev/history/README.md) | исторический | Что изменилось и почему |
+| [`dev/current/implementation-status.md`](dev/current/implementation-status.md) | живой | Хроника реализации срезов и выполненных задач |
+| [`dev/current/analysis-internals.md`](dev/current/analysis-internals.md) | актуальный | Механика реализации: evaluators, NV, pattern library, toolchain, audit |
+
+#### Архитектурные решения (`dev/decisions/`)
+
+| Файл | Статус | Назначение |
+|---|---|---|
+| [`dev/decisions/architecture-decisions.md`](dev/decisions/architecture-decisions.md) | актуальный | Ключевые архитектурные решения и запреты (ADR) |
+| [`dev/decisions/reference-projects-analysis.md`](dev/decisions/reference-projects-analysis.md) | актуальный | Разбор VEX Toolset / VulnReach / amihit / govulncheck — обоснование решений |
+
+#### История и архив (`dev/history/`)
+
+| Каталог / Файл | Назначение |
+|---|---|
+| [`dev/history/README.md`](dev/history/README.md) | Описание эволюции архитектуры и структуры архива |
+| [`dev/history/01-initial-architecture.md`](dev/history/01-initial-architecture.md) | Исходная архитектура до анализа OSS-референсов |
+| [`dev/history/go-skeleton-state-machine.md`](dev/history/go-skeleton-state-machine.md) | Bootstrap-каркас Go-структур до реализации ядра |
+| [`dev/history/plans/`](dev/history/plans/) | Архив 12 завершённых планов реализации MVP (`mvp-implementation-plan`, `toolchain-plan`, `exposure-facts-plan`, `pattern-library-plan` и др.) |
+| [`dev/history/specs/`](dev/history/specs/) | Архив дизайн-спецификаций реализованных фич (исследование CVE Срез A, Inverted Pyramid отчёта, локализация RU/EN, function locus, изоляция констант парсеров и др.) |
 
 ## Рекомендуемый порядок чтения coding-agent'ом
 
 1. [`goals-scope.md`](goals-scope.md)
 2. [`dev/specs/governing-spec.md`](dev/specs/governing-spec.md)
 3. [`dev/decisions/architecture-decisions.md`](dev/decisions/architecture-decisions.md)
-4. [`dev/plans/mvp-implementation-plan.md`](dev/plans/mvp-implementation-plan.md)
+4. [`dev/current/gap-analysis.md`](dev/current/gap-analysis.md) — бэклог открытых задач
 5. [`dev/specs/analyzer-agent-spec.md`](dev/specs/analyzer-agent-spec.md) — перед реализацией LLM loop
 6. [`architecture.md`](architecture.md) + [`how-it-works.md`](how-it-works.md) — устройство и поведение
 7. [`dev/decisions/reference-projects-analysis.md`](dev/decisions/reference-projects-analysis.md) — как reference, не как governing source
