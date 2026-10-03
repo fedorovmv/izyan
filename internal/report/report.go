@@ -342,11 +342,29 @@ func Markdown(c *domain.AnalysisCase, lang ...string) string {
 	if isRU {
 		fmt.Fprintf(&b, "# Анализ уязвимости: %s\n\n", c.Vulnerability.ID)
 		fmt.Fprintf(&b, "- Кейс: `%s`\n", c.ID)
+		if c.TicketID != "" {
+			fmt.Fprintf(&b, "- Тикет: `%s`\n", c.TicketID)
+		}
+		if c.TicketComponent != "" {
+			fmt.Fprintf(&b, "- Компонент: `%s`\n", c.TicketComponent)
+		}
+		if c.TicketRelease != "" {
+			fmt.Fprintf(&b, "- Релиз: `%s`\n", c.TicketRelease)
+		}
 		fmt.Fprintf(&b, "- Репозиторий: `%s`\n- Коммит: `%s`\n- Окружение Go: `%s` (%s/%s)\n\n",
 			c.Product.Repository, c.Product.Commit, c.Product.GoVersion, c.Product.GOOS, c.Product.GOARCH)
 	} else {
 		fmt.Fprintf(&b, "# Vulnerability analysis: %s\n\n", c.Vulnerability.ID)
 		fmt.Fprintf(&b, "- Case: `%s`\n", c.ID)
+		if c.TicketID != "" {
+			fmt.Fprintf(&b, "- Ticket: `%s`\n", c.TicketID)
+		}
+		if c.TicketComponent != "" {
+			fmt.Fprintf(&b, "- Component: `%s`\n", c.TicketComponent)
+		}
+		if c.TicketRelease != "" {
+			fmt.Fprintf(&b, "- Release: `%s`\n", c.TicketRelease)
+		}
 		fmt.Fprintf(&b, "- Repository: `%s`\n- Commit: `%s`\n- Go: `%s` (%s/%s)\n\n",
 			c.Product.Repository, c.Product.Commit, c.Product.GoVersion, c.Product.GOOS, c.Product.GOARCH)
 	}

@@ -72,7 +72,9 @@ func usage() {
 
 options:
   --vuln-file <path>     load advisory from local OSV JSON instead of api.osv.dev
-  --ticket <path>        generic tracker ticket JSON (see internal/tracker/intake.go)
+  --ticket <path>        tracker ticket JSON, arbitrary text, or '-' for stdin
+  --ticket-id <id>       ticket key to select when input contains multiple tickets
+  --repo-map <path>      path to JSON mapping component/ticket keys to repo paths
   --osv-url <url>        override OSV API base URL
   --case-dir <dir>       analysis state directory (default .izyan)
   --case <id|glob>       filter cases to run in eval (comma-separated or glob)
@@ -107,6 +109,11 @@ type analyzeOpts struct {
 	tags          string
 	binary        string
 	releaseGo     string
+	ticketID      string
+	ticketComp    string
+	ticketRel     string
+	ticketKey     string
+	repoMap       string
 	cveAnalysis   string
 	lang          string
 	exploitModel  string
@@ -217,13 +224,21 @@ func runAnalyze(args []string) error {
 	fs.StringVar(&o.vulnID, "vuln", "", "vulnerability id (GO-/CVE-/GHSA-)")
 	fs.StringVar(&o.vulnFile, "vuln-file", "", "local OSV JSON file")
 	fs.StringVar(&o.exploitModel, "exploit-model", "", "manual exploit model JSON")
-	ticketPath := fs.String("ticket", "", "generic tracker ticket JSON (vulnerability id, repo, embedded/synthesized advisory)")
+	ticketPath := fs.String("ticket", "", "tracker ticket JSON, arbitrary text, or '-' for stdin")
+	ticketKey := fs.String("ticket-id", "", "ticket key/id to select if ticket input contains multiple tickets")
+	repoMapPath := fs.String("repo-map", "", "path to JSON mapping component/ticket keys to local repo paths")
 	var rootCauseFlags stringList
 	fs.Var(&rootCauseFlags, "root-cause", "manual root cause as pkg/path.Symbol (repeatable)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	o.rootCauseArgs = rootCauseFlags
+	if *ticketKey != "" {
+		o.ticketKey = *ticketKey
+	}
+	if *repoMapPath != "" {
+		o.repoMap = *repoMapPath
+	}
 	if *ticketPath != "" {
 		if err := applyTicket(&o, *ticketPath); err != nil {
 			return err
@@ -253,22 +268,59 @@ func runAnalyze(args []string) error {
 	return nil
 }
 
-// applyTicket folds a generic tracker ticket into analyze options:
-// explicit CLI flags win over ticket fields (ticket is the default, not
-// an override). Advisory material (embedded osv doc, or module +
-// fixed_versions) is materialized to a file and fed via --vuln-file.
+// applyTicket folds a generic tracker ticket or extracted ticket metadata into analyze options:
+// explicit CLI flags win over ticket fields (ticket is the default, not an override).
+// If repo is unset, repo-map or default repos.json resolution is attempted against component/product/ticket.
 func applyTicket(o *analyzeOpts, path string) error {
-	t, err := tracker.LoadTicket(path)
+	t, err := tracker.LoadTicketWithID(path, o.ticketKey)
 	if err != nil {
 		return err
 	}
 	if o.vulnID == "" {
 		o.vulnID = t.Vulnerability
 	}
-	if o.repo == "" && t.Repo != "" {
-		o.repo = t.Repo
+	if o.ticketID == "" && t.ID != "" {
+		o.ticketID = t.ID
 	}
-	if o.vulnFile == "" && (len(t.OSV) > 0 || t.Module != "") {
+	if o.ticketComp == "" && t.Component != "" {
+		o.ticketComp = t.Component
+	}
+	if o.ticketRel == "" && t.Release != "" {
+		o.ticketRel = t.Release
+	}
+
+	// Resolve repo if not explicitly provided
+	if o.repo == "" {
+		var rm *tracker.RepoMap
+		if o.repoMap != "" {
+			var err error
+			rm, err = tracker.LoadRepoMap(o.repoMap)
+			if err != nil {
+				return fmt.Errorf("load repo-map %s: %w", o.repoMap, err)
+			}
+		} else {
+			// Look for default repos.json or .izyan-repos.json in current directory
+			for _, candidate := range []string{"repos.json", ".izyan-repos.json"} {
+				if _, err := os.Stat(candidate); err == nil {
+					if loaded, err := tracker.LoadRepoMap(candidate); err == nil {
+						rm = loaded
+						break
+					}
+				}
+			}
+		}
+
+		if rm != nil {
+			if resolved := rm.Resolve(t); resolved != "" {
+				o.repo = resolved
+			}
+		}
+		if o.repo == "" && t.Repo != "" {
+			o.repo = t.Repo
+		}
+	}
+
+	if o.vulnFile == "" && (len(t.OSV) > 0 || (t.Module != "" && len(t.FixedVersions) > 0)) {
 		dir := filepath.Join(o.caseDir, "intake")
 		f, err := t.AdvisoryFile(dir, o.vulnID)
 		if err != nil {
@@ -299,7 +351,10 @@ func analyzeCase(ctx context.Context, o analyzeOpts) (*domain.AnalysisCase, erro
 	prior := store.PriorCase(ctx, o.vulnID, absRepo, "")
 	caseID := domain.CaseID(fmt.Sprintf("%s-%d", sanitizeID(o.vulnID), time.Now().Unix()))
 	c := &domain.AnalysisCase{
-		ID: caseID,
+		ID:              caseID,
+		TicketID:        o.ticketID,
+		TicketComponent: o.ticketComp,
+		TicketRelease:   o.ticketRel,
 		Workflow: domain.WorkflowStatus{
 			State:     domain.StateCreated,
 			StartedAt: time.Now().UTC(),
@@ -478,7 +533,14 @@ func analyzeCase(ctx context.Context, o analyzeOpts) (*domain.AnalysisCase, erro
 
 func printCase(c *domain.AnalysisCase, caseDir string, lang ...string) {
 	isRU := len(lang) == 0 || lang[0] != "en"
-	fmt.Printf("case: %s\nstate: %s\n", c.ID, c.Workflow.State)
+	fmt.Printf("case: %s\n", c.ID)
+	if c.TicketID != "" {
+		fmt.Printf("ticket: %s\n", c.TicketID)
+	}
+	if c.TicketComponent != "" {
+		fmt.Printf("component: %s\n", c.TicketComponent)
+	}
+	fmt.Printf("state: %s\n", c.Workflow.State)
 	if c.Verdict != nil {
 		fmt.Printf("verdict: %s\nreason: %s\n", c.Verdict.Verdict, c.Verdict.Reason)
 	}

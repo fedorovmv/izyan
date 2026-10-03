@@ -17,13 +17,15 @@ izyan analyze --repo /src/product --vuln GO-2025-3595 [флаги]
 |---|---|
 | `--vuln <id>` | ID `GO-…`/`CVE-…`/`GHSA-…`; документ грузится из OSV API |
 | `--vuln-file <path>` | локальный OSV JSON вместо API |
-| `--ticket <path>` | generic tracker-тикет JSON: id уязвимости, repo, embedded/synthesized advisory — точка интеграции с внешним трекером |
+| `--ticket <path>` | тикет из трекера задач: generic JSON, выгрузка из Jira/GitLab/трекера, произвольный скопированный текст или `-` для stdin. Автоматически извлекает ID уязвимости, номер тикета, компонент, релиз, пакет и advisory |
+| `--ticket-id <id>` | ключ тикета для выбора из списка/массива в ticket JSON |
+| `--repo-map <path>` | путь к JSON-файлу маппинга компонентов/тикетов на локальные пути репозиториев (по умолчанию ищется `repos.json` в текущей директории) |
 
 Флаги продукта:
 
 | Флаг | Что делает |
 |---|---|
-| `--repo <path>` | путь к Go-репозиторию продукта (обязателен) |
+| `--repo <path>` | путь к Go-репозиторию продукта (обязателен, если не разрешён через `--ticket` и `--repo-map` / `repos.json`) |
 | `--goos`, `--goarch` | целевая платформа снапшота |
 | `--build-tags <t1,t2>` | build tags при загрузке пакетов |
 | `--binary <path>` | собранный бинарь релиза: `govulncheck -mode binary` + реальный toolchain и модули из встроенного build info |
@@ -38,6 +40,48 @@ izyan analyze --repo /src/product --vuln GO-2025-3595 [флаги]
 | `--non-locus-basis <sym:reason[:author]>` | экспертное исключение символа из сайтов дефекта (L = declared set − basis); повторяемый флаг |
 | `--accept-locus-proposals` | автоматически применить проверенные машинные предложения (`ProposedNonLocus`) в модель анализа без ручного ввода `--non-locus-basis` (не модифицирует код продукта) |
 
+### Интеграция с трекерами задач и произвольным текстом (`--ticket`)
+
+Анализатор поддерживает автоматический умный импорт информации без необходимости вручную вычленять идентификаторы:
+
+1. **Произвольный текст или буфер обмена (`--ticket -` или `--ticket file.txt`):**
+   ```bash
+   # Передача скопированного описания тикета через stdin:
+   pbpaste | izyan analyze --ticket - --repo /path/to/project
+   ```
+   Анализатор автоматически находит:
+   - Идентификаторы уязвимостей (`GO-…`, `CVE-…`, `GHSA-…`, `BDU:…`);
+   - Номер тикета (`[A-Z]+-\d+`, например `SEC-538506`, `JIRA-1234`, `APP-1001`);
+   - Затронутую библиотеку/модуль и версию;
+   - Название компонента и релиза.
+   Номер тикета, компонент и релиз автоматически сохраняются в кейсе и выводятся в `report.md`, `report.en.md` и `report.json`.
+
+2. **JSON-выгрузки трекеров (Jira, GitLab, Bugzilla и др.):**
+   ```bash
+   izyan analyze --ticket ticket.json --repo /path/to/project
+   ```
+   Если JSON-файл содержит массив тикетов, можно выбрать нужный по ключу:
+   ```bash
+   izyan analyze --ticket tickets.json --ticket-id APP-1002
+   ```
+
+3. **Автоматический поиск репозитория по компоненту (`--repo-map` или `repos.json`):**
+   Чтобы не передавать `--repo` каждый раз вручную, можно завести `repos.json` (или `.izyan-repos.json`) в текущей директории либо передать `--repo-map <path>`:
+   ```json
+   {
+     "GATEWAY": "/Users/developer/work/gateway",
+     "CORE": "/Users/developer/work/core",
+     "SEC-1001": "/Users/developer/work/gateway"
+   }
+   ```
+   Или в структурированном виде:
+   ```json
+   {
+     "components": { "GATEWAY": "/Users/developer/work/gateway" },
+     "tickets":    { "SEC-1001": "/Users/developer/work/gateway" }
+   }
+   ```
+   При запуске `izyan analyze --ticket ticket.json` анализатор автоматически сопоставит компонент или номер тикета с локальным репозиторием.
 
 ## scan — массовый прогон зависимостей
 

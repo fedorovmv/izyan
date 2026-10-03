@@ -1069,3 +1069,48 @@ func TestReportGovulncheckCleanComparison(t *testing.T) {
 		t.Errorf("missing Clean govulncheck status in English")
 	}
 }
+
+func TestReportTicketMetadata(t *testing.T) {
+	c := &domain.AnalysisCase{
+		ID:              "CASE-1234",
+		TicketID:        "JIRA-538506",
+		TicketComponent: "GATEWAY",
+		TicketRelease:   "2.6.0-release",
+		Vulnerability: domain.Vulnerability{
+			ID: "GO-2026-4950",
+		},
+		Product: domain.ProductSnapshot{
+			Repository: "/path/to/repo",
+			Commit:     "abcdef",
+			GoVersion:  "go1.26.1",
+			GOOS:       "linux",
+			GOARCH:     "amd64",
+		},
+		Verdict: &domain.VerdictResult{
+			Verdict: domain.VerdictNoExploitPathFound,
+			Reason:  "mandatory exploit condition is proven false",
+		},
+	}
+
+	mdRU := Markdown(c, "ru")
+	if !strings.Contains(mdRU, "- Тикет: `JIRA-538506`") {
+		t.Errorf("RU markdown missing ticket ID, got:\n%s", mdRU)
+	}
+	if !strings.Contains(mdRU, "- Компонент: `GATEWAY`") {
+		t.Errorf("RU markdown missing ticket component, got:\n%s", mdRU)
+	}
+	if !strings.Contains(mdRU, "- Релиз: `2.6.0-release`") {
+		t.Errorf("RU markdown missing ticket release, got:\n%s", mdRU)
+	}
+
+	mdEN := Markdown(c, "en")
+	if !strings.Contains(mdEN, "- Ticket: `JIRA-538506`") {
+		t.Errorf("EN markdown missing ticket ID, got:\n%s", mdEN)
+	}
+	if !strings.Contains(mdEN, "- Component: `GATEWAY`") {
+		t.Errorf("EN markdown missing ticket component, got:\n%s", mdEN)
+	}
+	if !strings.Contains(mdEN, "- Release: `2.6.0-release`") {
+		t.Errorf("EN markdown missing ticket release, got:\n%s", mdEN)
+	}
+}

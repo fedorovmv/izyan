@@ -1167,18 +1167,22 @@ type WorkflowStatus struct {
 type AnalysisCase struct {
 	// mu guards Usage counters when condition evaluators or scan workers
 	// touch the case concurrently. JSON ignores unexported fields.
-	mu            sync.Mutex      `json:"-"`
-	ID            CaseID          `json:"id"`
-	Vulnerability Vulnerability   `json:"vulnerability"`
-	Product       ProductSnapshot `json:"product"`
-	Affected      *AffectedResult `json:"affected,omitempty"`
-	RootCause     *RootCauseModel `json:"root_cause,omitempty"`
-	Exploit       *ExploitModel   `json:"exploit_model,omitempty"`
-	EvidenceGraph EvidenceGraph   `json:"evidence_graph"`
-	Claims        []Claim         `json:"claims,omitempty"`
-	Hypotheses    []Hypothesis    `json:"hypotheses,omitempty"`
-	Reviews       []Review        `json:"reviews,omitempty"`
-	Verdict       *VerdictResult  `json:"verdict,omitempty"`
+	mu sync.Mutex `json:"-"`
+	ID CaseID     `json:"id"`
+	// External issue tracker integration metadata:
+	TicketID        string          `json:"ticket_id,omitempty"`
+	TicketComponent string          `json:"ticket_component,omitempty"`
+	TicketRelease   string          `json:"ticket_release,omitempty"`
+	Vulnerability   Vulnerability   `json:"vulnerability"`
+	Product         ProductSnapshot `json:"product"`
+	Affected        *AffectedResult `json:"affected,omitempty"`
+	RootCause       *RootCauseModel `json:"root_cause,omitempty"`
+	Exploit         *ExploitModel   `json:"exploit_model,omitempty"`
+	EvidenceGraph   EvidenceGraph   `json:"evidence_graph"`
+	Claims          []Claim         `json:"claims,omitempty"`
+	Hypotheses      []Hypothesis    `json:"hypotheses,omitempty"`
+	Reviews         []Review        `json:"reviews,omitempty"`
+	Verdict         *VerdictResult  `json:"verdict,omitempty"`
 	// GovulncheckCoverage: "" unknown | "covered" the advisory exists in the
 	// govulncheck DB | "not_in_db" it was never evaluated — silence is not
 	// evidence of no path.
