@@ -586,6 +586,12 @@ func (ix *Index) pkgOfPath(vr *types.Var) *packages.Package {
 			}
 		}
 	}
+	// If fvBuildDepth > 0, do not invoke packages.Load mid-build — it
+	// invalidates caches, triggers eviction storms, and recurses through
+	// the package graph.
+	if ix.fvBuildDepth > 0 {
+		return nil
+	}
 	if extra, err := ix.loadExtra(ix.ctxOr(nil), vr.Pkg().Path()); err == nil {
 		for _, p := range extra {
 			if p.PkgPath == vr.Pkg().Path() {

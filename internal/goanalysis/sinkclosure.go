@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"go/ast"
 	"go/types"
+	"time"
 
 	"github.com/fedorovmv/izyan/internal/domain"
 	"golang.org/x/tools/go/packages"
@@ -34,10 +35,41 @@ func (ix *Index) SinkClosure(ctx context.Context, condID domain.ConditionID, mod
 	ix.mu.Lock()
 	defer ix.mu.Unlock()
 	ctx = ix.ctxOr(ctx)
+
+	var cancel context.CancelFunc
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		ctx, cancel = context.WithTimeout(ctx, 120*time.Second)
+		defer cancel()
+	}
+
+	prevActiveCtx := ix.activeCtx
+	ix.activeCtx = ctx
+	defer func() {
+		ix.activeCtx = prevActiveCtx
+	}()
+
+	prevBudget := ix.loadBudget
+	prevExhausted := ix.loadBudgetExhausted
+	if ix.loadBudget == 0 && !ix.loadBudgetExhausted {
+		ix.loadBudget = 48
+	}
+	defer func() {
+		ix.loadBudget = prevBudget
+		ix.loadBudgetExhausted = prevExhausted
+	}()
+
+	cl := domain.SinkClosure{ConditionID: condID, Module: module, Basis: basis}
+	if err := ctx.Err(); err != nil {
+		cl.Blockers = append(cl.Blockers, fmt.Sprintf("closure query deadline exceeded: %v", err))
+		return cl, nil, nil
+	}
+	if ix.loadBudgetExhausted {
+		cl.Blockers = append(cl.Blockers, "closure query package load budget exhausted")
+		return cl, nil, nil
+	}
 	if err := ix.load(ctx); err != nil {
 		return domain.SinkClosure{}, nil, err
 	}
-	cl := domain.SinkClosure{ConditionID: condID, Module: module, Basis: basis}
 	if basis == "" {
 		cl.Blockers = append(cl.Blockers,
 			"sink set has no completeness contract (KNOWN_ONLY)")
@@ -54,12 +86,34 @@ func (ix *Index) SinkClosure(ctx context.Context, condID domain.ConditionID, mod
 	}()
 	var livePos, dead, unsafePos, unresolved int
 	pinned := map[string]bool{}
+	cumulativeEvalBudget := maxEvalBudget * 8
+
 	for _, subj := range subjects {
+		if err := ctx.Err(); err != nil {
+			cl.Blockers = append(cl.Blockers, fmt.Sprintf("closure query deadline exceeded: %v", err))
+			unresolved++
+			break
+		}
+		if ix.loadBudgetExhausted {
+			cl.Blockers = append(cl.Blockers, "closure query package load budget exhausted")
+			unresolved++
+			break
+		}
 		key := subj.Package + "." + subj.Symbol
 		// Every declared sink must exist in the analyzed version — a
 		// missing symbol leaves the set's coverage unproven.
 		cs, err := ix.findSymbol(ctx, subj)
 		if err != nil || cs == nil {
+			if ctx.Err() != nil {
+				cl.Blockers = append(cl.Blockers, fmt.Sprintf("closure query deadline exceeded: %v", ctx.Err()))
+				unresolved++
+				break
+			}
+			if ix.loadBudgetExhausted {
+				cl.Blockers = append(cl.Blockers, "closure query package load budget exhausted")
+				unresolved++
+				break
+			}
 			cl.Blockers = append(cl.Blockers,
 				fmt.Sprintf("declared sink %s not found in analyzed version", key))
 			continue
@@ -76,6 +130,16 @@ func (ix *Index) SinkClosure(ctx context.Context, condID domain.ConditionID, mod
 		if spkg.Module != nil {
 			pattern := spkg.Module.Path + "/..."
 			if _, err := ix.loadExtra(ctx, pattern); err != nil {
+				if ctx.Err() != nil {
+					cl.Blockers = append(cl.Blockers, fmt.Sprintf("closure query deadline exceeded: %v", ctx.Err()))
+					unresolved++
+					break
+				}
+				if ix.loadBudgetExhausted {
+					cl.Blockers = append(cl.Blockers, "closure query package load budget exhausted")
+					unresolved++
+					break
+				}
 				cl.Blockers = append(cl.Blockers,
 					fmt.Sprintf("declared sink %s: module load failed: %v", key, err))
 			} else {
@@ -88,9 +152,19 @@ func (ix *Index) SinkClosure(ctx context.Context, condID domain.ConditionID, mod
 				}
 			}
 		}
-		cl.Blockers = append(cl.Blockers, ix.unseenDepCallers(ctx, subj, spkg)...)
+		depBlockers := ix.unseenDepCallers(ctx, subj, spkg)
+		cl.Blockers = append(cl.Blockers, depBlockers...)
+		if ctx.Err() != nil || ix.loadBudgetExhausted {
+			unresolved++
+			break
+		}
 		seen := map[string]bool{}
 		for _, r := range ix.callersOf(spkg, subj) {
+			if ctx.Err() != nil {
+				cl.Blockers = append(cl.Blockers, fmt.Sprintf("closure query deadline exceeded: %v", ctx.Err()))
+				unresolved++
+				break
+			}
 			if r.possible {
 				cl.Blockers = append(cl.Blockers, fmt.Sprintf(
 					"declared sink %s: caller set changed or has unresolved function-value dispatch", key))
@@ -140,18 +214,40 @@ func (ix *Index) SinkClosure(ctx context.Context, condID domain.ConditionID, mod
 				}
 			}
 			for _, p := range positions {
+				if err := ctx.Err(); err != nil {
+					cl.Blockers = append(cl.Blockers, fmt.Sprintf("closure query deadline exceeded: %v", err))
+					unresolved++
+					break
+				}
+				if cumulativeEvalBudget <= 0 {
+					addEvalBlocker(&cl)
+					unresolved++
+					livePos++
+					cl.Sites = append(cl.Sites, domain.SinkSite{
+						CallSite: r.Site, Sink: key, Arg: p.arg, Live: true,
+						Origin: domain.OriginUnknown, Detail: "closure query evaluation budget exhausted",
+					})
+					continue
+				}
 				var tx []domain.CallSite
 				ix.txBuf = &tx
 				ix.traceSeen = map[types.Object]bool{}
 				ix.paramSeen = map[string]bool{}
 				ix.paramCache = map[string]classifyResult{}
 				ix.classifyCache = map[classifyKey]classifyResult{}
-				// Per-position budget: protojson-scale receivers trace
-				// through whole decoder bodies — 300k evals is too shallow;
-				// exhaustion stays UNKNOWN rather than risking unbounded
-				// fan-out (aws-scale cones made the case hang).
-				ix.evalBudget = maxEvalBudget * 4
+				posBudget := cumulativeEvalBudget
+				if posBudget > maxEvalBudget*4 {
+					posBudget = maxEvalBudget * 4
+				}
+				ix.evalBudget = posBudget
 				origin, why := ix.classify(r.pkg, r.enclosing, p.expr, 1)
+				if ix.evalBudget < 0 {
+					spent := posBudget
+					cumulativeEvalBudget -= spent
+				} else {
+					spent := posBudget - ix.evalBudget
+					cumulativeEvalBudget -= spent
+				}
 				ix.txBuf = nil
 				ix.txSeen = nil
 				ix.traceSeen = nil
@@ -191,6 +287,15 @@ func (ix *Index) SinkClosure(ctx context.Context, condID domain.ConditionID, mod
 	}}, nil
 }
 
+func addEvalBlocker(cl *domain.SinkClosure) {
+	for _, b := range cl.Blockers {
+		if b == "closure query evaluation budget exhausted" {
+			return
+		}
+	}
+	cl.Blockers = append(cl.Blockers, "closure query evaluation budget exhausted")
+}
+
 // pkgForPath locates a package among the loaded product roots and dep
 // extras by its import path.
 func (ix *Index) pkgForPath(path string) *packages.Package {
@@ -213,17 +318,37 @@ func (ix *Index) pkgForPath(path string) *packages.Package {
 // completeness. Product packages, same-module packages and loaded
 // extras are covered; unlinked packages cannot execute.
 func (ix *Index) unseenDepCallers(ctx context.Context, subj domain.SymbolRef, spkg *packages.Package) []string {
+	if err := ctx.Err(); err != nil {
+		return []string{fmt.Sprintf("closure query deadline exceeded: %v", err)}
+	}
+	if ix.loadBudgetExhausted {
+		return []string{"closure query package load budget exhausted"}
+	}
 	mod := ""
 	if spkg.Module != nil {
 		mod = spkg.Module.Path
 	}
 	imps, err := ix.depImporters(ctx)
 	if err != nil {
+		if ctx.Err() != nil {
+			return []string{fmt.Sprintf("closure query deadline exceeded: %v", ctx.Err())}
+		}
+		if ix.loadBudgetExhausted {
+			return []string{"closure query package load budget exhausted"}
+		}
 		return []string{fmt.Sprintf("dep-import index for %s unavailable: %v", subj.Package, err)}
 	}
 	linked := ix.linkedPaths()
 	var out []string
 	for _, imp := range imps[subj.Package] {
+		if err := ctx.Err(); err != nil {
+			out = append(out, fmt.Sprintf("closure query deadline exceeded: %v", err))
+			break
+		}
+		if ix.loadBudgetExhausted {
+			out = append(out, "closure query package load budget exhausted")
+			break
+		}
 		if imp.path == subj.Package || (mod != "" && imp.module == mod) {
 			continue // same package/module — covered by the module load
 		}
@@ -240,6 +365,14 @@ func (ix *Index) unseenDepCallers(ctx context.Context, subj domain.SymbolRef, sp
 		// in rather than give up on enumeration.
 		if _, err := ix.loadExtra(ctx, imp.path); err == nil && len(ix.extrasFor(imp.path)) > 0 {
 			continue
+		}
+		if err := ctx.Err(); err != nil {
+			out = append(out, fmt.Sprintf("closure query deadline exceeded: %v", err))
+			break
+		}
+		if ix.loadBudgetExhausted {
+			out = append(out, "closure query package load budget exhausted")
+			break
 		}
 		out = append(out, fmt.Sprintf(
 			"dep package %s imports %s but is outside the enumerated cone — its call sites are unseen",

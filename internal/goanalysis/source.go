@@ -118,6 +118,10 @@ type Index struct {
 	// principle — past the budget the origin degrades to UNKNOWN rather
 	// than burning unbounded time. 0 = inactive.
 	evalBudget int
+	// loadBudget bounds total packages.Load calls during a closure query session;
+	// 0 = unconstrained. loadBudgetExhausted tracks when the budget was depleted.
+	loadBudget          int
+	loadBudgetExhausted bool
 	// funcDeclCache memoizes function-declaration lookups — uncached,
 	// each dep-internal call trace re-walks every file of the callee's
 	// package.
@@ -249,6 +253,9 @@ func (ix *Index) ctxOr(ctx context.Context) context.Context {
 	if ix.activeCtx != nil {
 		return ix.activeCtx
 	}
+	if ctx == nil {
+		return context.Background()
+	}
 	return ctx
 }
 
@@ -258,12 +265,23 @@ func (ix *Index) ctxOr(ctx context.Context) context.Context {
 // call-site and provenance scans.
 func (ix *Index) loadExtra(ctx context.Context, patterns ...string) ([]*packages.Package, error) {
 	ctx = ix.ctxOr(ctx)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if err := ix.load(ctx); err != nil {
 		return nil, err
 	}
 	key := strings.Join(patterns, "|")
 	if pkgs, ok := ix.extraPkgs[key]; ok {
 		return pkgs, nil
+	}
+	if ix.loadBudget > 0 {
+		ix.loadBudget--
+		if ix.loadBudget == 0 {
+			ix.loadBudgetExhausted = true
+		}
+	} else if ix.loadBudgetExhausted {
+		return nil, fmt.Errorf("closure query package load budget exhausted")
 	}
 	cfg := &packages.Config{
 		Mode:    loadMode,
@@ -277,6 +295,9 @@ func (ix *Index) loadExtra(ctx context.Context, patterns ...string) ([]*packages
 	}
 	pkgs, err := packages.Load(cfg, patterns...)
 	if err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	if ix.extraPkgs == nil {
@@ -336,18 +357,29 @@ func importClosureSize(tp *types.Package) int {
 // fewer sites resolved, more UNKNOWN).
 func (ix *Index) evictExtra() {
 	total, files, imports := 0, 0, 0
-	for _, pkgs := range ix.extraPkgs {
-		total += len(pkgs)
+	unpinnedTotal, unpinnedFiles, unpinnedImports := 0, 0, 0
+	unpinnedLoads := 0
+	for pat, pkgs := range ix.extraPkgs {
+		pTotal := len(pkgs)
+		pFiles := 0
 		for _, p := range pkgs {
-			files += len(p.GoFiles)
+			pFiles += len(p.GoFiles)
+		}
+		pImports := ix.extraWeight[pat]
+		total += pTotal
+		files += pFiles
+		imports += pImports
+		if !ix.extraPinned[pat] {
+			unpinnedTotal += pTotal
+			unpinnedFiles += pFiles
+			unpinnedImports += pImports
+			unpinnedLoads++
 		}
 	}
-	for _, w := range ix.extraWeight {
-		imports += w
-	}
 	over := func() bool {
-		return total > maxExtraPkgs || files > maxExtraFiles ||
-			imports > maxExtraImportClosure || len(ix.extraPkgs) > maxExtraLoads
+		return unpinnedTotal > maxExtraPkgs || unpinnedFiles > maxExtraFiles ||
+			unpinnedImports > maxExtraImportClosure || unpinnedLoads > maxExtraLoads ||
+			total > maxTotalExtraPkgs
 	}
 	if !over() {
 		return
@@ -372,10 +404,14 @@ func (ix *Index) evictExtra() {
 			continue
 		}
 		total -= len(vpkgs)
+		unpinnedTotal -= len(vpkgs)
 		for _, p := range vpkgs {
 			files -= len(p.GoFiles)
+			unpinnedFiles -= len(p.GoFiles)
 		}
 		imports -= ix.extraWeight[victim]
+		unpinnedImports -= ix.extraWeight[victim]
+		unpinnedLoads--
 		delete(ix.extraWeight, victim)
 		delete(ix.extraPkgs, victim)
 		evicted = true
@@ -419,7 +455,7 @@ func (ix *Index) evictExtra() {
 // UNKNOWN — conservative).
 func (ix *Index) pinExtra(pattern string) {
 	pkgs, ok := ix.extraPkgs[pattern]
-	if !ok || len(pkgs) > maxExtraPkgs {
+	if !ok || len(pkgs) > maxPinnedPkgs {
 		return
 	}
 	if ix.extraPinned == nil {
@@ -1249,9 +1285,11 @@ func (ix *Index) callerScope(pkg *packages.Package) []*packages.Package {
 // maxCallerCache bounds memoized caller scans.
 const (
 	maxExtraLoads         = 64
-	maxExtraPkgs          = 40
-	maxExtraFiles         = 500
-	maxExtraImportClosure = 2500
+	maxExtraPkgs          = 96
+	maxExtraFiles         = 1000
+	maxExtraImportClosure = 5000
+	maxPinnedPkgs         = 128
+	maxTotalExtraPkgs     = 224
 	maxCallerCache        = 8192
 	maxClassifyCache      = 65536
 	maxAuxCache           = 16384
