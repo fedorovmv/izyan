@@ -51,15 +51,9 @@ jobs:
           - goos: linux
             goarch: amd64
             binary: izyan-linux-amd64
-          - goos: linux
-            goarch: arm64
-            binary: izyan-linux-arm64
           - goos: darwin
             goarch: arm64
             binary: izyan-darwin-arm64
-          - goos: darwin
-            goarch: amd64
-            binary: izyan-darwin-amd64
           - goos: windows
             goarch: amd64
             binary: izyan-windows-amd64.exe
