@@ -9,6 +9,12 @@ on:
   push:
     branches:
       - master
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - '**/*.MD'
+      - 'LICENSE'
+      - '.github/workflows/ci.yml'
 
 permissions:
   contents: write
@@ -40,6 +46,32 @@ jobs:
           if [ -z "$last" ]; then
             next="v0.1.0"
           else
+            # Check if changes between $last and HEAD only touch documentation
+            doc_only=true
+            changed_files=$(git diff --name-only "$last..HEAD" || true)
+            if [ -z "$changed_files" ]; then
+              echo "No files modified since $last. Skipping release."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            while IFS= read -r file; do
+              [ -z "$file" ] && continue
+              case "$file" in
+                docs/*|*.md|*.MD|LICENSE|*.png|*.jpg|*.jpeg|*.svg|*.gif)
+                  ;;
+                *)
+                  doc_only=false
+                  break
+                  ;;
+              esac
+            done <<< "$changed_files"
+
+            if [ "$doc_only" = "true" ]; then
+              echo "Only documentation files modified since $last. Skipping release."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
             base="${last#v}"
             IFS=. read -r major minor patch <<<"$base"
             if git log --format=%B "$last..HEAD" | grep -qiE 'BREAKING[ -]CHANGE' \
