@@ -22,6 +22,7 @@
 | Критичность и обоснование | Exposure/supporting facts не образуют законченной контекстной оценки с policy | → B33 |
 | Exploit model | «Missing-call» advisory (уязвимость — отсутствие вызова валидации, jwt-go GO-2020-0017): dep-invocation гейт блокирует false-safe NEPF → INCONCLUSIVE, но should-call семантики в модели нет — условие «валидация обязана выполняться» не выводится | → B21 |
 | Parsers & config | Compile-time константный payload (`FalsifierConstantOrGeneratedInput`) изолирован от рефлексии целевых структур в парсерах (`yaml`, `protojson`); чтение локальных конфигураций (`os.ReadFile`) подтверждается как доверенная среда (`FalsifierTrustedInfrastructure`); `eval` оптимизирован (параллелизация `-j`, `--case`, исключение дублирования govulncheck) | закрыто |
+| Release checkout | Автоматическое разрешение тегов/веток релизов из тикетов и параметров (`--checkout-release`, `--release` / `--git-ref`) и безопасный изолированный анализ в git worktree без мутации рабочей копии разработчика | закрыто |
 
 ## 2. Открытый бэклог (приоритетный, с done-критериями)
 

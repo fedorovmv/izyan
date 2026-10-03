@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/fedorovmv/izyan/internal/domain"
 	"github.com/fedorovmv/izyan/internal/toolaudit"
@@ -125,4 +127,135 @@ func command(ctx context.Context, dir, name string, args ...string) (string, err
 		return "", err
 	}
 	return strings.TrimSpace(string(b)), nil
+}
+
+// ResolveRef resolves a version, release string, branch name, or tag to a canonical ref name
+// and commit SHA in the given git repository.
+func ResolveRef(ctx context.Context, repoPath, releaseOrRef string) (string, string, error) {
+	releaseOrRef = strings.TrimSpace(releaseOrRef)
+	if releaseOrRef == "" {
+		return "", "", fmt.Errorf("empty release or ref specified")
+	}
+
+	// Try prioritized candidates first
+	for _, cand := range refCandidates(releaseOrRef) {
+		sha, err := command(ctx, repoPath, "git", "rev-parse", "--verify", "--quiet", cand+"^{commit}")
+		if err == nil && sha != "" {
+			return cand, sha, nil
+		}
+	}
+
+	// Fallback: search git tag list for fuzzy matches
+	tagsOut, err := command(ctx, repoPath, "git", "tag", "-l")
+	if err == nil && tagsOut != "" {
+		tags := strings.Split(tagsOut, "\n")
+		normalizedTarget := normalizeRef(releaseOrRef)
+		for _, tag := range tags {
+			tag = strings.TrimSpace(tag)
+			if tag == "" {
+				continue
+			}
+			if normalizeRef(tag) == normalizedTarget {
+				sha, err := command(ctx, repoPath, "git", "rev-parse", "--verify", "--quiet", tag+"^{commit}")
+				if err == nil && sha != "" {
+					return tag, sha, nil
+				}
+			}
+		}
+	}
+
+	return "", "", fmt.Errorf("release or git ref %q not found in repository", releaseOrRef)
+}
+
+func refCandidates(ref string) []string {
+	s := strings.TrimSpace(ref)
+	if s == "" {
+		return nil
+	}
+	var list []string
+	seen := make(map[string]bool)
+	add := func(c string) {
+		c = strings.TrimSpace(c)
+		if c != "" && !seen[c] {
+			seen[c] = true
+			list = append(list, c)
+		}
+	}
+
+	// 1. Direct ref as passed
+	add(s)
+
+	// 2. Trim / add 'v' prefix
+	noV := strings.TrimPrefix(s, "v")
+	add("v" + noV)
+	add(noV)
+
+	// 3. Common release branch/tag prefixes
+	add("release/" + s)
+	add("release/" + noV)
+	add("release/v" + noV)
+	add("rel-" + s)
+	add("rel-" + noV)
+	add("tags/" + s)
+	add("tags/v" + noV)
+
+	// 4. If 2 segments (e.g. 24.2 or 2.0), try appending .0
+	parts := strings.Split(noV, ".")
+	if len(parts) == 2 {
+		dotZero := noV + ".0"
+		add(dotZero)
+		add("v" + dotZero)
+		add("release/" + dotZero)
+		add("release/v" + dotZero)
+		add("rel-" + dotZero)
+	}
+
+	return list
+}
+
+func normalizeRef(r string) string {
+	r = strings.ToLower(strings.TrimSpace(r))
+	r = strings.TrimPrefix(r, "refs/tags/")
+	r = strings.TrimPrefix(r, "release/")
+	r = strings.TrimPrefix(r, "rel-")
+	r = strings.TrimPrefix(r, "tags/")
+	r = strings.TrimPrefix(r, "v")
+	return r
+}
+
+// NewWorktree creates an isolated git worktree at a temporary directory checked out
+// to commitOrRef. The returned cleanup function removes the worktree and its temporary directory.
+func NewWorktree(ctx context.Context, repoPath, commitOrRef string) (string, func(), error) {
+	commitOrRef = strings.TrimSpace(commitOrRef)
+	if commitOrRef == "" {
+		return "", nil, fmt.Errorf("empty commit or ref for worktree")
+	}
+
+	absRepo, err := filepath.Abs(repoPath)
+	if err != nil {
+		return "", nil, fmt.Errorf("resolve repo path: %w", err)
+	}
+
+	tmpDir, err := os.MkdirTemp("", "izyan-worktree-*")
+	if err != nil {
+		return "", nil, fmt.Errorf("create temp worktree dir: %w", err)
+	}
+
+	_, err = command(ctx, absRepo, "git", "worktree", "add", "--detach", tmpDir, commitOrRef)
+	if err != nil {
+		_ = os.RemoveAll(tmpDir)
+		return "", nil, fmt.Errorf("git worktree add: %w", err)
+	}
+
+	var once sync.Once
+	cleanup := func() {
+		once.Do(func() {
+			cleanCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			_, _ = command(cleanCtx, absRepo, "git", "worktree", "remove", "--force", tmpDir)
+			_ = os.RemoveAll(tmpDir)
+		})
+	}
+
+	return tmpDir, cleanup, nil
 }

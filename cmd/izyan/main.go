@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
@@ -89,6 +90,8 @@ options:
   --accept-locus-proposals adopt machine-generated non_locus recommendations into expert basis
   --cve-analysis <off|assist|verified>  LLM CVE analysis profile (default: off)
   --llm-intake           use LLM to extract vulnerability and metadata from unstructured ticket text
+  --checkout-release     resolve release/tag and analyze in an isolated git worktree
+  --release <tag|ref>    explicit release tag or git ref to analyze (or --git-ref)
   --lang <ru|en>         report and output language (default: ru)
   --deterministic-only   disable all LLM-backed states`)
 	os.Exit(2)
@@ -115,6 +118,10 @@ type analyzeOpts struct {
 	ticketRel     string
 	ticketKey     string
 	llmIntake     bool
+	checkoutRel   bool
+	releaseRef    string
+	worktreeRef   string
+	worktreeSHA   string
 	repoMap       string
 	cveAnalysis   string
 	lang          string
@@ -170,6 +177,9 @@ func commonFlags(fs *flag.FlagSet, o *analyzeOpts) {
 	fs.StringVar(&o.nonLocusFile, "non-locus-basis", "", "JSON file with expert non-locus decisions: [{\"symbol\":{\"package\":\"pkg\",\"symbol\":\"Type.Name\"},\"basis\":\"why it is not a defect site\",\"authority\":\"review ref\"}]")
 	fs.BoolVar(&o.acceptLocusProposals, "accept-locus-proposals", false, "adopt machine-generated non_locus recommendations into expert basis")
 	fs.BoolVar(&o.trustedPeer, "trusted-peer", false, "declare deployment in trusted infrastructure / communication with trusted peers only (falsifies untrusted peer/network input)")
+	fs.BoolVar(&o.checkoutRel, "checkout-release", false, "resolve release/tag from ticket or --release and run analysis in an isolated git worktree")
+	fs.StringVar(&o.releaseRef, "release", "", "explicit release tag, branch, or commit to analyze (overrides ticket release)")
+	fs.StringVar(&o.releaseRef, "git-ref", "", "alias for --release")
 	fs.StringVar(&o.lang, "lang", "ru", "report and output language: ru (default) or en")
 }
 
@@ -272,6 +282,13 @@ func runAnalyze(args []string) error {
 	}
 	ctx, stop := applyMemoryLimit(context.Background(), budget)
 	defer stop()
+	wtCleanup, err := prepareReleaseWorktree(ctx, &o)
+	if err != nil {
+		return err
+	}
+	if wtCleanup != nil {
+		defer wtCleanup()
+	}
 	c, err := analyzeCase(ctx, o)
 	if err != nil {
 		return err
@@ -348,6 +365,46 @@ func applyTicket(o *analyzeOpts, path string, completer tracker.TextCompleter) e
 	return nil
 }
 
+func prepareReleaseWorktree(ctx context.Context, o *analyzeOpts) (func(), error) {
+	if o.releaseRef != "" {
+		o.ticketRel = o.releaseRef
+	}
+	if !o.checkoutRel {
+		return nil, nil
+	}
+	if o.ticketRel == "" {
+		return nil, fmt.Errorf("--checkout-release: no release specified (provide via --release or --ticket)")
+	}
+	if o.repo == "" {
+		return nil, fmt.Errorf("--checkout-release: repository path (--repo) is required")
+	}
+
+	resolvedRef, sha, err := repository.ResolveRef(ctx, o.repo, o.ticketRel)
+	if err != nil {
+		return nil, fmt.Errorf("checkout release %q: %w", o.ticketRel, err)
+	}
+
+	o.worktreeRef = resolvedRef
+	o.worktreeSHA = sha
+
+	// Check if current clean HEAD already points to the resolved commit
+	_, headSHA, headErr := repository.ResolveRef(ctx, o.repo, "HEAD")
+	if headErr == nil && headSHA == sha {
+		dirtyOut, _ := exec.CommandContext(ctx, "git", "-C", o.repo, "status", "--porcelain").Output()
+		if len(bytes.TrimSpace(dirtyOut)) == 0 {
+			return nil, nil
+		}
+	}
+
+	wtPath, cleanup, err := repository.NewWorktree(ctx, o.repo, sha)
+	if err != nil {
+		return nil, fmt.Errorf("create worktree for release %s (%s): %w", resolvedRef, sha, err)
+	}
+
+	o.repo = wtPath
+	return cleanup, nil
+}
+
 // analyzeCase runs the full pipeline for one vulnerability id.
 func analyzeCase(ctx context.Context, o analyzeOpts) (*domain.AnalysisCase, error) {
 	absRepo, err := filepath.Abs(o.repo)
@@ -422,6 +479,14 @@ func analyzeCase(ctx context.Context, o analyzeOpts) (*domain.AnalysisCase, erro
 	}
 	c.EvidenceGraph.AddLimitation(fmt.Sprintf(
 		"analysis toolchain: go%s (%s)", tc.Version, tc.Mode))
+	if o.worktreeRef != "" && o.checkoutRel {
+		shortSHA := o.worktreeSHA
+		if len(shortSHA) > 8 {
+			shortSHA = shortSHA[:8]
+		}
+		c.EvidenceGraph.AddLimitation(fmt.Sprintf(
+			"checkout release: %s (%s)", o.worktreeRef, shortSHA))
+	}
 
 	srcIndex := o.srcIndex
 	if srcIndex == nil {
@@ -699,16 +764,25 @@ func runScan(args []string) error {
 	if o.kb, err = loadKnowledgeBase(o.knowledge); err != nil {
 		return err
 	}
-	absRepo, err := filepath.Abs(o.repo)
-	if err != nil {
-		return err
-	}
 	budget, err := parseMemLimit(o.memLimit)
 	if err != nil {
 		return err
 	}
 	ctx, stop := applyMemoryLimit(context.Background(), budget)
 	defer stop()
+
+	wtCleanup, err := prepareReleaseWorktree(ctx, &o)
+	if err != nil {
+		return err
+	}
+	if wtCleanup != nil {
+		defer wtCleanup()
+	}
+
+	absRepo, err := filepath.Abs(o.repo)
+	if err != nil {
+		return err
+	}
 
 	// Resolve the target toolchain once — shared tools run under it.
 	o.toolchain, o.tcLims = resolveToolchain(ctx, o)
