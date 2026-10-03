@@ -20,7 +20,7 @@ import (
 	"strings"
 	"time"
 
-	"example.com/vuln-analyzer/internal/domain"
+	"github.com/fedorovmv/izyan/internal/domain"
 )
 
 type ctxKey struct{}

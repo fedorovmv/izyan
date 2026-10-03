@@ -14,8 +14,8 @@ import (
 	"strings"
 	"sync"
 
-	"example.com/vuln-analyzer/internal/domain"
-	"example.com/vuln-analyzer/internal/toolaudit"
+	"github.com/fedorovmv/izyan/internal/domain"
+	"github.com/fedorovmv/izyan/internal/toolaudit"
 )
 
 // Runner executes govulncheck and returns the raw -json stream.

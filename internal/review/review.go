@@ -10,8 +10,8 @@ import (
 	"fmt"
 	"strings"
 
-	"example.com/vuln-analyzer/internal/domain"
-	"example.com/vuln-analyzer/internal/exploit"
+	"github.com/fedorovmv/izyan/internal/domain"
+	"github.com/fedorovmv/izyan/internal/exploit"
 	"path/filepath"
 )
 

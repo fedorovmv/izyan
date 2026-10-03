@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"example.com/vuln-analyzer/internal/domain"
+	"github.com/fedorovmv/izyan/internal/domain"
 )
 
 // Build constructs an audit-ready AnalysisJustification based strictly on verified facts

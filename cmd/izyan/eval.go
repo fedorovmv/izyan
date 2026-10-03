@@ -12,18 +12,18 @@ import (
 	"sync"
 	"time"
 
-	"example.com/vuln-analyzer/internal/affected"
-	"example.com/vuln-analyzer/internal/domain"
-	"example.com/vuln-analyzer/internal/eval"
-	"example.com/vuln-analyzer/internal/goanalysis"
-	"example.com/vuln-analyzer/internal/toolchain"
-	"example.com/vuln-analyzer/internal/vulnerability"
+	"github.com/fedorovmv/izyan/internal/affected"
+	"github.com/fedorovmv/izyan/internal/domain"
+	"github.com/fedorovmv/izyan/internal/eval"
+	"github.com/fedorovmv/izyan/internal/goanalysis"
+	"github.com/fedorovmv/izyan/internal/toolchain"
+	"github.com/fedorovmv/izyan/internal/vulnerability"
 )
 
 // runEval executes a corpus of cases through the full pipeline and
 // reports the spec's quality metrics — the false-safe count above all.
 //
-//	vuln-analyzer eval --corpus eval/corpus.json [--repo <path>]
+//	izyan eval --corpus eval/corpus.json [--repo <path>]
 //	    [--case <id|glob>] [-j <jobs>] [--clean]
 //	    [--out report.md] [--json report.json] [common flags]
 //
@@ -163,7 +163,7 @@ func runEval(args []string) error {
 		o.detOnly = true
 	}
 	if !caseDirSet {
-		o.caseDir = filepath.Join(os.TempDir(), fmt.Sprintf("vuln-eval-%d", os.Getpid()))
+		o.caseDir = filepath.Join(os.TempDir(), fmt.Sprintf("izyan-eval-%d", os.Getpid()))
 	}
 	fmt.Fprintf(os.Stderr, "corpus=%s cases=%d repo=%s case-dir=%s\n",
 		*corpusPath, len(corpus.Cases), absRepo, o.caseDir)

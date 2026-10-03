@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"example.com/vuln-analyzer/internal/domain"
+	"github.com/fedorovmv/izyan/internal/domain"
 )
 
 // ArgumentOrigin evaluates ATTACKER_CONTROL and INPUT_CONSTRAINT conditions

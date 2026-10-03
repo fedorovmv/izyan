@@ -5,7 +5,7 @@ import (
 	"os/exec"
 	"testing"
 
-	"example.com/vuln-analyzer/internal/domain"
+	"github.com/fedorovmv/izyan/internal/domain"
 )
 
 func TestRunRecordsExecution(t *testing.T) {

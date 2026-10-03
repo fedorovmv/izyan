@@ -3,7 +3,7 @@ package persistence
 import (
 	"context"
 
-	"example.com/vuln-analyzer/internal/domain"
+	"github.com/fedorovmv/izyan/internal/domain"
 )
 
 type CaseStore interface {

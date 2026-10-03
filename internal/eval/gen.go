@@ -17,7 +17,7 @@ import (
 	"sort"
 	"strings"
 
-	"example.com/vuln-analyzer/internal/toolaudit"
+	"github.com/fedorovmv/izyan/internal/toolaudit"
 )
 
 // Gen materializes generated-manifest products. GoBin runs `go mod tidy`

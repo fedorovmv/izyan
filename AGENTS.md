@@ -1,4 +1,4 @@
-# vuln-analyzer
+# Izyan (Vuln Analyzer)
 
 Go vulnerability analyzer. Определяет применимость и эксплуатируемость
 уязвимости в конкретном снапшоте продукта, сохраняя неопределённость и
@@ -18,7 +18,8 @@ Go vulnerability analyzer. Определяет применимость и эк
 ## Репозиторий
 
 * Go-код: `internal/`.
-* CLI: `cmd/analyzer`.
+* CLI: `cmd/izyan`.
+* Модуль: `github.com/fedorovmv/izyan`.
 * Тестовые mini-repo: `testdata/`.
 * Канонический backlog: `docs/dev/gap-analysis.md`.
 * Бенчмарки и корпуса: автономный `eval/corpus-real.json` (38 кейсов) и live-корпус `eval/live-corpus.json` (`eval/README.md`).
@@ -61,7 +62,7 @@ go test ./...
 | генеральность: knowledge-base, case-specific хардкод | `generality.md`                    |
 | правка `internal/goanalysis/knowledge.json`, `--knowledge` | `knowledge-base.md`                 |
 | `internal/goanalysis`                | `provenance-and-bounds.md`, `dynamic-markers.md` |
-| `internal/evaluator`, `cmd/analyzer` | `evaluators.md`                                  |
+| `internal/evaluator`, `cmd/izyan` | `evaluators.md`                                  |
 | `internal/llm`, `internal/states`, `internal/cveanalysis` | `llm-layer.md`              |
 | документация и закрытие backlog      | `docs-sync.md`                                   |
 

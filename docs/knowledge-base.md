@@ -64,8 +64,8 @@ dep без исходников в индексе).
 при сборке. Бинарь самодостаточен; посмотреть эффективную базу:
 
 ```bash
-vuln-analyzer knowledge                # дамп встроенных дефолтов
-vuln-analyzer knowledge --knowledge m.json  # дефолты + расширение
+izyan knowledge                # дамп встроенных дефолтов
+izyan knowledge --knowledge m.json  # дефолты + расширение
 ```
 
 Дамп — стартовая точка для своего расширения и валидатор файла.
@@ -79,7 +79,7 @@ vuln-analyzer knowledge --knowledge m.json  # дефолты + расширен�
 Расширение дописывает такие записи без пересборки анализатора:
 
 ```bash
-vuln-analyzer analyze --repo /src/product --vuln GO-XXXX-YYYY \
+izyan analyze --repo /src/product --vuln GO-XXXX-YYYY \
     --knowledge corp-knowledge.json
 ```
 

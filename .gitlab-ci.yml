@@ -28,7 +28,7 @@ variables:
   GOCACHE: "$CI_PROJECT_DIR/.cache/go-build"
   GOFLAGS: "-mod=readonly"
   RELEASE_VERSION: "v0.1.${CI_PIPELINE_IID}"
-  PKG_URL: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/vuln-analyzer/${RELEASE_VERSION}"
+  PKG_URL: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/izyan/${RELEASE_VERSION}"
 
 .go-cache: &go-cache
   key:
@@ -53,8 +53,8 @@ eval:corpus:
   interruptible: true
   cache: *go-cache
   script:
-    - go build -o bin/analyzer ./cmd/analyzer
-    - ./bin/analyzer eval --corpus eval/corpus.json
+    - go build -o bin/izyan ./cmd/izyan
+    - ./bin/izyan eval --corpus eval/corpus.json
 
 build:
   stage: build
@@ -62,7 +62,7 @@ build:
   cache: *go-cache
   script:
     - go build ./...
-    - go build -o bin/ ./cmd/analyzer
+    - go build -o bin/ ./cmd/izyan
   artifacts:
     paths:
       - bin/
@@ -79,9 +79,9 @@ build:release:
   rules: *release-rules
   script:
     - mkdir -p dist
-    - CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o dist/vuln-analyzer-linux-amd64 ./cmd/analyzer
-    - CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o dist/vuln-analyzer-darwin-arm64 ./cmd/analyzer
-    - cd dist && sha256sum vuln-analyzer-* > SHA256SUMS
+    - CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o dist/izyan-linux-amd64 ./cmd/izyan
+    - CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o dist/izyan-darwin-arm64 ./cmd/izyan
+    - cd dist && sha256sum izyan-* > SHA256SUMS
   artifacts:
     paths:
       - dist/
@@ -111,13 +111,13 @@ release:
     - echo "creating release ${RELEASE_VERSION} for ${CI_COMMIT_SHORT_SHA}"
   release:
     tag_name: "${RELEASE_VERSION}"
-    name: "vuln-analyzer ${RELEASE_VERSION}"
-    description: "Automated release of vuln-analyzer from commit ${CI_COMMIT_SHA}."
+    name: "izyan ${RELEASE_VERSION}"
+    description: "Automated release of izyan from commit ${CI_COMMIT_SHA}."
     assets:
       links:
-        - name: vuln-analyzer-linux-amd64
-          url: "${PKG_URL}/vuln-analyzer-linux-amd64"
-        - name: vuln-analyzer-darwin-arm64
-          url: "${PKG_URL}/vuln-analyzer-darwin-arm64"
+        - name: izyan-linux-amd64
+          url: "${PKG_URL}/izyan-linux-amd64"
+        - name: izyan-darwin-arm64
+          url: "${PKG_URL}/izyan-darwin-arm64"
         - name: SHA256SUMS
           url: "${PKG_URL}/SHA256SUMS"

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"example.com/vuln-analyzer/internal/domain"
+	"github.com/fedorovmv/izyan/internal/domain"
 )
 
 // ConditionEvaluator assigns a TRUE/FALSE/UNKNOWN claim to a condition using

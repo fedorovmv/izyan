@@ -3,7 +3,7 @@ package evaluator
 import (
 	"strings"
 
-	"example.com/vuln-analyzer/internal/domain"
+	"github.com/fedorovmv/izyan/internal/domain"
 )
 
 // Exposure evaluates check=exposure conditions — a supporting factor

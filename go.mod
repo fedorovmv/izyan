@@ -1,4 +1,4 @@
-module example.com/vuln-analyzer
+module github.com/fedorovmv/izyan
 
 go 1.25.0
 

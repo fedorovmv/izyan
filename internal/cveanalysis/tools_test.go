@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"example.com/vuln-analyzer/internal/cveanalysis"
-	"example.com/vuln-analyzer/internal/domain"
+	"github.com/fedorovmv/izyan/internal/cveanalysis"
+	"github.com/fedorovmv/izyan/internal/domain"
 )
 
 func TestToolRunner_PathTraversalBlocked(t *testing.T) {

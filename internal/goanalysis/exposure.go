@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"strings"
 
-	"example.com/vuln-analyzer/internal/domain"
+	"github.com/fedorovmv/izyan/internal/domain"
 )
 
 // dialNameRe matches API names that initiate outbound connections:

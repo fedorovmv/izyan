@@ -83,9 +83,9 @@
 
 Самодостаточные задачи — можно делегировать субагенту или свежей
 сессии. Общий контекст: репо плоский (`internal/` на корне, модуля
-`example.com/vuln-analyzer`), репозиторий продукта задаётся через
+`github.com/fedorovmv/izyan`), репозиторий продукта задаётся через
 `VA_PRODUCT_REPO` (env) или `--repo`, проверка — `go test ./...` +
-`go run ./cmd/analyzer eval --corpus eval/live-corpus.json`.
+`go run ./cmd/izyan eval --corpus eval/live-corpus.json`.
 
 - **B1 закрыт** (выполнено): истина 11 кейсов — `eval/ground-truth.md`;
   `expect` пиннит истину. Разметка поймала два false-safe (6c5v,

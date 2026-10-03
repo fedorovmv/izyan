@@ -8,9 +8,9 @@ import (
 	"fmt"
 	"strings"
 
-	"example.com/vuln-analyzer/internal/domain"
-	"example.com/vuln-analyzer/internal/fix"
-	"example.com/vuln-analyzer/internal/goanalysis"
+	"github.com/fedorovmv/izyan/internal/domain"
+	"github.com/fedorovmv/izyan/internal/fix"
+	"github.com/fedorovmv/izyan/internal/goanalysis"
 )
 
 // Resolver produces root-cause candidates from advisory data and the fix

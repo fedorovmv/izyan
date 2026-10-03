@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"example.com/vuln-analyzer/internal/domain"
+	"github.com/fedorovmv/izyan/internal/domain"
 )
 
 func cdxCase(verdict domain.Verdict) *domain.AnalysisCase {

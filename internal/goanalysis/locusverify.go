@@ -11,8 +11,8 @@ import (
 	"strconv"
 	"strings"
 
-	"example.com/vuln-analyzer/internal/affected"
-	"example.com/vuln-analyzer/internal/domain"
+	"github.com/fedorovmv/izyan/internal/affected"
+	"github.com/fedorovmv/izyan/internal/domain"
 )
 
 // verifyLocusAbsent re-checks the locus-package-absent falsifier against

@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"example.com/vuln-analyzer/internal/domain"
+	"github.com/fedorovmv/izyan/internal/domain"
 )
 
 // ClaimEvaluator resolves UNKNOWN conditions through a bounded tool loop:

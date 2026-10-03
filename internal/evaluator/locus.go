@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"example.com/vuln-analyzer/internal/affected"
-	"example.com/vuln-analyzer/internal/domain"
+	"github.com/fedorovmv/izyan/internal/affected"
+	"github.com/fedorovmv/izyan/internal/domain"
 )
 
 // evalLocus evaluates a C-LOCUS condition — reachability of the defect

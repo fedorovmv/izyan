@@ -8,11 +8,11 @@ import (
 	"os/exec"
 	"path/filepath"
 
-	"example.com/vuln-analyzer/internal/domain"
-	"example.com/vuln-analyzer/internal/report"
+	"github.com/fedorovmv/izyan/internal/domain"
+	"github.com/fedorovmv/izyan/internal/report"
 )
 
-// runRemediate implements `vuln-analyzer remediate`: analyze the case,
+// runRemediate implements `izyan remediate`: analyze the case,
 // derive the deterministic fix target (smallest fixed version above the
 // resolved one), and — only with --apply — run `go get`/`go mod tidy`,
 // verify the build (optionally tests), then re-analyze the product.

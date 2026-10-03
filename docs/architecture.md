@@ -1,6 +1,6 @@
 # Архитектура
 
-Настоящий документ описывает архитектуру анализатора `vuln-analyzer`: функциональные блоки, сквозную стейт-машину, подсистемы статического анализа, разграничение детерминистического компиляторного ядра и LLM-слоя, а также модель данных и подсистему отчетности.
+Настоящий документ описывает архитектуру анализатора **Izyan (Vuln Analyzer)**: функциональные блоки, сквозную стейт-машину, подсистемы статического анализа, разграничение детерминистического компиляторного ядра и LLM-слоя, а также модель данных и подсистему отчетности.
 
 Внутренняя механика реализации — [`dev/analysis-internals.md`](dev/analysis-internals.md); нормативная спека — [`dev/specs/governing-spec.md`](dev/specs/governing-spec.md).
 
@@ -16,7 +16,7 @@ flowchart LR
         Cfg["Параметры и режимы<br>(--deterministic-only, --cve-analysis, budgets)"]
     end
 
-    subgraph Core ["vuln-analyzer (State Machine Engine)"]
+    subgraph Core ["Izyan Engine (State Machine Engine)"]
         Affected["1. Применимость (go list, semver)"]
         RC["2. Первопричина (Root Cause + CVE Research)"]
         Model["3. Модель условий эксплуатации"]

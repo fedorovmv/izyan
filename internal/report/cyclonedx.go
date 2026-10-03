@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"example.com/vuln-analyzer/internal/domain"
+	"github.com/fedorovmv/izyan/internal/domain"
 )
 
 // CycloneDX VEX export (spec 1.5). Like the OpenVEX document this is a
@@ -114,7 +114,7 @@ func CycloneDX(c *domain.AnalysisCase) ([]byte, error) {
 	doc := cdxDoc{
 		BOMFormat:    "CycloneDX",
 		SpecVersion:  "1.5",
-		SerialNumber: fmt.Sprintf("urn:uuid:vuln-analyzer-%s", c.ID),
+		SerialNumber: fmt.Sprintf("urn:uuid:izyan-%s", c.ID),
 		Version:      1,
 		Metadata: cdxMetadata{
 			Timestamp: vexTimestamp(c),

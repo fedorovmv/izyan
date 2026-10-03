@@ -5,7 +5,7 @@ import (
 	"regexp"
 	"strings"
 
-	"example.com/vuln-analyzer/internal/domain"
+	"github.com/fedorovmv/izyan/internal/domain"
 )
 
 // ServerTransportInput evaluates ATTACKER_CONTROL / INPUT_CONSTRAINT for

@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"example.com/vuln-analyzer/internal/domain"
+	"github.com/fedorovmv/izyan/internal/domain"
 )
 
 // Receiver-binding union: an iface call whose receiver is bound by more

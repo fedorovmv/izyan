@@ -16,7 +16,7 @@ import (
 	"strconv"
 	"strings"
 
-	"example.com/vuln-analyzer/internal/domain"
+	"github.com/fedorovmv/izyan/internal/domain"
 	"time"
 )
 

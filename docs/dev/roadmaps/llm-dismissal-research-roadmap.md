@@ -21,7 +21,7 @@
 гипотезу отдельно от authoritative analyzer verdict. Существующие
 deterministic и LLM adapters запускаются без нового checker.
 
-**Tech Stack:** Go, существующий `cmd/analyzer`, govulncheck, shell, jq.
+**Tech Stack:** Go, существующий `cmd/izyan`, govulncheck, shell, jq.
 
 **Spec:**
 [`llm-dismissal-research-spec.md`](../specs/llm-dismissal-research-spec.md).
@@ -33,7 +33,7 @@ deterministic и LLM adapters запускаются без нового checker
   evaluators, condition kinds, falsifiers или правила negative verification.
 - Изменения только в исследовательских продуктах, research corpus,
   ground-truth документах и связанных документах/index/backlog.
-- Не менять `internal/`, `cmd/analyzer`, `knowledge.json`, существующие
+- Не менять `internal/`, `cmd/izyan`, `knowledge.json`, существующие
   `expect` и правила подсчёта метрик.
 - Не создавать ветку и не коммитить без отдельного запроса.
 - Рабочее дерево содержит чужие/параллельные незакоммиченные изменения:
@@ -82,7 +82,7 @@ go version > "$RUN_ROOT/go-version.txt"
 "$GV" -version > "$RUN_ROOT/govulncheck-version.txt"
 git rev-parse HEAD > "$RUN_ROOT/analyzer-revision.txt"
 git diff --stat > "$RUN_ROOT/worktree-stat.txt"
-go build -o "$RUN_ROOT/analyzer" ./cmd/analyzer
+go build -o "$RUN_ROOT/analyzer" ./cmd/izyan
 ```
 
 При новой shell-сессии заново установить `RUN_ROOT`, `GV` и `PATH`.

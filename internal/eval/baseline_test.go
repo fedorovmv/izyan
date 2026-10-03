@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"example.com/vuln-analyzer/internal/domain"
-	"example.com/vuln-analyzer/internal/eval"
+	"github.com/fedorovmv/izyan/internal/domain"
+	"github.com/fedorovmv/izyan/internal/eval"
 )
 
 type baselineRunner struct{ raw string }

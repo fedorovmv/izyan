@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"example.com/vuln-analyzer/internal/domain"
-	"example.com/vuln-analyzer/internal/llm"
+	"github.com/fedorovmv/izyan/internal/domain"
+	"github.com/fedorovmv/izyan/internal/llm"
 )
 
 func TestStrategyPlanner_Plan(t *testing.T) {

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"example.com/vuln-analyzer/internal/domain"
+	"github.com/fedorovmv/izyan/internal/domain"
 )
 
 // ConfigFlag evaluates check=config_flag / check=config_key conditions —

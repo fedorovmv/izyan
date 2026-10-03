@@ -5,7 +5,7 @@ import (
 	"go/types"
 	"strings"
 
-	"example.com/vuln-analyzer/internal/domain"
+	"github.com/fedorovmv/izyan/internal/domain"
 	"golang.org/x/tools/go/packages"
 )
 

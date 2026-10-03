@@ -7,12 +7,12 @@ import (
 	"os"
 	"path/filepath"
 
-	"example.com/vuln-analyzer/internal/affected"
-	"example.com/vuln-analyzer/internal/domain"
-	"example.com/vuln-analyzer/internal/fix"
-	"example.com/vuln-analyzer/internal/goanalysis"
-	"example.com/vuln-analyzer/internal/toolaudit"
-	"example.com/vuln-analyzer/internal/vulnerability"
+	"github.com/fedorovmv/izyan/internal/affected"
+	"github.com/fedorovmv/izyan/internal/domain"
+	"github.com/fedorovmv/izyan/internal/fix"
+	"github.com/fedorovmv/izyan/internal/goanalysis"
+	"github.com/fedorovmv/izyan/internal/toolaudit"
+	"github.com/fedorovmv/izyan/internal/vulnerability"
 )
 
 // ToolResult is what a tool returns to the model: structured content plus
@@ -398,7 +398,7 @@ func (t Tools) Call(ctx context.Context, c *domain.AnalysisCase, name string, ar
 			// go build drops executables of main packages into the work
 			// dir — keep the analyzed repo clean. A stable path keeps
 			// tool_executions reproducible across runs.
-			buildOut := filepath.Join(os.TempDir(), "vuln-analyzer-build-out")
+			buildOut := filepath.Join(os.TempDir(), "izyan-build-out")
 			if mkErr := os.MkdirAll(buildOut, 0o755); mkErr == nil {
 				defer os.RemoveAll(buildOut)
 				args = []string{"build", "-o", buildOut, "./..."}

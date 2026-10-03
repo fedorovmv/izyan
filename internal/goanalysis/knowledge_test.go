@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"example.com/vuln-analyzer/internal/domain"
+	"github.com/fedorovmv/izyan/internal/domain"
 )
 
 // The embedded defaults must parse, carry the shipped entries, and

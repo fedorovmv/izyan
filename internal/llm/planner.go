@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"regexp"
 
-	"example.com/vuln-analyzer/internal/domain"
+	"github.com/fedorovmv/izyan/internal/domain"
 )
 
 // Planner is the LLM-driven hypothesis planner for GAP_ANALYSIS: for one

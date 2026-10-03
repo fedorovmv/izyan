@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"example.com/vuln-analyzer/internal/domain"
-	"example.com/vuln-analyzer/internal/persistence"
+	"github.com/fedorovmv/izyan/internal/domain"
+	"github.com/fedorovmv/izyan/internal/persistence"
 )
 
 type Transition struct {

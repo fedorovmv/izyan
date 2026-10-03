@@ -1,7 +1,7 @@
 # Evaluator-цепочка и claims
 
 Читать перед работой в `internal/evaluator/` и
-`cmd/analyzer/main.go` (регистрация).
+`cmd/izyan/main.go` (регистрация).
 
 - Цепочка — first-match wins; `Custom` обязан быть последним
   (обрабатывает unroutable shapes). Порядок: `SymbolReachable`,

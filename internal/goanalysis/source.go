@@ -19,7 +19,7 @@ import (
 
 	"golang.org/x/tools/go/packages"
 
-	"example.com/vuln-analyzer/internal/domain"
+	"github.com/fedorovmv/izyan/internal/domain"
 )
 
 // Index is a lazily loaded go/packages view of the analyzed product.

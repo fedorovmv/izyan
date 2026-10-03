@@ -7,7 +7,7 @@ import (
 	"net/url"
 	"strings"
 
-	"example.com/vuln-analyzer/internal/domain"
+	"github.com/fedorovmv/izyan/internal/domain"
 )
 
 // Reference points at a vendor fix — a commit or patch that resolves the

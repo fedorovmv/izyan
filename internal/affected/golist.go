@@ -10,8 +10,8 @@ import (
 	"strings"
 	"sync"
 
-	"example.com/vuln-analyzer/internal/domain"
-	"example.com/vuln-analyzer/internal/toolaudit"
+	"github.com/fedorovmv/izyan/internal/domain"
+	"github.com/fedorovmv/izyan/internal/toolaudit"
 )
 
 // Module mirrors the `go list -m -json` output subset we rely on.

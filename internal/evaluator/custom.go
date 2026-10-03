@@ -1,7 +1,7 @@
 package evaluator
 
 import (
-	"example.com/vuln-analyzer/internal/domain"
+	"github.com/fedorovmv/izyan/internal/domain"
 )
 
 // Custom gives CUSTOM conditions a deterministic partial evaluation.

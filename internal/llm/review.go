@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
-	"example.com/vuln-analyzer/internal/domain"
+	"github.com/fedorovmv/izyan/internal/domain"
 )
 
 // Reviewer asks the analyze model to audit the proposed-verdict package.

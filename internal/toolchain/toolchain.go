@@ -25,7 +25,7 @@ import (
 	"regexp"
 	"strings"
 
-	"example.com/vuln-analyzer/internal/toolaudit"
+	"github.com/fedorovmv/izyan/internal/toolaudit"
 )
 
 // Mode names how the target toolchain is provided.

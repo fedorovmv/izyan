@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"example.com/vuln-analyzer/internal/eval"
+	"github.com/fedorovmv/izyan/internal/eval"
 )
 
 // writeProduct creates a minimal product source tree in dir.

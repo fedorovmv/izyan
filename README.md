@@ -1,6 +1,10 @@
-# Vuln Analyzer
+# Izyan (Vuln Analyzer)
 
-Промышленный статический анализатор эксплуатируемости уязвимостей для экосистемы **Go**. Анализатор определяет применимость конкретной advisory (CVE / GO / GHSA) к конкретному снимку (snapshot) кодовой базы продукта, отсекает ложные срабатывания SCA-сканеров с математической строгостью компилятора Go и формирует воспроизводимое аудируемое обоснование.
+**Izyan** (рус. *«Изъян»* — дефект, уязвимость) — промышленный статический анализатор эксплуатируемости уязвимостей для экосистемы **Go** ([`github.com/fedorovmv/izyan`](https://github.com/fedorovmv/izyan)).
+
+Репозиторий проекта: [https://github.com/fedorovmv/izyan](https://github.com/fedorovmv/izyan)
+
+Анализатор определяет применимость конкретной advisory (CVE / GO / GHSA) к конкретному снимку (snapshot) кодовой базы продукта, отсекает ложные срабатывания SCA-сканеров с математической строгостью компилятора Go и формирует воспроизводимое аудируемое обоснование.
 
 ---
 
@@ -8,7 +12,7 @@
 
 Стандартные сканеры зависимостей (`govulncheck`, `trivy`, `snyk`) бьют тревогу при любом совпадении уязвимой библиотеки в `go.mod` или при наличии вызова функции в графе вызовов, не учитывая происхождение данных (константа или сеть) и наличие сдерживающих проверок (guards). Это порождает сотни часов бесполезного ручного триажа.
 
-**Vuln Analyzer автоматизирует анализ с гарантией безопасности**:
+**Izyan автоматизирует анализ с гарантией безопасности**:
 * **53% ложных алертов снимаются автоматически** (20 из 38 кейсов на эталонном [live-бенчмарке](eval/README.md));
 * **35% signal-cleared**: безопасное снятие шумных алертов `govulncheck` (`REACHABLE` / `package-level`);
 * **Строгий инвариант `false-safe = 0`**: ни одного ложно-безопасного вердикта. Отрицательный вердикт выносится только при математически строгом доказательстве невыполнимости условий атаки.
@@ -52,34 +56,41 @@ flowchart TD
 
 ## Быстрый старт
 
-### Сборка
+### Установка и сборка
+
 ```bash
-go build -o vuln-analyzer ./cmd/analyzer
+# Установка через go install
+go install github.com/fedorovmv/izyan/cmd/izyan@latest
+
+# Либо сборка из исходников
+git clone https://github.com/fedorovmv/izyan.git
+cd izyan
+go build -o izyan ./cmd/izyan
 ```
 
 ### Типовые сценарии использования
 ```bash
 # 1. Анализ конкретной уязвимости в репозитории
-vuln-analyzer analyze --repo /path/to/project --vuln GO-2025-3595
+izyan analyze --repo /path/to/project --vuln GO-2025-3595
 
 # 2. Анализ с автономным AI-исследованием механизма CVE и patch-diff
-vuln-analyzer analyze --repo /path/to/project --vuln GO-2026-6443 --cve-analysis assist
+izyan analyze --repo /path/to/project --vuln GO-2026-6443 --cve-analysis assist
 
 # 3. Полное сканирование всех зависимостей проекта
-vuln-analyzer scan --repo /path/to/project
+izyan scan --repo /path/to/project
 
 # 4. Планирование и применение обновления с автопрогоном тестов
-vuln-analyzer remediate --repo /path/to/project --vuln GO-2025-3595 --apply --run-tests
+izyan remediate --repo /path/to/project --vuln GO-2025-3595 --apply --run-tests
 
 # 5. Прогон тестового бенчмарка (38 реальных уязвимостей параллельно в 4 воркера)
-vuln-analyzer eval --corpus eval/corpus-real.json -j 4
+izyan eval --corpus eval/corpus-real.json -j 4
 ```
 
 ---
 
 ## Выходные артефакты
 
-По результатам анализа в каталоге `.vuln-analyzer/<case-id>/` формируются:
+По результатам анализа в каталоге `.izyan/<case-id>/` (или `.vuln-analyzer/<case-id>/`) формируются:
 * **`report.md`** (русский) и **`report.en.md`** (английский): структурированные отчёты с готовым разделом **`## Резюме`** для мгновенной вставки в задачу Jira/GitLab;
 * **`openvex.json`** и **`cyclonedx.json`**: стандартизированные машиночитаемые документы VEX для интеграции с DevSecOps-пайплайнами;
 * **`report.json`**: полный структурированный аудит-дамп досье и выполненных проверок.

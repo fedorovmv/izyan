@@ -12,8 +12,8 @@ import (
 
 	"golang.org/x/mod/semver"
 
-	"example.com/vuln-analyzer/internal/affected"
-	"example.com/vuln-analyzer/internal/domain"
+	"github.com/fedorovmv/izyan/internal/affected"
+	"github.com/fedorovmv/izyan/internal/domain"
 )
 
 // Write stores report.json, report.md, openvex.json and cyclonedx.json

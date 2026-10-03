@@ -7,7 +7,7 @@ import (
 
 	"golang.org/x/mod/semver"
 
-	"example.com/vuln-analyzer/internal/domain"
+	"github.com/fedorovmv/izyan/internal/domain"
 )
 
 // Platform evaluates PLATFORM_CONDITION and RUNTIME_CONDITION claims whose

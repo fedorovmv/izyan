@@ -7,11 +7,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	"example.com/vuln-analyzer/internal/domain"
-	"example.com/vuln-analyzer/internal/evaluator"
-	"example.com/vuln-analyzer/internal/goanalysis"
-	"example.com/vuln-analyzer/internal/toolaudit"
-	"example.com/vuln-analyzer/internal/workflow"
+	"github.com/fedorovmv/izyan/internal/domain"
+	"github.com/fedorovmv/izyan/internal/evaluator"
+	"github.com/fedorovmv/izyan/internal/goanalysis"
+	"github.com/fedorovmv/izyan/internal/toolaudit"
+	"github.com/fedorovmv/izyan/internal/workflow"
 )
 
 // GapAnalysis is the bounded hypothesis loop (spec §18): for every
@@ -457,7 +457,7 @@ func (h GapAnalysis) actBuildTest(ctx context.Context, c *domain.AnalysisCase) {
 	// go build drops executables of main packages into the work dir —
 	// the analyzed repo must not be mutated, so build output goes to a
 	// throwaway dir. A stable path keeps tool_executions reproducible.
-	buildOut := filepath.Join(os.TempDir(), "vuln-analyzer-build-out")
+	buildOut := filepath.Join(os.TempDir(), "izyan-build-out")
 	mkErr := os.MkdirAll(buildOut, 0o755)
 	var evIDs []domain.EvidenceID
 	var notes []string

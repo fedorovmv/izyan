@@ -8,7 +8,7 @@ import (
 	"regexp"
 	"strings"
 
-	"example.com/vuln-analyzer/internal/domain"
+	"github.com/fedorovmv/izyan/internal/domain"
 )
 
 // Deployment manifests declare exposure the source tree cannot express —

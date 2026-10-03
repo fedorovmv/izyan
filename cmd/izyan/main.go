@@ -13,24 +13,24 @@ import (
 	"sync"
 	"time"
 
-	"example.com/vuln-analyzer/internal/affected"
-	"example.com/vuln-analyzer/internal/domain"
-	"example.com/vuln-analyzer/internal/evaluator"
-	"example.com/vuln-analyzer/internal/exploit"
-	"example.com/vuln-analyzer/internal/fix"
-	"example.com/vuln-analyzer/internal/goanalysis"
-	"example.com/vuln-analyzer/internal/llm"
-	"example.com/vuln-analyzer/internal/persistence/filesystem"
-	"example.com/vuln-analyzer/internal/report"
-	"example.com/vuln-analyzer/internal/repository"
-	"example.com/vuln-analyzer/internal/review"
-	"example.com/vuln-analyzer/internal/rootcause"
-	"example.com/vuln-analyzer/internal/states"
-	"example.com/vuln-analyzer/internal/toolaudit"
-	"example.com/vuln-analyzer/internal/toolchain"
-	"example.com/vuln-analyzer/internal/tracker"
-	"example.com/vuln-analyzer/internal/vulnerability"
-	"example.com/vuln-analyzer/internal/workflow"
+	"github.com/fedorovmv/izyan/internal/affected"
+	"github.com/fedorovmv/izyan/internal/domain"
+	"github.com/fedorovmv/izyan/internal/evaluator"
+	"github.com/fedorovmv/izyan/internal/exploit"
+	"github.com/fedorovmv/izyan/internal/fix"
+	"github.com/fedorovmv/izyan/internal/goanalysis"
+	"github.com/fedorovmv/izyan/internal/llm"
+	"github.com/fedorovmv/izyan/internal/persistence/filesystem"
+	"github.com/fedorovmv/izyan/internal/report"
+	"github.com/fedorovmv/izyan/internal/repository"
+	"github.com/fedorovmv/izyan/internal/review"
+	"github.com/fedorovmv/izyan/internal/rootcause"
+	"github.com/fedorovmv/izyan/internal/states"
+	"github.com/fedorovmv/izyan/internal/toolaudit"
+	"github.com/fedorovmv/izyan/internal/toolchain"
+	"github.com/fedorovmv/izyan/internal/tracker"
+	"github.com/fedorovmv/izyan/internal/vulnerability"
+	"github.com/fedorovmv/izyan/internal/workflow"
 )
 
 func main() {
@@ -60,17 +60,17 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
-  vuln-analyzer analyze --repo <path> --vuln <GO-/CVE-/GHSA-id> [options]
-  vuln-analyzer scan    --repo <path> [options]   # all advisories for all modules
-  vuln-analyzer eval    --corpus <path> [--repo <path>] [--case <id|glob>] [-j <n>] [--clean] [options]  # corpus regression run
-  vuln-analyzer remediate --repo <path> --vuln <id> [--apply] [--run-tests]  # plan/apply fix + re-analyze
-  vuln-analyzer knowledge [--knowledge <path>]  # dump the effective ecosystem knowledge base
+  izyan analyze --repo <path> --vuln <GO-/CVE-/GHSA-id> [options]
+  izyan scan    --repo <path> [options]   # all advisories for all modules
+  izyan eval    --corpus <path> [--repo <path>] [--case <id|glob>] [-j <n>] [--clean] [options]  # corpus regression run
+  izyan remediate --repo <path> --vuln <id> [--apply] [--run-tests]  # plan/apply fix + re-analyze
+  izyan knowledge [--knowledge <path>]  # dump the effective ecosystem knowledge base
 
 options:
   --vuln-file <path>     load advisory from local OSV JSON instead of api.osv.dev
   --ticket <path>        generic tracker ticket JSON (see internal/tracker/intake.go)
   --osv-url <url>        override OSV API base URL
-  --case-dir <dir>       analysis state directory (default .vuln-analyzer)
+  --case-dir <dir>       analysis state directory (default .izyan)
   --case <id|glob>       filter cases to run in eval (comma-separated or glob)
   -j <n>                 parallel worker pool concurrency for eval (default: 4)
   --clean                force re-materialization of generated modules in eval
@@ -141,7 +141,7 @@ type analyzeOpts struct {
 func commonFlags(fs *flag.FlagSet, o *analyzeOpts) {
 	fs.StringVar(&o.repo, "repo", "", "path to Go repository")
 	fs.StringVar(&o.osvURL, "osv-url", "", "OSV API base URL")
-	fs.StringVar(&o.caseDir, "case-dir", ".vuln-analyzer", "case state directory")
+	fs.StringVar(&o.caseDir, "case-dir", ".izyan", "case state directory")
 	fs.StringVar(&o.goos, "goos", "", "target GOOS")
 	fs.StringVar(&o.goarch, "goarch", "", "target GOARCH")
 	fs.StringVar(&o.tags, "build-tags", "", "comma-separated build tags")

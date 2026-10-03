@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"example.com/vuln-analyzer/internal/domain"
+	"github.com/fedorovmv/izyan/internal/domain"
 )
 
 // OpenVEX export (openvex.dev/ns/v0.2.0). The internal verdict model is
@@ -89,8 +89,8 @@ func OpenVEX(c *domain.AnalysisCase) ([]byte, error) {
 	}
 	doc := vexDoc{
 		Context:    "https://openvex.dev/ns/v0.2.0",
-		ID:         fmt.Sprintf("urn:vuln-analyzer:case:%s:openvex", c.ID),
-		Author:     "vuln-analyzer",
+		ID:         fmt.Sprintf("urn:izyan:case:%s:openvex", c.ID),
+		Author:     "izyan",
 		Timestamp:  vexTimestamp(c),
 		Version:    1,
 		Statements: []vexStatement{st},

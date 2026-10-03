@@ -11,7 +11,7 @@ import (
 	"os"
 	"slices"
 
-	"example.com/vuln-analyzer/internal/domain"
+	"github.com/fedorovmv/izyan/internal/domain"
 )
 
 // Knowledge holds the ecosystem-semantics tables the provenance and

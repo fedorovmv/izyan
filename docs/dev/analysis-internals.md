@@ -298,7 +298,7 @@ stdlib-advisory записывается явный limitation.
 
 ## 11. Eval harness — регрессионный корпус
 
-`vuln-analyzer eval --corpus eval/corpus.json` прогоняет кейсы через
+`izyan eval --corpus eval/corpus.json` прогоняет кейсы через
 полный пайплайн и считает метрики из спеки §9. Корпус — JSON:
 `cases[]` с `vuln`/`vuln_file`, `repo`, `root_causes`, `expect`
 (допустимые вердикты — диапазон легитимен, INCONCLUSIVE часто правильный
@@ -390,7 +390,7 @@ listener-примитивы + адрес-аргумент, db/service/http по�
   повтор тем же значением — no-op, переопределение значения — ошибка,
   unknown key / невалидный origin / чужой `language` / свежая
   `schema_version` — ошибки загрузки.
-- `vuln-analyzer knowledge` — дамп эффективной базы в схеме файла
+- `izyan knowledge` — дамп эффективной базы в схеме файла
   (шаблон + валидатор).
 - Провенанс: `Knowledge.Sources` собирает `name@data_version` файлов,
   `Digest()` — sha256 канонического содержимого; CollectEvidence пишет

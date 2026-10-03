@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"example.com/vuln-analyzer/internal/domain"
+	"github.com/fedorovmv/izyan/internal/domain"
 )
 
 func findExposure(facts []domain.ExposureFact, target, addr, source string) *domain.ExposureFact {

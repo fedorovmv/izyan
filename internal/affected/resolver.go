@@ -12,7 +12,7 @@ import (
 	"strconv"
 	"strings"
 
-	"example.com/vuln-analyzer/internal/domain"
+	"github.com/fedorovmv/izyan/internal/domain"
 )
 
 // Resolver performs the cheap deterministic checks from the governing spec

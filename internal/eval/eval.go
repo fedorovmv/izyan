@@ -12,7 +12,7 @@ import (
 	"sort"
 	"strings"
 
-	"example.com/vuln-analyzer/internal/domain"
+	"github.com/fedorovmv/izyan/internal/domain"
 )
 
 // Case is one corpus entry: an advisory analyzed against a repository.

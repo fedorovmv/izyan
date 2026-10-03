@@ -8,8 +8,8 @@ import (
 	"runtime"
 	"strings"
 
-	"example.com/vuln-analyzer/internal/domain"
-	"example.com/vuln-analyzer/internal/toolaudit"
+	"github.com/fedorovmv/izyan/internal/domain"
+	"github.com/fedorovmv/izyan/internal/toolaudit"
 )
 
 type SnapshotOptions struct {

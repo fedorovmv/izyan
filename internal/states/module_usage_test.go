@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"example.com/vuln-analyzer/internal/domain"
-	"example.com/vuln-analyzer/internal/goanalysis"
+	"github.com/fedorovmv/izyan/internal/domain"
+	"github.com/fedorovmv/izyan/internal/goanalysis"
 )
 
 func TestModuleUsageNestedDependencyDoesNotSeedParentReach(t *testing.T) {

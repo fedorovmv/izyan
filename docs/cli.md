@@ -1,13 +1,11 @@
 # CLI-справочник
 
-Бинарь собирается как `vuln-analyzer` (`go build -o vuln-analyzer
-./cmd/analyzer`). Пять сабкоманд: `analyze`, `scan`, `eval`,
-`remediate`, `knowledge`.
+Бинарь собирается как `izyan` (`go build -o izyan ./cmd/izyan`). Пять сабкоманд: `analyze`, `scan`, `eval`, `remediate`, `knowledge`.
 
 ## analyze — полный анализ одной advisory
 
 ```bash
-vuln-analyzer analyze --repo /src/product --vuln GO-2025-3595 [флаги]
+izyan analyze --repo /src/product --vuln GO-2025-3595 [флаги]
 ```
 
 Прогоняет весь конвейер ([`architecture.md`](architecture.md)) по одной уязвимости и
@@ -44,7 +42,7 @@ vuln-analyzer analyze --repo /src/product --vuln GO-2025-3595 [флаги]
 ## scan — массовый прогон зависимостей
 
 ```bash
-vuln-analyzer scan --repo /src/product [--max-vulns 50]
+izyan scan --repo /src/product [--max-vulns 50]
 ```
 
 Опрашивает OSV по всем зависимостям (`go list -m all`), дёшево
@@ -58,7 +56,7 @@ vuln-analyzer scan --repo /src/product [--max-vulns 50]
 ## remediate — исправление уязвимой зависимости
 
 ```bash
-vuln-analyzer remediate --repo /src/product --vuln GO-2025-3595 [--apply] [--run-tests] [--worktree /tmp/wt]
+izyan remediate --repo /src/product --vuln GO-2025-3595 [--apply] [--run-tests] [--worktree /tmp/wt]
 ```
 
 Без `--apply` — только план (минимальный `go get` до fixed-версии +
@@ -73,7 +71,7 @@ vuln-analyzer remediate --repo /src/product --vuln GO-2025-3595 [--apply] [--run
 ## eval — регрессионный корпус (для разработчиков)
 
 ```bash
-vuln-analyzer eval --corpus eval/corpus.json [--case <id|glob>] [-j <n>] [--clean] [--out report.md] [--json report.json] [--with-llm]
+izyan eval --corpus eval/corpus.json [--case <id|glob>] [-j <n>] [--clean] [--out report.md] [--json report.json] [--with-llm]
 ```
 
 Прогоняет корпус кейсов через пайплайн, считает метрики
@@ -94,7 +92,7 @@ embedded в бинарь и знает только публичные API: вы
 расширением `--knowledge <file>` **без пересборки**.
 
 ```bash
-vuln-analyzer knowledge [--knowledge <path>]
+izyan knowledge [--knowledge <path>]
 ```
 
 Печатает эффективную базу в JSON — дефолты либо дефолты + расширение.
@@ -106,7 +104,7 @@ vuln-analyzer knowledge [--knowledge <path>]
 
 | Флаг | Что делает |
 |---|---|
-| `--case-dir <path>` | каталог состояния кейсов (default `.vuln-analyzer`) |
+| `--case-dir <path>` | каталог состояния кейсов (default `.izyan`) |
 | `--lang <ru\|en>` | язык формирования отчётов и вывода CLI (default `ru`) |
 | `--osv-url <url>` | альтернативный OSV API endpoint |
 | `--cve-analysis <mode>` | режим автономного LLM CVE-исследования (`off`, `assist`, `verified`, default `off`) |
@@ -114,7 +112,7 @@ vuln-analyzer knowledge [--knowledge <path>]
 | `--deterministic-only` | выключить весь LLM-слой |
 | `--mem-limit <size>` | лимит оперативной памяти процесса с watchdog (default `4GiB`) |
 | `--allow-exec` | разрешить запуск кода репозитория (run_build/run_tests в доказательствах). Без флага exec-инструменты недоступны |
-| `--knowledge <path>` | JSON-расширение базы знаний экосистемы — дописывает записи для API, которых нет во встроенной базе (внутренние библиотеки продукта). Формат, валидация и семантика мержа: [`knowledge-base.md`](knowledge-base.md). Дамп базы/шаблон: `vuln-analyzer knowledge` |
+| `--knowledge <path>` | JSON-расширение базы знаний экосистемы — дописывает записи для API, которых нет во встроенной базе (внутренние библиотеки продукта). Формат, валидация и семантика мержа: [`knowledge-base.md`](knowledge-base.md). Дамп базы/шаблон: `izyan knowledge` |
 | `--llm-env <path>` | файл с LLM-кредами; иначе `.env` в cwd или корне репо |
 
 ## LLM-конфигурация

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"example.com/vuln-analyzer/internal/domain"
+	"github.com/fedorovmv/izyan/internal/domain"
 )
 
 // Verifier performs a bounded negative verification pass on FALSE claims.

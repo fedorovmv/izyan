@@ -49,5 +49,5 @@
   тесты: `TestDefaultKnowledgeEmbedded` (embedded парсится, дамп
   round-trip), `TestKnowledgeExtendSourceFuncs` (расширение меняет
   origin на `testdata/kbprod`), валидация/конфликты/provenance.
-- `vuln-analyzer knowledge` — посмотреть эффективную базу;
+- `izyan knowledge` — посмотреть эффективную базу;
   `--knowledge <file>` на сабкоманде — проверить файл до прогона.

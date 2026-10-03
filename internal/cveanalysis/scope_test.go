@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"example.com/vuln-analyzer/internal/cveanalysis"
+	"github.com/fedorovmv/izyan/internal/cveanalysis"
 )
 
 func TestScopeAnalyzer_ResolvesImportAliases(t *testing.T) {

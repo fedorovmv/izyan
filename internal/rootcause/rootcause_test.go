@@ -5,9 +5,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"example.com/vuln-analyzer/internal/domain"
-	"example.com/vuln-analyzer/internal/fix"
-	"example.com/vuln-analyzer/internal/goanalysis"
+	"github.com/fedorovmv/izyan/internal/domain"
+	"github.com/fedorovmv/izyan/internal/fix"
+	"github.com/fedorovmv/izyan/internal/goanalysis"
 )
 
 func depVuln() domain.Vulnerability {
