@@ -109,7 +109,7 @@ go build -o "$RUN_ROOT/analyzer" ./cmd/analyzer
 - [x] Создать этот план с файлами, командами, контролями и stop conditions.
 - [x] Добавить две ссылки в `docs/INDEX.md`.
 - [x] Добавить исследовательский пункт `B27` в §2
-  `docs/dev/current/gap-analysis.md`, не изменяя `B26`.
+  `docs/dev/gap-analysis.md`, не изменяя `B26`.
 
 **Expected:** спецификация сохраняет решения и идеи; план определяет
 исполнение. Ничего в этих документах не утверждает, что hypothesis

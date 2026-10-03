@@ -8,11 +8,13 @@
 - `dev/decisions/` — принятые архитектурные решения и запреты
 - `dev/roadmaps/` — роадмапы развития фич и исследовательских направлений
   (стратегические документы срезов; после завершения фичи переносятся в архив)
-- `dev/current/` — живое состояние для разработчиков: статус,
-  gap analysis + бэклог
+- `dev/plans/` — временные пошаговые планы реализации (чек-листы для
+  сессий разработки; после завершения фичи удаляются)
+- `dev/` — живое состояние разработки: бэклог (`gap-analysis.md`),
+  хроника реализации (`implementation-status.md`), внутренняя механика (`analysis-internals.md`)
 - `agent-rules/` — рабочие правила для агентов (on-demand, индекс в
   `AGENTS.md`; не проектная документация, а инструкции исполнителя)
-- `dev/history/` — исторические версии архитектуры
+- `dev/history/` — исторический архив: начальная архитектура и завершённые фичи
 - [`eval/README.md`](../eval/README.md) — live-корпус (вне `docs/`, рядом с данными корпуса)
 
 ## Таблица
@@ -49,13 +51,14 @@
 | [`dev/roadmaps/llm-dismissal-research-roadmap.md`](dev/roadmaps/llm-dismissal-research-roadmap.md) | исследование | Пошаговая проверка локального type gate в jose2go: 4 контрольных продукта, baseline, LLM-прогоны и досье; B27 |
 | [`dev/roadmaps/llm-advisory-roadmap.md`](dev/roadmaps/llm-advisory-roadmap.md) | бэклог | LLM advisory-контур (D16): параллельная оценка, llm_assessment.json; B17 |
 
-#### Текущее состояние разработки (`dev/current/`)
+#### Текущее состояние разработки (`dev/`)
 
 | Файл | Статус | Назначение |
 |---|---|---|
-| [`dev/current/gap-analysis.md`](dev/current/gap-analysis.md) | актуальный | Gap analysis спека↔код + канонический бэклог (§2) |
-| [`dev/current/implementation-status.md`](dev/current/implementation-status.md) | живой | Хроника реализации срезов и выполненных задач |
-| [`dev/current/analysis-internals.md`](dev/current/analysis-internals.md) | актуальный | Механика реализации: evaluators, NV, pattern library, toolchain, audit |
+| [`dev/gap-analysis.md`](dev/gap-analysis.md) | актуальный | Gap analysis спека↔код + канонический бэклог (§2) |
+| [`dev/implementation-status.md`](dev/implementation-status.md) | живой | Хроника реализации срезов и выполненных задач |
+| [`dev/analysis-internals.md`](dev/analysis-internals.md) | актуальный | Механика реализации: evaluators, NV, pattern library, toolchain, audit |
+| [`dev/plans/`](dev/plans/) | рабочая | Каталог для временных пошаговых планов реализации (чек-листы сессий) |
 
 #### Архитектурные решения (`dev/decisions/`)
 
@@ -71,15 +74,14 @@
 | [`dev/history/README.md`](dev/history/README.md) | Описание эволюции архитектуры и структуры архива |
 | [`dev/history/01-initial-architecture.md`](dev/history/01-initial-architecture.md) | Исходная архитектура до анализа OSS-референсов |
 | [`dev/history/go-skeleton-state-machine.md`](dev/history/go-skeleton-state-machine.md) | Bootstrap-каркас Go-структур до реализации ядра |
-| [`dev/history/plans/`](dev/history/plans/) | Архив 12 завершённых планов реализации MVP (`mvp-implementation-plan`, `toolchain-plan`, `exposure-facts-plan`, `pattern-library-plan` и др.) |
-| [`dev/history/specs/`](dev/history/specs/) | Архив дизайн-спецификаций реализованных фич (исследование CVE Срез A, Inverted Pyramid отчёта, локализация RU/EN, function locus, изоляция констант парсеров и др.) |
+| [`dev/history/features/`](dev/history/features/) | Архив завершённых дизайн-спецификаций фич и планов реализации MVP (18 документов) |
 
 ## Рекомендуемый порядок чтения coding-agent'ом
 
 1. [`goals-scope.md`](goals-scope.md)
 2. [`dev/specs/governing-spec.md`](dev/specs/governing-spec.md)
 3. [`dev/decisions/architecture-decisions.md`](dev/decisions/architecture-decisions.md)
-4. [`dev/current/gap-analysis.md`](dev/current/gap-analysis.md) — бэклог открытых задач
+4. [`dev/gap-analysis.md`](dev/gap-analysis.md) — бэклог открытых задач
 5. [`dev/specs/analyzer-agent-spec.md`](dev/specs/analyzer-agent-spec.md) — перед реализацией LLM loop
 6. [`architecture.md`](architecture.md) + [`how-it-works.md`](how-it-works.md) — устройство и поведение
 7. [`dev/decisions/reference-projects-analysis.md`](dev/decisions/reference-projects-analysis.md) — как reference, не как governing source

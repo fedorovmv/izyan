@@ -14,7 +14,7 @@
 //
 // Docker is a run mode, not a toolchain: a golang:<target> image bundles
 // the analyzer binary and the target `go`; inside it resolution is just
-// "local". See docs/dev/history/plans/toolchain-plan.md.
+// "local". See docs/dev/history/features/toolchain-plan.md.
 package toolchain
 
 import (

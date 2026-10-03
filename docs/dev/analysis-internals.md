@@ -321,7 +321,7 @@ LLM-варианта (LLM-предложения недетерминирова�
 воспроизводимость corpus-метрик).
 Пути в корпусе — относительно файла корпуса. Синтетические advisory
 `eval/advisories/` покрывают механизмы фикстур `testdata/`; живой корпус
-на реальных GHSA — следующий слой ([`dev/current/gap-analysis.md`](gap-analysis.md) §3.7).
+на реальных GHSA — следующий слой ([`gap-analysis.md`](gap-analysis.md) §3.7).
 
 ## 12. Target Go toolchain
 

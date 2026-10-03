@@ -20,7 +20,7 @@ Go vulnerability analyzer. Определяет применимость и эк
 * Go-код: `internal/`.
 * CLI: `cmd/analyzer`.
 * Тестовые mini-repo: `testdata/`.
-* Канонический backlog: `docs/dev/current/gap-analysis.md`.
+* Канонический backlog: `docs/dev/gap-analysis.md`.
 * Бенчмарки и корпуса: автономный `eval/corpus-real.json` (38 кейсов) и live-корпус `eval/live-corpus.json` (`eval/README.md`).
 * Приватные локальные пути не коммитить.
 
@@ -28,7 +28,7 @@ Go vulnerability analyzer. Определяет применимость и эк
 
 Каждое функциональное изменение должно обновлять:
 
-* `docs/dev/current/gap-analysis.md`: закрытое удаляется из §2 в коммите
+* `docs/dev/gap-analysis.md`: закрытое удаляется из §2 в коммите
   закрытия, оставшееся/новое → §2; историю в файле не храним;
 * `eval/README.md`, если изменилось наблюдаемое поведение анализатора.
 

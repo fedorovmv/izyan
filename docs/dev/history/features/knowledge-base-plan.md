@@ -1,6 +1,6 @@
 # Knowledge-base: семантика экосистемы как данные, не код
 
-Бэклог: [`dev/current/gap-analysis.md`](../current/gap-analysis.md) §5 B12.
+Бэклог: [`gap-analysis.md`](../../gap-analysis.md) §5 B12.
 
 ## Проблема
 
@@ -98,7 +98,7 @@ func DefaultKnowledge() *Knowledge
    семантика экосистемных API; направление ошибки консервативно;
    расширение — сначала через JSON, новые дефолты только для широко
    стабильных API; строка в индексе AGENTS.md.
-9. [`dev/current/gap-analysis.md`](../current/gap-analysis.md) — B12 → §4 с коммитом; [`eval/README.md`](../../../eval/README.md) — при затронутом
+9. [`gap-analysis.md`](../../gap-analysis.md) — B12 → §4 с коммитом; [`eval/README.md`](../../../eval/README.md) — при затронутом
    поведении.
 
 ## Открытый вопрос

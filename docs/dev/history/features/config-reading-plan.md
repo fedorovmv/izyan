@@ -1,7 +1,7 @@
 # Configuration reading: config_flag/config_key checks — план фичи (gap-analysis кандидат #3)
 
 Статус: done. Закрывает пункт #3 приоритета и строку
-«CONFIGURATION-условия» [`dev/current/gap-analysis.md`](../current/gap-analysis.md).
+«CONFIGURATION-условия» [`gap-analysis.md`](../../gap-analysis.md).
 
 ## Проблема
 

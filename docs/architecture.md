@@ -2,7 +2,7 @@
 
 Настоящий документ описывает архитектуру анализатора `vuln-analyzer`: функциональные блоки, сквозную стейт-машину, подсистемы статического анализа, разграничение детерминистического компиляторного ядра и LLM-слоя, а также модель данных и подсистему отчетности.
 
-Внутренняя механика реализации — [`dev/current/analysis-internals.md`](dev/current/analysis-internals.md); нормативная спека — [`dev/specs/governing-spec.md`](dev/specs/governing-spec.md).
+Внутренняя механика реализации — [`dev/analysis-internals.md`](dev/analysis-internals.md); нормативная спека — [`dev/specs/governing-spec.md`](dev/specs/governing-spec.md).
 
 ---
 
