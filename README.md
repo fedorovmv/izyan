@@ -35,19 +35,50 @@
 
 ```mermaid
 flowchart TD
-    A["Advisory Intake<br>(OSV API / локальный JSON / Тикет)"] --> B["Анализ графа сборки<br>(go list -m, go list -deps, semver)"]
+    subgraph Intake ["Входные данные и Intake"]
+        A["Тикет / Чат / Advisory"]
+        DetParse["Детерминистический парсинг<br>(OSV JSON, regex)"]
+        LLMParse["AI-интейк (--llm-intake)<br>Семантическое извлечение"]
+        AntiHalluc["Anti-Hallucination Gate<br>(Проверка наличия в исходном тексте)"]
+
+        A --> DetParse
+        A -.->|Свободный текст| LLMParse
+        LLMParse -.->|Структурированная гипотеза| AntiHalluc
+        AntiHalluc --> DetParse
+    end
+
+    DetParse --> B["Анализ графа сборки<br>(go list -m, go list -deps, semver)"]
     B -->|Пакет вне сборки| C["NOT_AFFECTED<br>(детерминистически)"]
-    B -->|Пакет в сборке| D["Модель условий эксплуатации<br>(Root Cause, Mandatory Conditions)"]
-    D --> E["Анализ путей и потоков данных<br>(Call Graph, Data Provenance, Guards)"]
-    E -->|Все условия доказаны| F["EXPLOITABLE"]
-    E -->|Найдено опровержение| G["Negative Verification<br>(Поиск обходов: reflect, dynamic dispatch)"]
-    G -->|Обходов нет: VERIFIED| H["NO_EXPLOIT_PATH_FOUND"]
-    G -->|Есть сомнения / неполный скоуп| I["INCONCLUSIVE<br>(триаж человеком)"]
-    E -->|Поток не доказан| I
+
+    subgraph Analysis ["Ядро анализа (компилятор Go + опциональный AI-слой)"]
+        B -->|Пакет в сборке| D["Локализация дефекта (Root Cause)<br>и модель условий эксплуатации"]
+        LLMResearch["AI CVE Research & Exploit Proposer<br>(--cve-analysis: анализ patch-diff)"]
+        D -.-> LLMResearch
+        LLMResearch -.->|Кандидаты условий| D
+
+        D --> E["Сбор доказательств и путей<br>(Call Graph, Data Provenance, Guards)"]
+        LLMGap["AI Gap Planner<br>(Планирование гипотез)"]
+        E -.->|Неполные факты| LLMGap
+        LLMGap -.->|Целенаправленные проверки| E
+
+        E -->|Все условия доказаны| F["EXPLOITABLE"]
+        E -->|Найдено опровержение| G["Negative Verification<br>(Поиск обходов: reflect, dynamic dispatch)"]
+        G -->|Обходов нет: VERIFIED| H["NO_EXPLOIT_PATH_FOUND"]
+        G -->|Есть сомнения / неполный скоуп| I["INCONCLUSIVE<br>(триаж человеком)"]
+        E -->|Поток не доказан| I
+
+        LLMRev["AI Reviewer<br>(Семантическая проверка)"]
+        G -.-> LLMRev
+        LLMRev -.->|Только демоция в UNKNOWN| I
+    end
+
     C --> J["Генерация отчётов<br>(report.md, OpenVEX, CycloneDX)"]
     F --> J
     H --> J
     I --> J
+
+    classDef llmNode stroke:#8b5cf6,stroke-width:2px,stroke-dasharray: 5 5;
+    class LLMParse,LLMResearch,LLMGap,LLMRev llmNode;
 ```
 
 ---

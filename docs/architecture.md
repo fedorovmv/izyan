@@ -11,18 +11,18 @@
 ```mermaid
 flowchart LR
     subgraph Inputs ["Входные данные"]
-        Adv["Advisory<br>(OSV API / локальный JSON / --ticket)"]
+        Adv["Advisory & Ticket<br>(OSV API / JSON / --ticket)"]
         Snap["Snapshot продукта<br>(Go-репозиторий / --binary / Go version)"]
-        Cfg["Параметры и режимы<br>(--deterministic-only, --cve-analysis, budgets)"]
+        Cfg["Параметры и режимы<br>(--deterministic-only, --cve-analysis, --llm-intake)"]
     end
 
-    subgraph Core ["Izyan Engine (State Machine Engine)"]
+    subgraph Core ["Izyan Engine (Детерминистическое компиляторное ядро)"]
         Affected["1. Применимость (go list, semver)"]
-        RC["2. Первопричина (Root Cause + CVE Research)"]
+        RC["2. Локус дефекта (Root Cause AST)"]
         Model["3. Модель условий эксплуатации"]
         Evidence["4. Сбор доказательств (AST, SSA, Provenance)"]
         Evaluator["5. Оценка условий (Claims)"]
-        Negative["6. Проверка опровержений (Negative Verification)"]
+        Negative["6. Негативная верификация (Safety Gates)"]
         Review["7. Ревью и исправление (Review & Repair)"]
         Verdict["8. Вычисление вердикта"]
         ReportState["9. Генерация отчётов и VEX"]
@@ -30,20 +30,40 @@ flowchart LR
         Affected --> RC --> Model --> Evidence --> Evaluator --> Negative --> Review --> Verdict --> ReportState
     end
 
-    subgraph Outputs ["Выходные артефакты"]
-        RepMD["report.md (RU) & report.en.md (EN)<br>(Inverted Pyramid + Резюме для трекера)"]
-        RepJSON["report.json (Полное машинное досье)"]
-        VEX["openvex.json & cyclonedx.json<br>(Официальные стандарты VEX)"]
-        CaseSnap["AnalysisCase (Воспроизводимый аудит-снимок)"]
+    subgraph LLMLayer ["LLM Assistant Layer (Опциональный AI-слой)"]
+        LLMIntake["Ticket Intake Extractor<br>(--llm-intake)"]
+        LLMCVE["CVE Researcher & Dossier<br>(--cve-analysis)"]
+        LLMModel["Exploit Model Builder"]
+        LLMGap["Gap Hypothesis Planner"]
+        LLMRev["Semantic Reviewer"]
     end
 
-    Inputs --> Core --> Outputs
+    subgraph Outputs ["Выходные артефакты"]
+        RepMD["report.md (RU) & report.en.md (EN)<br>(Inverted Pyramid + Резюме)"]
+        RepJSON["report.json (Машинное досье)"]
+        VEX["openvex.json & cyclonedx.json<br>(Стандарты VEX)"]
+        CaseSnap["AnalysisCase (Аудит-снимок)"]
+    end
+
+    Inputs --> Core
+    Inputs -.->|Свободный текст тикета| LLMIntake
+    LLMIntake -.->|Структурированные поля| Core
+
+    RC <.->|Patch diff & гипотезы| LLMCVE
+    Model <.->|Кандидаты условий| LLMModel
+    Evidence <.->|Гипотезы путей| LLMGap
+    Review <.->|Семантический аудит| LLMRev
+
+    Core --> Outputs
+
+    classDef llmNode stroke:#8b5cf6,stroke-width:2px,stroke-dasharray: 5 5;
+    class LLMIntake,LLMCVE,LLMModel,LLMGap,LLMRev llmNode;
 ```
 
 ### Входы:
-* **Advisory**: документ уязвимости из OSV API (`--vuln`), локальный OSV JSON (`--vuln-file`) или обобщенный тикет трекера задач (`--ticket`);
+* **Advisory & Ticket**: документ уязвимости из OSV API (`--vuln`), локальный OSV JSON (`--vuln-file`) или обобщенный тикет трекера задач (`--ticket`);
 * **Снимок продукта**: путь к Go-репозиторию (`--repo`), опционально собранный бинарник релиза (`--binary` для извлечения `build info`), версия тулчейна (`--release-go-version`), флаги сборки (`--build-tags`, `--goos`, `--goarch`);
-* **Параметры управления**: режим AI-исследователя (`--cve-analysis`), флаг fail-fast (`--strict-llm`), отключение LLM (`--deterministic-only`), экспертный базис локуса (`--non-locus-basis`, `--accept-locus-proposals`), разрешение выполнения бинарников репозитория (`--allow-exec`), лимиты памяти (`--mem-limit`).
+* **Параметры управления**: режим AI-исследователя (`--cve-analysis`), семантическое извлечение тикета (`--llm-intake`), флаг fail-fast (`--strict-llm`), отключение LLM (`--deterministic-only`), экспертный базис локуса (`--non-locus-basis`, `--accept-locus-proposals`), разрешение выполнения бинарников репозитория (`--allow-exec`), лимиты памяти (`--mem-limit`).
 
 ---
 
@@ -55,24 +75,35 @@ flowchart LR
 flowchart TD
     CREATED --> SNAPSHOT_PRODUCT
     SNAPSHOT_PRODUCT --> RESOLVE_VULNERABILITY
+    
+    RESOLVE_VULNERABILITY -.->|Опционально: --llm-intake| LLMIntakeStep["AI Ticket Intake<br>(Семантическое извлечение из текста)"]
+    LLMIntakeStep -.->|Anti-Hallucination Gate| RESOLVE_VULNERABILITY
+
     RESOLVE_VULNERABILITY --> CHECK_AFFECTED
     
     CHECK_AFFECTED -->|Пакет/версия не скомпилированы| StateNotAffected["EVALUATE_VERDICT (NOT_AFFECTED)"]
     CHECK_AFFECTED -->|Уязвимый код в графе сборки| RESOLVE_ROOT_CAUSE
     
-    RESOLVE_ROOT_CAUSE -->|Опционально: --cve-analysis assist/verified| CVEResearch["Autonomous CVE Research<br>(Researcher + StrategyPlanner + Dossier)"]
-    CVEResearch --> BUILD_EXPLOIT_MODEL
+    RESOLVE_ROOT_CAUSE -.->|Опционально: --cve-analysis assist/verified| CVEResearch["Autonomous CVE Research<br>(Researcher + StrategyPlanner + Dossier)"]
+    CVEResearch -.->|Структурированное досье| RESOLVE_ROOT_CAUSE
+    
     RESOLVE_ROOT_CAUSE --> BUILD_EXPLOIT_MODEL
+    BUILD_EXPLOIT_MODEL -.->|Опционально: AI Exploit Builder| LLMExploit["AI Exploit Builder<br>(Синтез модели условий)"]
+    LLMExploit -.->|Предложенные условия| BUILD_EXPLOIT_MODEL
     
     BUILD_EXPLOIT_MODEL --> COLLECT_EVIDENCE
     COLLECT_EVIDENCE --> EVALUATE_CONDITIONS
     
     EVALUATE_CONDITIONS -->|Есть условия UNKNOWN| GAP_ANALYSIS
+    GAP_ANALYSIS -.->|Опционально: AI Gap Planner| LLMPlanner["AI Hypothesis Planner<br>(Планирование целенаправленных проверок)"]
+    LLMPlanner -.-> GAP_ANALYSIS
     GAP_ANALYSIS -->|Собраны дополнительные факты| EVALUATE_CONDITIONS
     GAP_ANALYSIS -->|Факты исчерпаны / фикспоинт| NEGATIVE_CHECK
     EVALUATE_CONDITIONS -->|Все условия разрешены| NEGATIVE_CHECK
     
     NEGATIVE_CHECK --> REVIEW
+    REVIEW -.->|Опционально: AI Reviewer| LLMReviewer["AI Semantic Reviewer<br>(Поиск логических противоречий)"]
+    LLMReviewer -.->|Замечания| REVIEW
     REVIEW -->|Найдены противоречия| REPAIR_ANALYSIS
     REPAIR_ANALYSIS -->|Демоция claims до UNKNOWN| REVIEW
     REVIEW -->|Проверка пройдена| EVALUATE_VERDICT
@@ -84,6 +115,9 @@ flowchart TD
     
     CHECK_AFFECTED -.->|Неразрешимая ошибка| FAILED
     RESOLVE_ROOT_CAUSE -.->|Дефект не локализован| INCONCLUSIVE
+
+    classDef llmNode stroke:#8b5cf6,stroke-width:2px,stroke-dasharray: 5 5;
+    class LLMIntakeStep,CVEResearch,LLMExploit,LLMPlanner,LLMReviewer llmNode;
 ```
 
 ### Описание стадий стейт-машины
@@ -113,9 +147,12 @@ flowchart TD
 ```text
        ┌────────────────────────────────────────────────────────┐
        │                  LLM-слой (Ассистент)                  │
-       │   • Предложение кандидатов Root Cause                  │
+       │   • Семантический AI-интейк тикетов (--llm-intake)     │
        │   • Автономное CVE Research (Researcher + Dossier)     │
-       │   • Семантический ревью диффа и условий                │
+       │   • Предложение кандидатов локуса и Root Cause         │
+       │   • Синтез кандидатов модели условий (Exploit Builder) │
+       │   • Планирование гипотез в анализе пробелов (Planner)  │
+       │   • Семантический ревью диффа и условий (Reviewer)     │
        └───────────────────────────┬────────────────────────────┘
                                    │ Структурированные предложения (JSON)
                                    ▼
@@ -123,6 +160,7 @@ flowchart TD
        │              Детерминистическое ядро Go                │
        │   • Go AST, SSA, types, semver, build graph            │
        │   • Обязательная компиляторная валидация предложений   │
+       │   • Anti-Hallucination Gate (проверка исходного текста)│
        │   • Data Provenance, Call Graph, Negative Verification │
        │   • Исключительное право вынесения вердикта            │
        └────────────────────────────────────────────────────────┘
@@ -133,15 +171,15 @@ flowchart TD
 | Стадия | Детерминистический код | Опциональный LLM-слой |
 |---|---|---|
 | `SNAPSHOT_PRODUCT` | 100% код: `go list`, парсинг модулей | — |
-| `RESOLVE_VULNERABILITY`| 100% код: парсинг OSV | — |
+| `RESOLVE_VULNERABILITY`| 100% код: парсинг OSV JSON, regex-извлечение из тикета | **AI Ticket Intake (`--llm-intake`)**: семантическое извлечение ID, пакета и метаданных из свободного текста тикета/чата (с Anti-Hallucination Gate) |
 | `CHECK_AFFECTED` | 100% код: сопоставление версий и `go list -deps` | — |
-| `RESOLVE_ROOT_CAUSE` | `git diff` парсинг, `FindSymbol` в AST зависимости | **CVE Analysis (`Researcher`)**: семантический разбор механизма CVE, формирование досье и Human Remainder |
-| `BUILD_EXPLOIT_MODEL` | Классификатор CWE, библиотека паттернов | Дополнение нестандартных условий (проверяются в AST) |
+| `RESOLVE_ROOT_CAUSE` | `git diff` парсинг, `FindSymbol` в AST зависимости | **CVE Analysis (`Researcher`) & `RootCauseResolver`**: семантический разбор механизма CVE, формирование досье и Human Remainder |
+| `BUILD_EXPLOIT_MODEL` | Классификатор CWE, библиотека паттернов | **AI Exploit Builder**: синтез и адаптация моделей условий эксплуатации |
 | `COLLECT_EVIDENCE` | `govulncheck`, сбор доказательств AST/SSA, provenance | — |
 | `EVALUATE_CONDITIONS` | Математические evaluators условий | — |
-| `GAP_ANALYSIS` | Детерминистический планировщик гипотез | Bounded LLM-шаг при исчерпании детерминистики |
+| `GAP_ANALYSIS` | Детерминистический планировщик гипотез | **AI Gap Planner & Fallback ClaimEvaluator**: целенаправленные гипотезы при исчерпании детерминистики |
 | `NEGATIVE_CHECK` | Верификатор обходов (`Verifier`): reflect, dynamic markers | — |
-| `REVIEW` | Структурные инварианты целостности | Семантический рецензент (поиск логических ошибок) |
+| `REVIEW` | Структурные инварианты целостности | **AI Semantic Reviewer**: поиск логических ошибок (только демоция в `UNKNOWN`) |
 | `REPAIR_ANALYSIS` | Демоция утверждений (только в сторону UNKNOWN) | — |
 | `EVALUATE_VERDICT` | 100% код: детерминистическая логика вердикта | — |
 | `BUILD_REPORT` | Рендеринг отчетов, локализация, генерация VEX | — |
