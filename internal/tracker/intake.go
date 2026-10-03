@@ -2,12 +2,14 @@ package tracker
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -35,11 +37,17 @@ type Ticket struct {
 
 // LoadTicket parses a ticket from a JSON file, arbitrary text file, or stdin (when path is "-").
 func LoadTicket(path string) (*Ticket, error) {
-	return LoadTicketWithID(path, "")
+	return LoadTicketWithOptions(path, "", nil)
 }
 
 // LoadTicketWithID parses tickets from a file or stdin, optionally selecting by ticket ID.
 func LoadTicketWithID(path, targetID string) (*Ticket, error) {
+	return LoadTicketWithOptions(path, targetID, nil)
+}
+
+// LoadTicketWithOptions parses tickets from a file or stdin, with optional ticket ID selection
+// and optional LLM fallback for arbitrary text.
+func LoadTicketWithOptions(path, targetID string, completer TextCompleter) (*Ticket, error) {
 	var b []byte
 	var err error
 	if path == "-" {
@@ -52,6 +60,13 @@ func LoadTicketWithID(path, targetID string) (*Ticket, error) {
 	}
 
 	tickets, err := ParseTickets(b)
+	if (err != nil || len(tickets) == 0) && completer != nil {
+		tk, llmErr := ExtractTicketWithLLM(context.Background(), completer, string(b))
+		if llmErr == nil && tk != nil {
+			tickets = []*Ticket{tk}
+			err = nil
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("ticket %s: %w", path, err)
 	}
@@ -59,22 +74,55 @@ func LoadTicketWithID(path, targetID string) (*Ticket, error) {
 		return nil, fmt.Errorf("ticket %s: no tickets found", path)
 	}
 
+	var selected *Ticket
 	if targetID != "" {
 		for _, t := range tickets {
 			if strings.EqualFold(t.ID, targetID) {
-				return t, nil
+				selected = t
+				break
 			}
 		}
-		var found []string
-		for _, t := range tickets {
-			if t.ID != "" {
-				found = append(found, t.ID)
+		if selected == nil {
+			var found []string
+			for _, t := range tickets {
+				if t.ID != "" {
+					found = append(found, t.ID)
+				}
 			}
+			return nil, fmt.Errorf("ticket %q not found in %s (found: %s)", targetID, path, strings.Join(found, ", "))
 		}
-		return nil, fmt.Errorf("ticket %q not found in %s (found: %s)", targetID, path, strings.Join(found, ", "))
+	} else {
+		selected = tickets[0]
 	}
 
-	return tickets[0], nil
+	// If missing key fields (package, component, or ID) and completer is provided, enrich from text
+	if completer != nil && (selected.Package == "" || selected.Component == "" || selected.ID == "") && selected.Description != "" {
+		enriched, llmErr := ExtractTicketWithLLM(context.Background(), completer, selected.Description)
+		if llmErr == nil && enriched != nil {
+			if selected.ID == "" && enriched.ID != "" {
+				selected.ID = enriched.ID
+			}
+			if selected.Package == "" && enriched.Package != "" {
+				selected.Package = enriched.Package
+				selected.Module = enriched.Package
+				selected.Imports = []string{enriched.Package}
+			}
+			if selected.Component == "" && enriched.Component != "" {
+				selected.Component = enriched.Component
+			}
+			if selected.Release == "" && enriched.Release != "" {
+				selected.Release = enriched.Release
+			}
+			if selected.Version == "" && enriched.Version != "" {
+				selected.Version = enriched.Version
+			}
+			if selected.Summary == "" && enriched.Summary != "" {
+				selected.Summary = enriched.Summary
+			}
+		}
+	}
+
+	return selected, nil
 }
 
 // ParseTicket parses a single ticket from JSON or raw text.
@@ -235,20 +283,29 @@ func stringSliceValue(v any) []string {
 }
 
 func findField(m map[string]any, exactKeys []string, keywordFragments ...string) string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
 	for _, target := range exactKeys {
-		for k, v := range m {
+		for _, k := range keys {
 			if strings.EqualFold(k, target) {
-				if s := stringValue(v); s != "" {
+				if s := stringValue(m[k]); s != "" {
 					return s
 				}
 			}
 		}
 	}
 	for _, frag := range keywordFragments {
-		for k, v := range m {
+		for _, k := range keys {
 			lowerK := strings.ToLower(k)
 			if strings.Contains(lowerK, frag) {
-				if s := stringValue(v); s != "" {
+				if frag != "version" && strings.Contains(lowerK, "version") {
+					continue
+				}
+				if s := stringValue(m[k]); s != "" {
 					return s
 				}
 			}
@@ -269,18 +326,27 @@ func findFieldSlice(m map[string]any, exactKeys []string, keywordFragments ...st
 		}
 	}
 
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
 	for _, target := range exactKeys {
-		for k, v := range m {
+		for _, k := range keys {
 			if strings.EqualFold(k, target) {
-				add(v)
+				add(m[k])
 			}
 		}
 	}
 	for _, frag := range keywordFragments {
-		for k, v := range m {
+		for _, k := range keys {
 			lowerK := strings.ToLower(k)
 			if strings.Contains(lowerK, frag) {
-				add(v)
+				if frag != "version" && strings.Contains(lowerK, "version") {
+					continue
+				}
+				add(m[k])
 			}
 		}
 	}
@@ -346,7 +412,7 @@ func parseSingleTicketJSON(data []byte) (*Ticket, error) {
 	t.Release = findField(m, []string{"release", "product_version", "target_version", "milestone"}, "release")
 
 	// Package & Module
-	t.Package = findField(m, []string{"package", "pkg", "module", "library", "lib"}, "package", "module")
+	t.Package = findField(m, []string{"package", "pkg", "module", "library", "lib", "vulnerable_package", "affected_package"}, "package", "module")
 	t.Module = findField(m, []string{"module"}, "module")
 	if t.Module == "" && t.Package != "" {
 		t.Module = t.Package
@@ -356,7 +422,7 @@ func parseSingleTicketJSON(data []byte) (*Ticket, error) {
 	}
 
 	// Version
-	t.Version = findField(m, []string{"version", "fixed_version", "affected_version", "package_version"}, "version")
+	t.Version = findField(m, []string{"version", "version_vulnerable_package", "vulnerable_version", "fixed_version", "affected_version", "package_version"}, "version")
 	t.FixedVersions = findFieldSlice(m, []string{"fixed_versions", "fixed_version"}, "fixed_version")
 
 	// Summary & Description & Rationale

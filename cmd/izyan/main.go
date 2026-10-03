@@ -88,6 +88,7 @@ options:
   --non-locus-basis <path> JSON file with expert non-locus basis decisions
   --accept-locus-proposals adopt machine-generated non_locus recommendations into expert basis
   --cve-analysis <off|assist|verified>  LLM CVE analysis profile (default: off)
+  --llm-intake           use LLM to extract vulnerability and metadata from unstructured ticket text
   --lang <ru|en>         report and output language (default: ru)
   --deterministic-only   disable all LLM-backed states`)
 	os.Exit(2)
@@ -113,6 +114,7 @@ type analyzeOpts struct {
 	ticketComp    string
 	ticketRel     string
 	ticketKey     string
+	llmIntake     bool
 	repoMap       string
 	cveAnalysis   string
 	lang          string
@@ -227,6 +229,7 @@ func runAnalyze(args []string) error {
 	ticketPath := fs.String("ticket", "", "tracker ticket JSON, arbitrary text, or '-' for stdin")
 	ticketKey := fs.String("ticket-id", "", "ticket key/id to select if ticket input contains multiple tickets")
 	repoMapPath := fs.String("repo-map", "", "path to JSON mapping component/ticket keys to local repo paths")
+	llmIntake := fs.Bool("llm-intake", false, "use LLM to extract vulnerability and metadata from unstructured ticket text")
 	var rootCauseFlags stringList
 	fs.Var(&rootCauseFlags, "root-cause", "manual root cause as pkg/path.Symbol (repeatable)")
 	if err := fs.Parse(args); err != nil {
@@ -239,8 +242,20 @@ func runAnalyze(args []string) error {
 	if *repoMapPath != "" {
 		o.repoMap = *repoMapPath
 	}
+	o.llmIntake = *llmIntake
 	if *ticketPath != "" {
-		if err := applyTicket(&o, *ticketPath); err != nil {
+		loadLLMEnv(o.llmEnv, o.repo)
+		llmCfg := llm.ConfigFromEnv()
+		var completer tracker.TextCompleter
+		if o.llmIntake {
+			if !llmCfg.Enabled || o.detOnly {
+				return fmt.Errorf("--llm-intake: cannot use --llm-intake when LLM is disabled or --deterministic-only is set")
+			}
+			completer = llmCompleterAdapter{client: llm.NewClient(llmCfg), role: llm.Build}
+		} else if llmCfg.Enabled && !o.detOnly {
+			completer = llmCompleterAdapter{client: llm.NewClient(llmCfg), role: llm.Build}
+		}
+		if err := applyTicket(&o, *ticketPath, completer); err != nil {
 			return err
 		}
 	}
@@ -271,8 +286,8 @@ func runAnalyze(args []string) error {
 // applyTicket folds a generic tracker ticket or extracted ticket metadata into analyze options:
 // explicit CLI flags win over ticket fields (ticket is the default, not an override).
 // If repo is unset, repo-map or default repos.json resolution is attempted against component/product/ticket.
-func applyTicket(o *analyzeOpts, path string) error {
-	t, err := tracker.LoadTicketWithID(path, o.ticketKey)
+func applyTicket(o *analyzeOpts, path string, completer tracker.TextCompleter) error {
+	t, err := tracker.LoadTicketWithOptions(path, o.ticketKey, completer)
 	if err != nil {
 		return err
 	}
@@ -568,29 +583,45 @@ func printCase(c *domain.AnalysisCase, caseDir string, lang ...string) {
 	}
 }
 
+type llmCompleterAdapter struct {
+	client *llm.Client
+	role   llm.ModelRole
+}
+
+func (a llmCompleterAdapter) Complete(ctx context.Context, system, user string) (string, error) {
+	content, _, err := a.client.Complete(ctx, a.role, system, user)
+	return content, err
+}
+
 // loadLLMEnv loads the LLM dotenv file: explicit --llm-env wins, else it
 // probes .env in the working directory and the analyzed repo.
 // Missing files are ignored; malformed lines are skipped. Guarded by
-// llmEnvOnce: concurrent os.Setenv from parallel scan workers would race.
-var llmEnvOnce sync.Once
+// llmEnvMu: concurrent os.Setenv from parallel scan workers would race.
+var (
+	llmEnvMu     sync.Mutex
+	llmEnvLoaded = make(map[string]bool)
+)
 
 func loadLLMEnv(explicit, repo string) {
-	llmEnvOnce.Do(func() { loadLLMEnvOnce(explicit, repo) })
-}
+	llmEnvMu.Lock()
+	defer llmEnvMu.Unlock()
 
-func loadLLMEnvOnce(explicit, repo string) {
 	candidates := []string{explicit}
 	if explicit == "" {
-		candidates = []string{".env", filepath.Join(repo, ".env")}
+		candidates = []string{".env"}
+		if repo != "" {
+			candidates = append(candidates, filepath.Join(repo, ".env"))
+		}
 	}
 	for _, p := range candidates {
-		if p == "" {
+		if p == "" || llmEnvLoaded[p] {
 			continue
 		}
 		if _, err := os.Stat(p); err != nil {
 			continue
 		}
 		_ = llm.LoadDotEnv(p)
+		llmEnvLoaded[p] = true
 		return
 	}
 }
