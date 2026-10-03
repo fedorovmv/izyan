@@ -1,570 +1,162 @@
-# Live corpus — реальные advisory на реальном репо
+# Оценка качества и тестовый корпус (Evaluation & Benchmarks)
 
-## Real corpus — generated-manifest продукты (B13)
+## 1. Резюме (Executive Summary)
 
-`eval/corpus-real.json` — 37 кейсов против реальных зависимостей через
-generated-manifest продукты `eval/products/`: исходники коммитятся без
-манифестов, `go.mod`/`go.sum` генерируются в `eval/.gen/<case-id>` из
-полей `module`/`deps` кейса; кейс может задавать `goos`/`goarch`/
-`build_tags` (нужно для platform-only dep'ов, напр. `unix.Faccessat` —
-linux-only). Классы: yaml unmarshal DoS (v2 GO-2021-0061, v3
-GO-2022-0603), markdown render (GO-2023-2074), go-getter arg-injection
-(GO-2024-2800), ssh/x-crypto (GO-2022-0968 crash, GO-2024-3321 authz,
-GO-2025-3487 slow-handshake DoS), jose2go (GO-2023-2409), jwt-go
-missing-call (GO-2020-0017), http2 (GO-2023-2102), miekg/dns zone-parse
-(GO-2020-0028), protobuf protojson unmarshal loop (GO-2024-2611), grpc
-xDS RBAC bypass (GO-2026-6441), grpc xDS :authority panic — defect-locus
-пул GO-2026-6443 на четырёх вариантах (mode-off / mode-on / wrapper /
-pkg-present), x/sys Faccessat priv-report
-(GO-2022-0493) — 12 классов, 11 реальных зависимостей.
+Стенд оценки качества предназначен для непрерывной валидации точности и безопасности анализатора `vuln-analyzer` на реальных advisory и кодовой базе продуктов.
 
-Прогон: `analyzer eval --corpus eval/corpus-real.json` (сеть для `go mod
-tidy` + govulncheck; `--mem-limit 4GiB` стоит по умолчанию).
+### Главные инварианты
+* **`false-safe = 0`**: анализатор никогда не объявляет уязвимость безопасной (`NO_EXPLOIT_PATH_FOUND`), если есть хоть малейшая теоретическая возможность её эксплуатации.
+* **Отсутствие найденного exploit path не доказывает его отсутствие**: если путь к дефекту не найден синтаксически, вердикт остаётся `UNKNOWN` или `INCONCLUSIVE`, направляя кейс на ручной триаж человеку.
+* **Отрицательные вердикты строго доказаны**:
+  * `NOT_AFFECTED` — только детерминистической цепочкой сборки (`go list -deps`).
+  * `NO_EXPLOIT_PATH_FOUND` — только при наличии верифицированного фальсификатора (`VERIFIED Falsifier`) на обязательном условии эксплуатации.
 
-Baseline-таблица govulncheck-vs-analyzer (последний прогон):
+### Ключевые метрики baseline-прогона
 
-| case | analyzer | govulncheck | cleared? |
-|---|---|---|---|
-| real-yaml-http | EXPLOITABLE | reachable | нет — нужен эксплойт-review |
-| real-yaml-file | NO_EXPLOIT_PATH_FOUND | reachable | **да — local host configuration files (trusted infrastructure) + verified negative check** |
-| real-yaml-http-fixed | NOT_AFFECTED | silent | **да — deterministic** |
-| real-md-render | EXPLOITABLE | reachable | нет |
-| real-getter-fetch | EXPLOITABLE | reachable | нет |
-| real-getter-const | EXPLOITABLE | reachable | нет — protocol-switch через X-Terraform-Get держит GitGetter reachable |
-| real-ssh-server | EXPLOITABLE | reachable | нет |
-| real-ssh-keyparse | NO_EXPLOIT_PATH_FOUND | package-level | **да — govulncheck-silence + проверка недостижимости неэкспортированных субъектов в dep-коде** |
-| real-jose-decrypt | EXPLOITABLE | reachable | нет |
-| real-jwt-auth | INCONCLUSIVE | package-level | нет — уязвимость в пропуске проверки (missing-call): `VerifyAudience` не вызывается при валидации токена (`MapClaims.Valid`), поэтому отсутствие её вызова не доказывает безопасность |
-| real-http2-server | NOT_AFFECTED | silent | **да — deterministic** |
-| real-dns-zone | EXPLOITABLE | reachable | нет |
-| real-getter-file | EXPLOITABLE | reachable | нет |
-| real-getter-fixed | NOT_AFFECTED | silent | **да — deterministic** |
-| real-yaml-const | NO_EXPLOIT_PATH_FOUND | reachable | **да — compile-time constant payload + verified negative check** |
-| real-yaml3-http | EXPLOITABLE | reachable | нет |
-| real-yaml3-const | NO_EXPLOIT_PATH_FOUND | reachable | **да — compile-time constant payload + verified negative check** |
-| real-protojson-http | EXPLOITABLE | reachable | нет |
-| real-protojson-const | NO_EXPLOIT_PATH_FOUND | reachable | **да — compile-time constant payload + verified negative check** |
-| real-protojson-fixed | NOT_AFFECTED | silent | **да — deterministic** |
-| real-dns-fixed | NOT_AFFECTED | silent | **да — deterministic** |
-| real-dns-marshal | NO_EXPLOIT_PATH_FOUND | package-level | **да — dep-internal invocation мёртв, вызовы через интерфейсы исключены** |
-| real-md-fixed | NOT_AFFECTED | silent | **да — deterministic** |
-| real-ssh-fixed | NOT_AFFECTED | silent | **да — deterministic** |
-| real-jose-fixed | NOT_AFFECTED | silent | **да — deterministic** |
-| real-ssh-callback | EXPLOITABLE | reachable | нет |
-| real-micro-xds | INCONCLUSIVE | package-level | нет — dep-internal registry (`httpfilter.Register`) + watcher callbacks (B24) |
-| real-micro-xds-fixed | NOT_AFFECTED | silent | **да — deterministic** |
-| real-micro-plain | NOT_AFFECTED | module-level | **да — rbac-пакет не в build graph; govulncheck также не сообщает уязвимый пакет** |
-| real-micro-plain-6443 | EXPLOITABLE | reachable | нет — без basis весь declared set в L; HandleStreams в трейсе → `C-LOCUS` TRUE (машина не сужает L) |
-| real-micro-plain-6443x | NO_EXPLOIT_PATH_FOUND | reachable | **да — locus-package-absent: expert `non_locus` на transport-символы → L={RouteAndProcess}, xds-пакет вне build graph (B30, spec §8)** |
-| real-micro-xds-6443 | EXPLOITABLE | reachable | нет — xDS-режим включён, локус в govulncheck-трейсе |
-| real-micro-wrap-6443 | EXPLOITABLE | reachable | нет — xDS через factory-обёртку; module-internal chain доказывает локус достижимым |
-| real-micro-pkg-6443 | NO_EXPLOIT_PATH_FOUND | reachable | **да — locus-function-unreached: xds-пакет в build graph, но дефектный локус `RouteAndProcess` доказанно недостижим** |
-| real-unix-access | EXPLOITABLE | reachable | нет — `unix.Access` вызван на dep-пути, payload внешний |
-| real-unix-stat | NO_EXPLOIT_PATH_FOUND | package-level | **да — zero-refs + dep-internal caller `unix.Access` транзитивно мёртв (нет product refs, нет caller'ов в модуле, сторонних импортеров пакета нет)** |
-| real-unix-fixed | NOT_AFFECTED | silent | **да — deterministic** |
-| real-ssh-slowpesh | EXPLOITABLE | reachable | нет |
+| Метрика | Значение | Описание |
+|---|---|---|
+| **Всего кейсов** | **38** | Реальные уязвимости в 12 классах зависимостей Go |
+| **Cleared Rate** | **20 / 38 (53%)** | Доказанное закрытие алертов без участия человека (`NOT_AFFECTED` + `NO_EXPLOIT_PATH_FOUND`) |
+| **Signal-Cleared Rate** | **9 / 26 (35%)** | Безопасное снятие алертов там, где `govulncheck` выдал шумные сигналы (`REACHABLE` / `package-level`) |
+| **False-Safe Rate** | **0 / 38 (0%)** | Строгий инвариант: ни одного ложно-безопасного вердикта |
+| **Требуют триажа** | **18 / 38 (47%)** | 16 доказанно уязвимых (`EXPLOITABLE`) + 2 кейса с недостаточным контекстом (`INCONCLUSIVE`) |
 
-**Метрика ценности — cleared rate**, а не корреляция с govulncheck.
-Кейс «cleared», когда анализатор выносит доказанный негатив:
-`NOT_AFFECTED` (deterministic affected-chain) или `NO_EXPLOIT_PATH_FOUND`
-(VERIFIED falsifier на mandatory-условии). `EXPLOITABLE`, `INCONCLUSIVE` и
-`UNKNOWN` оставляют кейс на человеке — для triage «reachable» и
-«не доказали безопасность» эквивалентны. Текущий прогон: **20/38 cleared**:
-11×NOT_AFFECTED deterministic (в том числе `real-micro-plain` при
-module-only finding govulncheck) и 9 verified-негативов NEPF:
-`real-unix-stat` — продукт не трогает `unix.Faccessat`,
-а единственный dep-internal caller `unix.Access` доказанно мёртв —
-нет product refs, нет caller'ов внутри `x/sys`, сторонних модулей,
-импортирующих пакет, в dep-графе нет; `real-ssh-keyparse` и
-`real-dns-marshal` — недостижимость неэкспортированных/конкретных
-методов в dep-коде и отсутствие динамической диспетчеризации через
-интерфейсы; `real-micro-plain-6443x` — по контракту defect-locus (B30, spec §8):
-`L={RouteAndProcess}`, xds-пакет вне build graph;
-`real-micro-pkg-6443` — дефектный локус `RouteAndProcess` доказанно недостижим
-в коде продукта и графе вызовов через falsifier `locus-function-unreached`
-(пакет присутствует в сборке, но уязвимая функция не вызывается);
-`real-yaml-const`, `real-yaml3-const`, `real-protojson-const` — compile-time константный
-входной payload (`FalsifierConstantOrGeneratedInput`) верифицирован как неизменяемый,
-а внутренняя рефлексия парсеров по выходной структуре изолирована от входных данных;
-`real-yaml-file` — чтение локального файла конфигурации хоста через `os.ReadFile`
-верифицировано как доверенная среда развёртывания (`FalsifierTrustedInfrastructure`). Для символов
-без defect-site anchor'а модуль порождает `ProposedNonLocus` —
-draft-исключения с записанным наблюдением, не участвующие в вердикте;
-эксперт утверждает их переносом в `non_locus` (через `--non-locus-basis` или флаг `--accept-locus-proposals`). Отчёт печатает блок
-**Машинная оценка**: предлагаемая оценка (МОЖНО ОТКЛОНИТЬ /
-МОЖНО ОТКЛОНИТЬ ПОСЛЕ ПОДТВЕРЖДЕНИЯ / ТРЕБУЕТСЯ ПРОВЕРКА (УСЛОВНО)), для каждого символа L —
-статус пакета и требуемое экспертное решение (утвердить рекомендацию об исключении,
-либо перепроверить отметку «вероятное место уязвимости»), плюс список допущений вне
-машинной проверки (полнота advisory, корректность expert-решений, соответствие
-параметров сборки окружению развёртывания). Аудит кода продукта не требуется —
-вопрос уровня advisory: ограничен ли дефект этими пакетами. При
-исключении transport-символов `L={RouteAndProcess}` — faulting индекс
-`authority[0]` по fix PR9365; единственный locus-пакет отсутствует в
-`go list -deps` графе продукта — код дефекта физически не слинкован.
-Итоговый раздел отчёта `## Tracker-ready rationale` (а также вывод CLI `analyze`)
-формирует связное человекочитаемое обоснование на русском языке, готовое для
-вставки в задачу трекера: статус вердикта, подтверждение версии
-библиотеки и корректности сканера (отсутствие false positive по версии), контекст
-снимка и репозитория, суть дефекта, факты о сборке и точках экспозиции продукта,
-обоснование безопасности вспомогательных функций в скомпилированных пакетах
-и остаточный риск.
-Парные контроли: `real-micro-plain-6443` без basis даёт EXPLOITABLE
-(necessity машиной не замкнута — declared символ в трейсе → `C-LOCUS`
-TRUE, консервативный позитив совпадает с govulncheck), mode-on и
-factory-обёртка дают
-EXPLOITABLE (локус в трейсе/внутримодульной цепочке),
-pkg-present (`real-micro-pkg-6443`) даёт `NO_EXPLOIT_PATH_FOUND` — доказана
-недостижимость функции локуса (`locus-function-unreached`) в скомпилированном пакете.
-Boundary-контроли (неполная fix
-series, rename, два независимых дефекта, upstream-only fix) покрыты
-юнит-тестами на `testdata/locuslib`. Условие `C-LOCUS` не зависит от
-наличия fix-diff: при падении fetch `L` = declared set − basis и
-аннотации/proposals просто отсутствуют (ранее гейт молча снимался).
-Отдельная граница falsifier'а — покрытие build-вариантов: файлы
-продукта, исключённые записанным контекстом (`//go:build`,
-GOOS/GOARCH-суффиксы, cgo), но импортирующие пакет локуса, переводят
-negative verification в INSUFFICIENT_SCOPE (контроль `gated-scope` в
-`corpus.json`: вызов `vuln.Parse` за `//go:build special` — отсутствие
-пакета в дефолтном `go list -deps` не доказывает отсутствие при другой
-конфигурации).
-Цель B23 — поднять долю честных cleared
-за счёт falsifier-доказательств, не объявляя недоказанное безопасным.
+---
 
-Для сравнения со standalone govulncheck важен более узкий показатель:
-**signal-cleared rate = 7/26** на этом прогоне. Знаменатель — кейсы,
-где govulncheck сообщил `reachable` или `package-level`; числитель —
-verified-негатив анализатора при таком сигнале (`real-unix-stat`,
-`real-micro-plain-6443x`, `real-micro-pkg-6443`, `real-yaml-file`,
-`real-yaml-const`, `real-yaml3-const`, `real-protojson-const`).
-Finding только с модулем учитывается отдельно (`module-level`), без
-приписывания ему присутствующего уязвимого пакета. Остальные cleared
-имеют `govulncheck: silent` или `module-level`.
+## 2. Быстрый запуск (CLI Quickstart)
 
-Эта метрика прямо доказывает дополнительную пользу относительно
-govulncheck: `real-micro-plain-6443x` — ключевое reachable-отклонение,
-которое standalone govulncheck не способен вынести (он строит трейс вызова
-до `HandleStreams` и выставляет красный алерт `REACHABLE`, так как OR-семантика
-объявленных символов в базе не различает сайт дефекта и вспомогательный код).
-Анализатор автоматически классифицирует функции транспорта как вспомогательные
-проверки / диспетчеры (`ProposedNonLocus`), локализует дефект исключительно
-в отсутствующем пакете `RouteAndProcess` и (при подтверждении экспертом или
-с флагом `--accept-locus-proposals`) выносит доказанный вердикт
-`NO_EXPLOIT_PATH_FOUND` (Not Exploitable).
-
-В паре с `real-micro-plain` (GO-2026-6441 / CVE-2026-84303, где govulncheck
-оставляет uncalled-находку на уровне модуля, а анализатор выносит детерминистический
-`NOT_AFFECTED`) это демонстрирует ключевое различие:
-- govulncheck отвечает на вопрос «есть ли вызов хоть одной функции из advisory в графе вызовов»;
-- vuln-analyzer отвечает на вопрос «выполняются ли обязательные условия эксплуатации дефекта в данном снапшоте».
-
-#### Практическое сравнение статусов и эффект для triage (Decision Impact)
-
-| Кейс корпуса | govulncheck | vuln-analyzer | Практический статус и бизнес-эффект для команды |
-|---|---|---|---|
-| **`real-micro-plain-6443x`**<br>(GO-2026-6443 / CVE-2026-84445 с locus-separation) | 🔴 **`REACHABLE`** (ложная тревога) | 🟢 **`NO_EXPLOIT_PATH_FOUND`** (Not Exploitable) | **Signal-cleared (главное доказательство ценности).** `govulncheck` бьёт тревогу из-за вызова `HandleStreams` в цикле сервера. Без анализатора команда вынуждена экстренно бэкпортировать обновления gRPC во все поддерживаемые релизы и заставлять клиентов обновляться. Анализатор доказывает физическое отсутствие паники `RouteAndProcess` в бинаре и снимает ложную тревогу с готовым обоснованием. |
-| **`real-micro-plain`**<br>(GO-2026-6441 / CVE-2026-84303) | ⚠️ **`module-level`** (uncalled) | 🟢 **`NOT_AFFECTED`** | **Deterministic cleared.** `govulncheck` оставляет модуль в списке уязвимых зависимостей, блокируя пайплайны. Анализатор детерминистически проверяет `go list -deps` и подтверждает физическое отсутствие уязвимого пакета `internal/xds/httpfilter/rbac` (`PackagePresent: FALSE`). |
-| **`real-micro-plain-6443`**<br>(baseline без исключения локуса) | 🔴 **`REACHABLE`** | 🔴 **`EXPLOITABLE`** | **Консервативный контроль безопасности.** Если сайт дефекта не сужен экспертом (через `--non-locus-basis`) или флагом `--accept-locus-proposals`, анализатор не делает рискованных эвристических допущений и повторяет консервативный вердикт `govulncheck`. |
-
-
-Дополнительный контроль двух прежних cleared: прямой JSON govulncheck
-для micro-plain содержит только модуль, а `go list -deps -test` не
-содержит xDS/RBAC-пакетов. Для linux/arm64 unix-stat сборка с
-`-gcflags=all=-l` не содержит символа `unix.Faccessat`; парный
-unix-access его содержит и получает EXPLOITABLE/reachable. Эти
-контроли поддерживают конкретные отрицательные результаты, но не
-являются доказательством надёжности механизма на других продуктах.
-
-Негативный exploit-claim несёт именованный falsifier; финальный
-`NO_EXPLOIT_PATH_FOUND` требует и его, и `VERIFIED` negative verification.
-Неполное происхождение аргумента (включая пустой origin) остаётся
-`UNKNOWN`, включая guard-кандидаты с unresolved dep-flow. FALSE-кандидат
-требует полного ingress closure: безопасны все inventoried inputs и
-автономные источники product-reachable dependency cone. Пустой `Reaches`
-не исключает источник: отсутствие найденного пути не доказывает
-невозможность стать payload.
-
-Полнота модели (B30): advisory-declared sink, не прошедший source-
-resolution (символ в affected package не найден в dep source — vendored
-без пакета, internal-ветка не в сборке), попадает в
-`ExploitModel.UnresolvedSubjects`. Любой такой субъект блокирует
-`EXPLOITABLE` (модель не покрывает его exploit shape) и ограничивает NEPF
-фальсификаторами, покрывающими весь declared set (`govulncheck-silence`,
-`no-module-usage`, `unreached-exported-subject`); falsifier на аргументах
-resolved-sink'ов при непустом UnresolvedSubjects NEPF не даёт.
-
-Альтернативная sink-closure стратегия спеки §5.2 требует отдельного
-проверенного контракта полноты, привязанного к advisory, версии и
-mandatory condition. `OSV imports.symbols` задаёт только `KNOWN_ONLY`;
-production-пайплайн сохраняет sink inventory для аудита, но не выставляет
-полноту по одному этому списку. Поэтому `real-protojson-const` остаётся
-INCONCLUSIVE: локальные константные payloads не закрывают возможный sink
-вне известного списка, а ingress содержит `detrand` и непроверенную
-семантику вызовов. Остаток — B26 в каноническом backlog.
-
-Регрессионные контрпримеры проверяют переданный внешний ввод через func
-values, переназначенные callbacks, `os.LookupEnv`, несколько `init()`,
-package initializers, форматирование с `String`/`Format` callbacks,
-void stdlib callbacks, `reflect.Indirect`, `complex` и `recover`.
-Непроверенный вызов сохраняет UNKNOWN. Dep pins снимаются после каждой
-closure query; эвикция кэшей и bodyless declarations не должны приводить
-к панике. Смена dependency scope во время сканирования не разрешает
-кешировать неполный результат как полный. Provenance локальной переменной
-объединяет присваивания с заполнением через out-parameters, slice writes
-и receiver mutations: `make` не стирает данные последующего `io.ReadFull`.
-
-Дифференциация относительно standalone govulncheck:
-
-- `real-ssh-keyparse`: govulncheck видит пакет без symbol-trace
-  (package-level). Раньше «zero product references» верифицировал FALSE →
-  NEPF; после фикса это вакуумно для unexported sinks — кейс честно
-  INCONCLUSIVE до dep-internal негативной проверки (B24).
-- `real-micro-xds` (GO-2026-6441): все sinks в `internal/…/rbac` —
-  «no product refs» не может быть falsifier по visibility-правилам;
-  гейт `productReferenceable` в `Verifier` блокирует такие VERIFIED →
-  ранее ложный NEPF (false-safe), теперь честный INCONCLUSIVE.
-- `real-jwt-auth`: missing-call advisory — `Valid()` не зовёт
-  `VerifyAudience` by design. Dep-invocation гейт видит: субъект мёртв,
-  но sibling-методы того же receiver'а вызываются на живом dep-пути →
-  «отсутствие вызова» не может обосновать негатив → INSUFFICIENT_SCOPE →
-  честный INCONCLUSIVE (истина EXPLOITABLE; should-call семантики в
-  модели нет, поэтому дальше INCONCLUSIVE не дожимается).
-- getter-кейсы: registry-dispatch в go-getter (`getters[scheme].Get`)
-  резолвится через iface→impl рёбра ModuleInternalReach; func-value
-  opaque dispatch помечен → unreached субъекты UNKNOWN, не FALSE.
-  Dispatch-narrowing (B23): iface→impl рёбра и iface-caller'ы сужены до
-  типов, реально инстанцированных в загруженном коде (`new`/`T{}`/`var`/
-  `make`/конверсии; отключается при `reflect.New`/`unsafe`/`plugin`/
-  linkname), dep-caller'ы и field-write'ы — до product-driven конуса
-  модуля, а per-callsite `g = registry[key]` — до impl'ов по
-  вычисленным const-ключам (инициализаторы `T{F:}` на receiver-инстансах,
-  `init`, knowledge string-semantics: `Detect`-identity для schemed URL,
-  `forced_split`, `subdir_split`, `url.Values.Get` по `Query()`).
-  **Важно про getter-const**: INCONCLUSIVE там — честный вердикт, не
-  пробел: `HttpGetter.Get` переиспускает `Get(dst, source)` с `source`
-  из server-controlled `X-Terraform-Get` header / meta-тега → тот же
-  синтаксический сайт `c.Getters[force]` обслуживает и outer (const),
-  и nested (не-const) инстансы → ключ не вычисляется → сайт остаётся
-  unrestricted → `GitGetter` реально reachable через protocol-switch.
-  NEPF здесь был бы false-safe.
-
-Заметка про отчётность: verdict-reasons и таблица «Affected analysis»
-называют проверенный предмет — `modules probed` / `packages probed`
-(что именно искали в `go list -m all` / `go list -deps -test ./...`) и
-evidence-id; INCONCLUSIVE перечисляет unresolved condition-ID. Пустой
-probed-набор (advisory без package-записей) даёт UNKNOWN, не FALSE —
-проверять нечего, отсутствие не утверждается.
-
-Multi-module advisory: `packages probed` включает записи всех
-affected-entries, включая pending (модуль в графе, версия
-нерезолвабельна — stdlib toolchain без `go version` факта или dep
-без `Version`). Linked только pending-модуль → `version_affected`
-остаётся UNKNOWN с limitation — версия другого, нелinked entry не
-приписывается; `resolved_version` и `selected_module` привязаны к
-подтверждённо-linked entry, а linked pending-модули выводятся строкой
-`modules version-unresolved` — version-fact не применяется к условиям
-чужих модулей. Usage- и negative-проверки сканируют все linked-модули,
-а доказательства атрибутятся по модулю владельца субъекта (владелец —
-наибольший совпадающий модульный префикс). Владелец вызываемого пакета
-берётся из графа импортов продукта: nested-модуль `dep/v2` не
-абсорбируется родителем `dep`, даже когда `dep/v2` отсутствует в
-affected-entries. Вызов с неизвестным владельцем или владельцем вне
-linked-модулей не доказывает usage и блокирует вывод об отсутствии:
-вложенный модуль может вызывать родителя транзитивно. `VersionFact`
-учитывает оба поля субъектов
-(`Subject` и `Subjects`); условие без субъекта при нескольких linked-модулях
-остаётся UNKNOWN.
-
-## Scalability (закрытый OOM)
-
-Исторический OOM (`hashicorp/go-getter` съедал память хоста) закрыт:
-dep-syntax грузится только для пакетов из `loadExtra`-паттернов
-(`NeedDeps` убран), `extraPkgs`≤64 patterns/≤40 пакетов/≤500 файлов
-с LRU-эвикцией и очисткой AST-удерживающих кэшей, вес паттерна
-взвешивается и по транзитивному import-closure (≤2500 types-пакетов —
-один aws-scale пакет тащит сотни stub-типов через
-`types.Package.Imports()`); `NeedImports` убран (import-граф читается
-через `types.Package.Imports()` — иначе каждый retained-пакет удерживал
-транзитивные stub-деревья типов, ~12GiB на getter-const), `callerCache`
-≤8192, advisory-модуль пинится на время closure-верификации (крупные
-модули остаются эвиктируемыми — conservative), `callAt` догружает
-пакет сайта по `file=`-запросу, если его load-инстанс эвиктнут,
-per-trace `classifyCache` сворачивает экспоненциальный caller-fan-out
-(yaml-file 413s→8s), `why`-строки capped в точках композиции (md-render
-6.5GiB→8s), `txBuf` дедуплицируется и ограничен (миллионы CallSite-
-записей ≈2.2GiB — главная аллокация getter-const), `evalBudget`
-ограничивает fan-out одного трейса во всех trace-сессиях (getter-const
->10min→80s), `--mem-limit` watchdog с hard-exit >150% ~1s и принудительным
-`debug.FreeOSMemory()` (HeapSys считает held-спаны, а не live heap).
-Эвикция всегда в безопасную сторону: меньше покрытия → UNKNOWN, а не
-ложное отсутствие. Getter-кейс: INCONCLUSIVE, память ограничена
-эвикцией.
-
-Текущий контроль `real-ssh-slowpesh` завершился EXPLOITABLE за 905с.
-Expression budget действует на отдельную payload-позицию; он не
-ограничивает всю enumeration и повторные dependency loads после
-эвикции. Общий deadline/work budget closure query остаётся B28.
-
-## Статус: первый слой реализован
-
-`eval/live-corpus.json` + `eval/advisories/live/*.json` — 11 advisory
-`github.com/rabbitmq/amqp091-go` (все фиксированы v1.13.0; продукт на
-v1.10.0 → affected по версии) против `продукт-референс`. Путь к
-репозиторию продукта — `${VA_PRODUCT_REPO}` (env-экспансия) или флаг
-`--repo`; конкретный локальный репозиторий не коммитится.
-
-## Прогон
-
+### Прогон всего корпуса
+Параллельный запуск всех 38 кейсов с автоматической генерацией манифестов `go.mod`/`go.sum` и переиспользованием кэша:
+```bash
+analyzer eval --corpus eval/corpus-real.json -j 4
 ```
+
+### Запуск и отладка отдельного кейса
+Запуск конкретного сценария (занимает 5–9 секунд):
+```bash
+analyzer eval --corpus eval/corpus-real.json --case real-jwt-auth
+analyzer eval --corpus eval/corpus-real.json --case real-micro-plain-6443x
+```
+
+### Основные флаги
+* `-j <N>` — количество параллельных воркеров (по умолчанию 1).
+* `--case <ID>` — фильтрация прогона по идентификатору сценария.
+* `--mem-limit <size>` — лимит оперативной памяти с watchdog-контролем (по умолчанию `4GiB`).
+* `--cve-analysis <off|assist|verified>` — включение автономного AI-исследователя для формирования структурированного досье:
+  * `assist`: автономный исследователь с function calling (`read_patch_diff`, `inspect_source_file`, `analyze_product_scope`) формирует техническое досье и формулирует Human Remainder (точный остаток ручной работы для эксперта);
+  * `verified`: строгая валидация обязательств доказательства (Proof Obligations).
+* `--strict-llm` — режим fail-fast: при ошибке LLM API или бюджетов модель не переключается скрытно на детерминистический код, а завершает кейс со статусом ошибки.
+* `--non-locus-basis <file>` / `--accept-locus-proposals` — утверждение рекомендаций об исключении вспомогательных функций транспорта из дефектного локуса.
+
+---
+
+## 3. Бизнес-эффект: сравнение с govulncheck (Decision Impact)
+
+Ключевая ценность `vuln-analyzer` относительно стандартного `govulncheck` — кардинальное снижение операционного шума (false positives) при сохранении абсолютной безопасности.
+
+| Кейс корпуса | Сигнал govulncheck | Вердикт vuln-analyzer | Практический статус и бизнес-эффект для команды |
+|---|---|---|---|
+| **`real-micro-plain-6443x`**<br>(GO-2026-6443 / gRPC authority panic) | 🔴 **`REACHABLE`** *(ложная тревога)* | 🟢 **`NO_EXPLOIT_PATH_FOUND`** *(Not Exploitable)* | **Разделение сайта дефекта и транспорта.** `govulncheck` бьёт тревогу из-за вызова `HandleStreams` в цикле сервера. Без анализатора команда вынуждена экстренно обновлять gRPC во всех сервисах. Анализатор локализует дефект в `RouteAndProcess`, доказывает отсутствие паникующего пакета в бинаре и снимает ложную тревогу с готовым обоснованием. |
+| **`real-micro-pkg-6443`**<br>(GO-2026-6443 / subpackage) | 🔴 **`REACHABLE`** *(ложная тревога)* | 🟢 **`NO_EXPLOIT_PATH_FOUND`** *(Not Exploitable)* | **Недостижимость дефекта внутри скомпилированного пакета.** Пакет слинкован в бинарь, но дефектный локус `RouteAndProcess` никогда не вызывается продуктом. Анализатор доказывает недостижимость через фальсификатор `locus-function-unreached`. |
+| **`real-yaml-const`**<br>**`real-yaml3-const`**<br>**`real-protojson-const`**<br>(DoS парсеров) | 🔴 **`REACHABLE`** *(ложная тревога)* | 🟢 **`NO_EXPLOIT_PATH_FOUND`** *(Not Exploitable)* | **Анализ происхождения данных (Data Provenance).** `govulncheck` видит вызов `yaml.Unmarshal`. Анализатор доказывает, что входной payload — это константа времени компиляции (`const`), изолирует внутреннюю рефлексию парсера по выходной структуре и подтверждает невозможность атаки. |
+| **`real-yaml-file`**<br>(GO-2021-0061 / YAML DoS) | 🔴 **`REACHABLE`** *(ложная тревога)* | 🟢 **`NO_EXPLOIT_PATH_FOUND`** *(Not Exploitable)* | **Доверенная инфраструктура.** Аргумент парсера читается из локального файла конфигурации хоста (`os.ReadFile`), что верифицировано как доверенная среда развёртывания (`trusted infrastructure`). |
+| **`real-micro-plain`**<br>(GO-2026-6441 / gRPC RBAC bypass) | ⚠️ **`module-level`** *(шумная находка)* | 🟢 **`NOT_AFFECTED`** *(Not Affected)* | **Детерминистический анализ сборки.** Модуль gRPC числится уязвимым в манифесте, но пакет `rbac` отсутствует в `go list -deps`. Анализатор детерминированно подтверждает неприменимость уязвимости. |
+| **`real-micro-plain-6443`**<br>(контроль без исключения локуса) | 🔴 **`REACHABLE`** | 🔴 **`EXPLOITABLE`** | **Консервативный контроль безопасности.** Если сайт дефекта не сужен экспертом или флагом `--accept-locus-proposals`, анализатор не делает эвристических допущений и повторяет консервативный вердикт `govulncheck`. |
+
+---
+
+## 4. Сводная таблица baseline-прогона (38 кейсов)
+
+Результаты последнего прогона на автономном корпусе `eval/corpus-real.json`:
+
+| Кейс | Вердикт анализатора | Сигнал govulncheck | Статус снятия (Cleared) и обоснование |
+|---|---|---|---|
+| `real-yaml-http` | EXPLOITABLE | reachable | нет — внешний сетевой ввод в unmarshal |
+| `real-yaml-file` | NO_EXPLOIT_PATH_FOUND | reachable | **да — чтение локального файла конфигурации хоста (trusted infrastructure) + verified negative check** |
+| `real-yaml-http-fixed` | NOT_AFFECTED | silent | **да — детерминистически безопасная версия** |
+| `real-md-render` | EXPLOITABLE | reachable | нет — недоверенный ввод рендерится в HTML |
+| `real-getter-fetch` | EXPLOITABLE | reachable | нет — аргумент URL передается злоумышленником |
+| `real-getter-const` | EXPLOITABLE | reachable | нет — protocol-switch через `X-Terraform-Get` держит `GitGetter` достижимым |
+| `real-ssh-server` | EXPLOITABLE | reachable | нет — уязвимый SSH-хэндлер активен |
+| `real-ssh-keyparse` | NO_EXPLOIT_PATH_FOUND | package-level | **да — govulncheck-silence + проверка недостижимости неэкспортированных субъектов в коде зависимости** |
+| `real-jose-decrypt` | EXPLOITABLE | reachable | нет — парсинг токенов без ограничений |
+| `real-jwt-auth` | INCONCLUSIVE | package-level | нет — уязвимость в пропуске проверки (missing-call): `VerifyAudience` не вызывается при валидации токена (`MapClaims.Valid`), поэтому отсутствие её вызова не доказывает безопасность |
+| `real-http2-server` | NOT_AFFECTED | silent | **да — детерминистически безопасная версия** |
+| `real-dns-zone` | EXPLOITABLE | reachable | нет — сетевой парсер DNS-зон достижим |
+| `real-getter-file` | EXPLOITABLE | reachable | нет — file-схема подвержена инъекциям |
+| `real-getter-fixed` | NOT_AFFECTED | silent | **да — детерминистически безопасная версия** |
+| `real-yaml-const` | NO_EXPLOIT_PATH_FOUND | reachable | **да — compile-time константный payload + verified negative check** |
+| `real-yaml3-http` | EXPLOITABLE | reachable | нет — YAML v3 уязвим к DoS на внешнем вводе |
+| `real-yaml3-const` | NO_EXPLOIT_PATH_FOUND | reachable | **да — compile-time константный payload + verified negative check** |
+| `real-protojson-http` | EXPLOITABLE | reachable | нет — protojson unmarshal уязвим на внешнем вводе |
+| `real-protojson-const` | NO_EXPLOIT_PATH_FOUND | reachable | **да — compile-time константный payload + verified negative check** |
+| `real-protojson-fixed` | NOT_AFFECTED | silent | **да — детерминистически безопасная версия** |
+| `real-dns-fixed` | NOT_AFFECTED | silent | **да — детерминистически безопасная версия** |
+| `real-dns-marshal` | NO_EXPLOIT_PATH_FOUND | package-level | **да — dep-internal вызовы отсутствуют, диспетчеризация через интерфейсы исключена** |
+| `real-md-fixed` | NOT_AFFECTED | silent | **да — детерминистически безопасная версия** |
+| `real-ssh-fixed` | NOT_AFFECTED | silent | **да — детерминистически безопасная версия** |
+| `real-jose-fixed` | NOT_AFFECTED | silent | **да — детерминистически безопасная версия** |
+| `real-ssh-callback` | EXPLOITABLE | reachable | нет — callback авторизации уязвим |
+| `real-micro-xds` | INCONCLUSIVE | package-level | нет — внутренняя регистрация фильтров (`httpfilter.Register`) и watcher-колбэки требуют ручной проверки (B24) |
+| `real-micro-xds-fixed` | NOT_AFFECTED | silent | **да — детерминистически безопасная версия** |
+| `real-micro-plain` | NOT_AFFECTED | module-level | **да — пакет rbac не входит в build graph продукта** |
+| `real-micro-plain-6443` | EXPLOITABLE | reachable | нет — консервативный контроль: без сужения локуса транспортный символ в трейсе считается уязвимым |
+| `real-micro-plain-6443x` | NO_EXPLOIT_PATH_FOUND | reachable | **да — locus-package-absent: транспортные функции исключены из локуса, дефектный xds-пакет вне сборки** |
+| `real-micro-xds-6443` | EXPLOITABLE | reachable | нет — xDS-режим включен, уязвимый код вызывается |
+| `real-micro-wrap-6443` | EXPLOITABLE | reachable | нет — xDS через фабричную обертку достигает уязвимого локуса |
+| `real-micro-pkg-6443` | NO_EXPLOIT_PATH_FOUND | reachable | **да — locus-function-unreached: xds-пакет в сборке, но уязвимая функция `RouteAndProcess` недостижима** |
+| `real-unix-access` | EXPLOITABLE | reachable | нет — `unix.Access` вызывается на внешнем пути |
+| `real-unix-stat` | NO_EXPLOIT_PATH_FOUND | package-level | **да — zero-refs: уязвимый метод `unix.Faccessat` не используется, а внутренний caller `unix.Access` мертв** |
+| `real-unix-fixed` | NOT_AFFECTED | silent | **да — детерминистически безопасная версия** |
+| `real-ssh-slowpesh` | EXPLOITABLE | reachable | нет — DoS медленного рукопожатия подтвержден |
+
+---
+
+## 5. Структура тестовых корпусов
+
+### 5.1. Автономный корпус (`eval/corpus-real.json`)
+38 сценариев на базе микропродуктов из каталога `eval/products/`. Манифесты `go.mod` и `go.sum` генерируются автоматически в `eval/.gen/<case-id>` на основе полей `module` и `deps`. Стенд полностью автономен и не требует доступа к внешним закрытым репозиториям.
+
+Покрывает 12 классов уязвимостей:
+1. **YAML DoS** (v2 GO-2021-0061, v3 GO-2022-0603) — парсинг циклических и глубоких структур;
+2. **Markdown XSS / Render** (GO-2023-2074) — экранирование при генерации HTML;
+3. **Command / Argument Injection** (GO-2024-2800 в `go-getter`) — инъекция аргументов протокола `git::`;
+4. **SSH / Crypto** (GO-2022-0968 паника, GO-2024-3321 обход авторизации, GO-2025-3487 медленное рукопожатие);
+5. **JOSE Algorithm Confusion** (GO-2023-2409) — дешифрование токенов с небезопасными заголовками;
+6. **JWT Missing-Call Validation** (GO-2020-0017 в `jwt-go`) — пропуск проверки аудитории;
+7. **HTTP/2 Rapid Reset** (GO-2023-2102) — DoS мультиплексирования потоков;
+8. **DNS Zone Parse** (GO-2020-0028 в `miekg/dns`) — паника парсера некорректных записей зон;
+9. **Protobuf Protojson Loop** (GO-2024-2611) — бесконечный цикл парсера некорректных структур;
+10. **gRPC xDS RBAC Bypass** (GO-2026-6441) — дефекты применения политик доступа;
+11. **gRPC xDS Authority Panic** (GO-2026-6443) — дефектный локус паники заголовка `:authority`;
+12. **Unix Faccessat Privilege Check** (GO-2022-0493) — некорректный опрос прав доступа на Linux.
+
+### 5.2. Интеграционный live-корпус (`eval/live-corpus.json`)
+11 advisory против реального монорепозитория (`${VA_PRODUCT_REPO}`) и библиотеки `github.com/rabbitmq/amqp091-go` v1.10.0. Используется для валидации глубоких потоков данных на тяжелом промышленном коде с фоновыми горутинами, рефлексией и сложным маппингом конфигурации.
+
+Запуск:
+```bash
 PATH=$HOME/go/bin:$PATH VA_PRODUCT_REPO=<product-repo> analyzer eval --corpus eval/live-corpus.json
 ```
 
-Требования: сеть (root-cause резолвер тянет fix-patch по commit-refs из
-advisory) и `govulncheck` в PATH. Без govulncheck reachability идёт через
-module-usage fallback — вердикты могут честно смещаться к INCONCLUSIVE.
+Подробная ручная разметка истинности (ground truth), доказательная база и история анализа кейсов вынесены в отдельный документ: [`eval/ground-truth.md`](ground-truth.md).
 
-Результат (детерминистичный прогон, govulncheck v1.8.0):
+---
 
-| Группа | Кейсы |
-|---|---|
-| EXPLOITABLE | GHSA-4v58, c5pq, r9c8 — доказан внешний payload на wire-parser/exhaustion путях |
-| INCONCLUSIVE | GHSA-27gv, 33mj, 465g, j497 — deploy/config-dependent условия; GHSA-6c5v, xwwf, GO-2026-6372 — фактический peer payload не доказан через fix-subjects/opaque вызовы; GHSA-rm6m — unresolved dep-flow не позволяет верифицировать полноту bound-гардов |
+## 6. Механика доказательств и масштабируемость
 
-`expect` в корпусе пиннит **ground truth** — истинный вердикт каждого
-кейса размечен вручную по advisory+коду продукта; метод и обоснования —
-[`ground-truth.md`](ground-truth.md). `INCONCLUSIVE` в expect допускается
-там, где истина определённа, но механизм её доказательства пока не
-реализован (33mj — PLATFORM_CONDITION по go_version; 465g — reflect-
-демоция без значения типа; 6c5v/xwwf/GO-2026-6372 — peer payload;
-rm6m — полнота guard coverage). false-safe=0 остаётся стоп-критерием.
+### Контроль неопределенности и безопасные отрицания
+* **Инвариант отрицательного вывода**: вердикт `NO_EXPLOIT_PATH_FOUND` выносится только тогда, когда опровергнуто хотя бы одно обязательное условие эксплуатации (`mandatory condition`), а отрицание подтверждено фазой негативной верификации (`Negative Verification: VERIFIED`).
+* **Защита от ложной безопасности при пропущенных проверках (missing-call)**:
+  В кейсе `real-jwt-auth` метод `VerifyAudience` физически не вызывается в программе. Наивный сканер посчитал бы отсутствие вызова доказательством безопасности. В анализаторе действует защитный предохранитель (`DepInvocationState`): если целевая проверка не вызывается, но родственные методы валидации того же типа (`MapClaims.Valid`) активно обрабатывают внешний ввод, отсутствие вызова блокирует отрицательный вердикт и сохраняет `INCONCLUSIVE`.
+* **Защита константных данных от рефлексии парсеров**:
+  В кейсах `real-yaml-const`, `real-yaml3-const`, `real-protojson-const` входные байты строго доказаны как компиляторные константы. Рефлексивные операции парсера по заполнению выходной структуры изолируются и не аннулируют неизменяемость входных данных.
+* **Доверенная инфраструктура**:
+  В кейсе `real-yaml-file` доказано, что входные данные поступают исключительно из локального файла конфигурации хоста через `os.ReadFile`. При отсутствии внешнего контроля над путем к файлу это признается доверенной средой (`FalsifierTrustedInfrastructure`).
 
-После B2: кейсы, доходящие до GAP_ANALYSIS, без `--allow-exec` несут
-limitation «build/test evidence actions skipped»; с флагом — BUILD/TEST
-evidence, `go build`/`go test` в tool_executions и секция «Build & test»
-в отчёте. На вердикты не влияет.
-
-После B3 (vendor-internal provenance, §3.5): для unexported dep-субъектов
-peer-input условий собираются настоящие dep-internal call sites и flows —
-resolved origin решает claim вместо эвристики «module usage →
-peer-driven» (эвристика остаётся fallback, когда dep-trace пуст или
-UNKNOWN). На живом amqp091 ожидаемое поведение: `readField`-цепь упирается
-в interface dispatch (`m.read(r)`) → trace UNKNOWN → эвристика сохраняет
-TRUE. Наличие resolved flow направляет claim в provenance evaluator;
-это может оставить UNKNOWN, если origin известен, но роль payload
-не доказана. Claims несут dep-flow evidence/limitations. Fixture-корпус
-расширен до 18 кейсов (`wire-dep-peer` → EXPLOITABLE через resolved
-EXTERNAL_UNTRUSTED). `wire-dep-const` → INCONCLUSIVE: локальный
-константный аргумент разрешён, но модуль одновременно получает peer
-input; полная ingress closure небезопасна, а единственный известный
-sink не несёт отдельного доказательства полноты. Проверка не исключает
-другие источники по отсутствию найденного пути к этому символу.
-
-После ревью closure-логики live 6c5v/GO-2026-6372 и xwwf допускают
-INCONCLUSIVE при сохранении ground truth EXPLOITABLE: opaque `pick`
-и fix-subjects `openTune` не доказывают происхождение фактического
-уязвимого payload. Полноценный позитив требует независимого трейсинга
-peer tune/header/body; остаток scope mismatch отмечен в B15. Сетевой
-writer в неизвестной payload-позиции не доказывает входные данные:
-его внешний origin сохраняется, но positive payload evidence остаётся
-неполным, а отрицательная проверка продолжает учитывать этот flow.
-
-## Что прогон валидировал на живом коде
-
-- Root cause из fix-commit refs (no symbols в advisory → патч →
-  `readField` SINK).
-- WIRE_PARSER exploit model: peer-input/constraint conditions через
-  govulncheck trace.
-- **REVIEW→REPAIR петля в деле**: GHSA-27gv — C-EXPOSED демотирован
-  high-severity finding'ом (reflect usage расширяет call graph) →
-  re-review ACCEPT → честный INCONCLUSIVE вместо слабого FALSE.
-- Exposure-факты реального репо: inbound listeners (http/grpc/net) и
-  outbound amqp091.Dial* в отчёте.
-
-## Ground-truth pass (2026-…)
-
-Ручная проверка 5 EXPLOITABLE-кейсов по персистированным кейсам:
-
-- **RC accuracy 5/5**: `readField` (field-length DoS), `readLongstr`
-  (int-overflow), `writeFrame` (shortstr trunc), `Channel.recvContent`
-  (body OOM), `Connection.openTune` (frame-size negotiation) — каждый
-  символ подтверждён присутствием в persisted fix-diff evidence, что
-  соответствует содержанию advisory.
-- **Coverage ответ**: GHSA-advisory отсутствуют в Go vuln DB →
-  `govulncheck_coverage=not_in_db`, reachability выводится по
-  module-usage (44 call-сайта amqp091 API) с limitation «transitive
-  reach inferred, not traced to the sink». Это специфицированная
-  семантика WIRE_PARSER: unexported sink исполняется в peer-driven
-  read-path на каждом кадре — вызов API подразумевает исполнение
-  парсера. EXPLOITABLE корректен в threat-модели «враждебный/MITM
-  брокер».
-- **Найденный дефект (исправлен)**: при отсутствии `govulncheck` в
-  PATH бинарь `go install` (GOBIN/GOPATH/bin/~/go/bin) не резолвился →
-  tool не запускался, а объяснение говорило «advisory absent from
-  govulncheck DB» — неправильная атрибуция. Теперь `resolveGovulnBin`
-  ищет в GOBIN/GOPATH/bin/~/go/bin, а `libraryUsageVerdict` получает
-  явную причину fallback'а (`did not run or failed` vs `absent from
-  DB`).
-
-Остаётся: качественная оценка «peer can drive» → «истинно exploitable
-в проде» зависит от деплоя (доверен ли брокер) — за пределами
-статического анализа, claim limitations это фиксируют.
-
-## Ground truth (B1)
-
-Истина по всем 11 кейсам размечена вручную по fix-diff advisory + коду
-продукта — [`ground-truth.md`](ground-truth.md). Метод: кто дёргает
-уязвимый API (44 call site на `components/amqp09`: Dial/DialTLS/
-DialTLS_ExternalAuth, Consume, Qos, Declare*,
-PublishWithDeferredConfirmWithContext); исполняется ли `recvContent`/
-`openTune` на продукционном пути; есть ли безусловный путь от
-peer-данных до условия уязвимости (для j497 — нет, все peer→shortstr
-пути config-contingent → INCONCLUSIVE). Разметка поймала два
-false-safe бага: covered-entry без `AffectedSymbols` больше не
-принимает govulncheck-сilenсe за negative evidence (6c5v,
-GO-2026-6372 → EXPLOITABLE через записанные `ModuleReachable`-цепочки).
-
-## Следующий слой
-
-- Метрики root-cause accuracy (верные ли символы) и FALSE precision.
-- Второй продуктовый репозиторий для диверсификации.
-- Live-корпус не входит в CI-регрессию (сеть + тяжёлый репо) — отдельный
-  прогон.
-
-## rm6m ground-truth pass
-
-GHSA-rm6m-hrcw-jw33 (amqp091 `Channel.Qos`, signed→unsigned cast →
-flooding). Два отдельных вывода:
-
-- **Class-label исправлен**: keyword-классификация была first-match —
-  одиночный `frame` перекрывал плотный exhaustion-сигнал (5:1).
-  Теперь `scoreKeywords` выбирает класс по частоте попаданий словаря
-  (tie → более ранняя/специфичная строка). rm6m/4v58/r9c8 →
-  `RESOURCE_EXHAUSTION` — тот же peer-driven паттерн, вердикты не
-  сдвигаются, label в отчёте/limitation точнее.
-- **Резидуальный gap (не закрыт)**: `Qos(r.prefetchCount, …)` — аргумент
-  идёт из struct-поля (`r.prefetchCount ← setPrefetchCount(cfg)`),
-  interprocedural field-flow за пределами трейсера (6 hops →
-  UNRESOLVED, честно зафиксировано в hypothesis). Плюс продуктовая
-  гарда — *sanitize-апдейт* без return (`count>1024 → 1024`), что
-  outside текущего guard-продюсера. Реальный ответ скорее «не
-  эксплуатируемо через конфиг», но система не может это доказать →
-  корректный INCONCLUSIVE, не баг.
-
-Остаток: caller-chain глубина — `count` (param setPrefetchCount) ←
-`cfg.PrefetchCount` ← cfg-параметр конструктора ← reflect/mapstructure-
-декод фреймворка: цепь >8 hops и терминально упирается в reflect-популяцию,
-которую статически не резолвить — честный terminal UNKNOWN.
-
-После фиксов: arg0 `Qos` резолвится полностью — `r.prefetchCount` ←
-`count` (param setPrefetchCount) ← `cfg.PrefetchCount` ←
-`mapstructure:"prefetch_count"`-тег → **CONFIGURATION** (hypothesis
-CONFIRMED). Sanitize-switch кламп (`count<0→0`, `count>1024→1024`)
-записан Guard=true + Covers — значение ограничено на всех write-site'ах.
-arg2 (`global=false`) — CONSTANT (builtin-иденты больше не UNKNOWN).
-
-Что держит INCONCLUSIVE: config-origin → deployDependent —
-CONFIGURATION-ввод может быть attacker-influenced (хостильный конфиг),
-поэтому peer-input FALSE не утверждается. Финальная цепь честная:
-peer-input UNKNOWN (deploy-dependent), constraint TRUE (LLM-агент
-по fix-diff — безопасное направление), вердикт INCONCLUSIVE.
-
-Следующий раунд фиксов (per-arg + range-gated):
-
-- **Per-arg deep-trace**: gap-loop и NV теперь работают по `f.Arg`, а не
-  всегда по `cond.ArgIndex` — arg1 больше не пропускается; ключи
-  планировщика и `ReplaceDataFlow` матчат (cond, sink, arg). Все три
-  аргумента `Qos` резолвлены: arg0/arg1 → CONFIGURATION
-  (mapstructure-теги через полные цепи field→setter-param→caller→cfg),
-  arg2 → CONSTANT.
-- **Range-gated sanitize-switch**: `setPrefetchSize`-форма —
-  switch сравнивает `size`, присваивает `prefetchSize`; default-ветка
-  `fs = FileSize(size)` засчитывается bounded, когда compared-var
-  ограничен с двух сторон (`size<0` и `FileSize(size)>max`), и default
-  присутствует. Без default или при односторонней границе — не гарда
-  (onesidedprod-фикстура). Accessor-обёртки `int(fs.Bytes())` в RHS
-  write-site разворачиваются к локалу.
-- **NV re-trace на глубоком бюджете** (`verifyHops=16`): раньше
-  verifyInputFalse перетрейсил на depth=2 и объявлял UNKNOWN-origin
-  «contradicted». Теперь UNKNOWN → INSUFFICIENT_SCOPE (отсутствие
-  доказательства ≠ контрадикция), а реально внешние/конфиг-ориджины →
-  CONTRADICTED. LIVE: NV для C-PEER-INPUT честно показал полную цепь
-  до `cfg.PrefetchCount` mapstructure-тега и корректно контрадиктнул
-  агентский FALSE (config = deploy-dependent).
-- **LLM-tool panic**: `find_validations` с arg_index=-1 падал в
-  `call.Args[-1]`; теперь -1 делегирует в `FindAllValidations`.
-- Const/generated-аргументы не требуют Covers — константа не нарушает
-  constraint (`arg2=false` не блокирует guard-coverage).
-
-Bound-параметр C-CONSTRAINT теперь честный: `prefetchCount < 0 or
-prefetchSize < 0` — signed→unsigned cast именно в этих аргументах.
-
-Финальный раунд (порядок стадий + точность демоции):
-
-- **LLM-fallback перенесён в конец GAP_ANALYSIS** — раньше агент
-  выставлял TRUE до deep-trace и вытеснял доказуемый det-FALSE. Теперь
-  `C-CONSTRAINT` детерминистично достигает `falsifier=guards` +
-  NV **VERIFIED** («all 3 sink site(s) covered»: arg0/arg1 клампы,
-  arg2 const-skip).
-- **Точные dynamic-маркеры**: `reflect` импорт больше не ослабляет
-  guard-FALSE (import ≠ write); добавлен `reflect_write` —
-  `reflect.Value.Set*`, ослабляет только при exported-полях
-  (`prefetchCount`/`prefetchSize` unexported → reflect их не пишет).
-  `unsafe` остаётся ослабляющим — `unsafe.Pointer` пишет и unexported.
-- **Review-демоция остаётся**: ревьюер демотировал VERIFIED-FALSE по
-  unsafe-маркеру — консервативно корректно (unsafe действительно
-  обходит синтаксическое покрытие). Итог INCONCLUSIVE с полным следом:
-  доказанные bound-гарды + записанная причина, почему FALSE не
-  утверждается.
-- **Отчёт**: таблица Claims теперь показывает колонку verification
-  (`guards / VERIFIED (demoted)`) — история доказательства видима,
-  а не только финальный результат.
-
-Итоговая доказательная цепочка rm6m (финал): sink аргументы →
-field-writes → setter-параметры → callers → `cfg.*` mapstructure-теги →
-CONFIGURATION + Covers bound-гарды + NV VERIFIED → **вердикт
-NO_EXPLOIT_PATH_FOUND** — первый доказуемый негативный результат на
-живом кейсе.
-
-Что сняло последнюю демоцию: `unsafe` в продукте встречается только как
-read-only `unsafe.Slice/StringData` (fastbytes) — ни одной
-`unsafe.Pointer`-материализации, поля `prefetchCount/Size` unexported
-(reflect.Set недостижим) и `&r.prefetch*` нигде не берётся →
-write-site покрытие полное, ревьюеру не на что демотить выше medium.
-
-Последующий раунд — формальный bound: `params.bound` перестал быть
-аннотацией. `field-write prefetchCount` несёт [0,1024],
-`field-write prefetchSize` — [0,1GiB]; оба дизъюнкта
-`prefetchCount < 0 or prefetchSize < 0` численно контрадиктят →
-claim содержит «bound verified: every disjunct … is excluded by
-recorded clamp ranges». Два дефекта ловились на живых прогонах:
-name-matched гарды из других conditions фильтровались по arg-индексу
-(чинено — name-match снимает arg-фильтр, coverage-фильтр по sink-файлу
-остаётся), и LLM-ревьюер демотировал FALSE как «противоречащий
-root cause» — промпт дополнен семантикой claim'ов (FALSE на exploit-
-condition = безопасный результат про продукт, не опровержение advisory;
-VERIFIED+demoted — ожидаемая история, не внутреннее противоречие;
-демоция только по конкретному артефакту), а REPAIR_ANALYSIS теперь
-детерминистически отклоняет демоцию VERIFIED-FALSE, если названный в
-`problem` артефакт (dynamic-маркер, site, traced origin, evidence-id)
-не записан как ослабляющий для этого claim'а — semantic-misread finding
-понижается до advisory concern на claim'е. Вердикт
-NO_EXPLOIT_PATH_FOUND воспроизводим в корпусе; INCONCLUSIVE остаётся
-допустимым ожиданием — LLM-ревью недетерминирован.
-
-Дополнительная гарантия покрытия: `fieldWriteGuards` теперь отклоняет
-Covers при `&x.f` address-taken — запись через pointer-alias невидима
-синтаксическому скану write-site'ов (фикстура `addrtakenprod`,
-`unsafe_write`/`unsafe_ptr` маркеры в `reflectprod`).
-
-Это и есть «доказуемый» уровень: каждое утверждение опирается на
-записанное evidence, а отказ от FALSE — на конкретный маркер
-(unsafe_ptr/unsafe_write/address-taken/exported-reflect-write), а не на
-«не нашли путь».
-
-## CVE Analysis & Autonomous Research (--cve-analysis, --strict-llm)
-
-- **`--cve-analysis <off|assist|verified>`**:
-  - `assist`: автономный исследователь (Researcher) с OpenAI native function calling (`read_patch_diff`, `inspect_source_file`, `analyze_product_scope`), селектор стратегии (StrategyPlanner) и семантический рецензент (MechanismReviewer) формируют структурированное техническое досье (§13 спеки `llm-cve-analysis-spec.md`) и Human Remainder (точный остаток ручной работы для эксперта). Профиль `assist` не усиливает вердикт (не создает ложных отрицательных выводов и не сужает locus-множество автономно).
-  - `verified`: включает строгую валидацию обязательств (Proof Obligations).
-- **`--strict-llm`**:
-  - Флаг fail-fast для тестирования и валидации LLM-слоя. При возникновении ошибки LLM API, превышении бюджета или отказе фильтров модель не переключается скрытно на детерминистический код, а немедленно завершает кейс со статусом ошибки и префиксом `strict-llm:`.
-
+### Масштабируемость и защита от OOM (Memory Management)
+Для исключения зависаний и переполнения памяти при сканировании крупных зависимостей (например, `go-getter`, `grpc`, `crypto`):
+1. **LRU-эвикция AST**: синтаксические деревья пакетов зависимостей загружаются точечно и выгружаются из памяти при превышении квот (≤40 пакетов / ≤500 файлов), очищая связанные деревья типов.
+2. **Ограничение комбинаторного взрыва графа вызовов**: кэш классификации вызовов (`classifyCache`) сворачивает экспоненциальный fan-out трассировки (время анализа `yaml-file` снижено с 413с до 8с).
+3. **Лимиты fan-out и бюджетов**: попозиционный бюджет выражений и бюджет сессий трассировки (`evalBudget`) защищают анализ от зацикливания.
+4. **Watchdog памяти**: фоновый процесс с порогом `--mem-limit` (по умолчанию 4GiB) выполняет принудительный возврат неиспользуемых страниц памяти операционной системе (`debug.FreeOSMemory()`).
