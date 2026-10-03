@@ -9,55 +9,62 @@
 ## 1. Контекст системы
 
 ```mermaid
-flowchart LR
+flowchart TD
     subgraph Inputs ["Входные данные"]
-        Adv["Advisory & Ticket<br>(OSV API / JSON / --ticket)"]
-        Snap["Snapshot продукта<br>(Go-репозиторий / --binary / Go version)"]
-        Cfg["Параметры и режимы<br>(--deterministic-only, --cve-analysis, --llm-intake)"]
+        direction LR
+        Adv["Advisory & Ticket<br>(OSV / JSON / --ticket)"]
+        Snap["Snapshot продукта<br>(Go repo / --binary / Go SDK)"]
+        Cfg["Параметры запуска<br>(--llm-intake, --cve-analysis)"]
     end
 
-    subgraph Core ["Izyan Engine (Детерминистическое компиляторное ядро)"]
-        Affected["1. Применимость (go list, semver)"]
-        RC["2. Локус дефекта (Root Cause AST)"]
-        Model["3. Модель условий эксплуатации"]
-        Evidence["4. Сбор доказательств (AST, SSA, Provenance)"]
-        Evaluator["5. Оценка условий (Claims)"]
-        Negative["6. Негативная верификация (Safety Gates)"]
-        Review["7. Ревью и исправление (Review & Repair)"]
-        Verdict["8. Вычисление вердикта"]
-        ReportState["9. Генерация отчётов и VEX"]
+    subgraph Architecture ["Архитектура Izyan"]
+        direction LR
 
-        Affected --> RC --> Model --> Evidence --> Evaluator --> Negative --> Review --> Verdict --> ReportState
-    end
+        subgraph Core ["Детерминистическое компиляторное ядро (Go Engine)"]
+            direction TB
+            subgraph Phase1 ["1. Фильтрация и локус"]
+                direction LR
+                S1["Применимость<br>(go list, semver)"] --> S2["Локус дефекта<br>(Root Cause AST)"] --> S3["Модель условий<br>(Exploit Patterns)"]
+            end
+            subgraph Phase2 ["2. Доказательства и факты"]
+                direction LR
+                S4["Сбор фактов<br>(AST, SSA, Provenance)"] --> S5["Оценка условий<br>(Claims Evaluators)"] --> S6["Safety Gates<br>(Negative Check)"]
+            end
+            subgraph Phase3 ["3. Аудит и вердикт"]
+                direction LR
+                S7["Ревью и ремонт<br>(Review & Repair)"] --> S8["Вычисление вердикта<br>(NOT_AFFECTED / NO_PATH)"] --> S9["Генерация отчёта<br>(Report & VEX)"]
+            end
+            Phase1 --> Phase2 --> Phase3
+        end
 
-    subgraph LLMLayer ["LLM Assistant Layer (Опциональный AI-слой)"]
-        LLMIntake["Ticket Intake Extractor<br>(--llm-intake)"]
-        LLMCVE["CVE Researcher & Dossier<br>(--cve-analysis)"]
-        LLMModel["Exploit Model Builder"]
-        LLMGap["Gap Hypothesis Planner"]
-        LLMRev["Semantic Reviewer"]
+        subgraph LLMLayer ["LLM Assistant Layer (Опционально)"]
+            direction TB
+            L1["Ticket Intake Extractor<br>(--llm-intake)"]
+            L2["CVE Researcher & Dossier<br>(--cve-analysis)"]
+            L3["Exploit Model Builder<br>(Синтез условий)"]
+            L4["Gap Hypothesis Planner<br>(Планирование гипотез)"]
+            L5["Semantic Reviewer<br>(Аудит логики)"]
+        end
     end
 
     subgraph Outputs ["Выходные артефакты"]
-        RepMD["report.md (RU) & report.en.md (EN)<br>(Inverted Pyramid + Резюме)"]
-        RepJSON["report.json (Машинное досье)"]
-        VEX["openvex.json & cyclonedx.json<br>(Стандарты VEX)"]
-        CaseSnap["AnalysisCase (Аудит-снимок)"]
+        direction LR
+        RepMD["report.md (RU) & report.en.md (EN)"]
+        RepJSON["report.json (Аудит-досье)"]
+        VEX["openvex.json & cyclonedx.json (VEX)"]
     end
 
-    Inputs --> Core
-    Inputs -.->|Свободный текст тикета| LLMIntake
-    LLMIntake -.->|Структурированные поля| Core
+    Inputs ==> Phase1
+    L1 -.->|ID, пакет, поля| S1
+    L2 <.->|Patch-diff & досье| S2
+    L3 <.->|Кандидаты условий| S3
+    L4 <.->|Гипотезы путей| S4
+    L5 <.->|Поиск противоречий| S7
 
-    RC <.->|Patch diff & гипотезы| LLMCVE
-    Model <.->|Кандидаты условий| LLMModel
-    Evidence <.->|Гипотезы путей| LLMGap
-    Review <.->|Семантический аудит| LLMRev
+    Phase3 ==> Outputs
 
-    Core --> Outputs
-
-    classDef llmNode stroke:#8b5cf6,stroke-width:2px,stroke-dasharray: 5 5;
-    class LLMIntake,LLMCVE,LLMModel,LLMGap,LLMRev llmNode;
+    classDef llmNode stroke:#8b5cf6,stroke-width:2px,stroke-dasharray: 4 4;
+    class L1,L2,L3,L4,L5 llmNode;
 ```
 
 ### Входы:
@@ -73,51 +80,40 @@ flowchart LR
 
 ```mermaid
 flowchart TD
-    CREATED --> SNAPSHOT_PRODUCT
-    SNAPSHOT_PRODUCT --> RESOLVE_VULNERABILITY
-    
-    RESOLVE_VULNERABILITY -.->|Опционально: --llm-intake| LLMIntakeStep["AI Ticket Intake<br>(Семантическое извлечение из текста)"]
-    LLMIntakeStep -.->|Anti-Hallucination Gate| RESOLVE_VULNERABILITY
+    subgraph G1 ["Фаза 1: Применимость и фильтрация"]
+        CREATED --> SNAPSHOT_PRODUCT
+        SNAPSHOT_PRODUCT --> RESOLVE_VULNERABILITY["RESOLVE_VULNERABILITY<br><i>(Детерминистический парсинг + опция: --llm-intake)</i>"]
+        RESOLVE_VULNERABILITY --> CHECK_AFFECTED
+    end
 
-    RESOLVE_VULNERABILITY --> CHECK_AFFECTED
-    
-    CHECK_AFFECTED -->|Пакет/версия не скомпилированы| StateNotAffected["EVALUATE_VERDICT (NOT_AFFECTED)"]
-    CHECK_AFFECTED -->|Уязвимый код в графе сборки| RESOLVE_ROOT_CAUSE
-    
-    RESOLVE_ROOT_CAUSE -.->|Опционально: --cve-analysis assist/verified| CVEResearch["Autonomous CVE Research<br>(Researcher + StrategyPlanner + Dossier)"]
-    CVEResearch -.->|Структурированное досье| RESOLVE_ROOT_CAUSE
-    
-    RESOLVE_ROOT_CAUSE --> BUILD_EXPLOIT_MODEL
-    BUILD_EXPLOIT_MODEL -.->|Опционально: AI Exploit Builder| LLMExploit["AI Exploit Builder<br>(Синтез модели условий)"]
-    LLMExploit -.->|Предложенные условия| BUILD_EXPLOIT_MODEL
-    
-    BUILD_EXPLOIT_MODEL --> COLLECT_EVIDENCE
-    COLLECT_EVIDENCE --> EVALUATE_CONDITIONS
-    
-    EVALUATE_CONDITIONS -->|Есть условия UNKNOWN| GAP_ANALYSIS
-    GAP_ANALYSIS -.->|Опционально: AI Gap Planner| LLMPlanner["AI Hypothesis Planner<br>(Планирование целенаправленных проверок)"]
-    LLMPlanner -.-> GAP_ANALYSIS
-    GAP_ANALYSIS -->|Собраны дополнительные факты| EVALUATE_CONDITIONS
-    GAP_ANALYSIS -->|Факты исчерпаны / фикспоинт| NEGATIVE_CHECK
-    EVALUATE_CONDITIONS -->|Все условия разрешены| NEGATIVE_CHECK
-    
-    NEGATIVE_CHECK --> REVIEW
-    REVIEW -.->|Опционально: AI Reviewer| LLMReviewer["AI Semantic Reviewer<br>(Поиск логических противоречий)"]
-    LLMReviewer -.->|Замечания| REVIEW
-    REVIEW -->|Найдены противоречия| REPAIR_ANALYSIS
-    REPAIR_ANALYSIS -->|Демоция claims до UNKNOWN| REVIEW
-    REVIEW -->|Проверка пройдена| EVALUATE_VERDICT
-    
-    StateNotAffected --> BUILD_REPORT
-    EVALUATE_VERDICT --> BUILD_REPORT
-    
-    BUILD_REPORT --> COMPLETED
-    
-    CHECK_AFFECTED -.->|Неразрешимая ошибка| FAILED
-    RESOLVE_ROOT_CAUSE -.->|Дефект не локализован| INCONCLUSIVE
+    CHECK_AFFECTED -->|Пакет/версия вне сборки| StateNotAffected["NOT_AFFECTED<br>(детерминистически)"]
 
-    classDef llmNode stroke:#8b5cf6,stroke-width:2px,stroke-dasharray: 5 5;
-    class LLMIntakeStep,CVEResearch,LLMExploit,LLMPlanner,LLMReviewer llmNode;
+    subgraph G2 ["Фаза 2: Моделирование эксплойта"]
+        CHECK_AFFECTED -->|Код в сборке| RESOLVE_ROOT_CAUSE["RESOLVE_ROOT_CAUSE<br><i>(AST коммита + опция: --cve-analysis)</i>"]
+        RESOLVE_ROOT_CAUSE --> BUILD_EXPLOIT_MODEL["BUILD_EXPLOIT_MODEL<br><i>(Паттерны условий + опция: ExploitBuilder)</i>"]
+    end
+
+    subgraph G3 ["Фаза 3: Доказательная база и анализ пробелов"]
+        BUILD_EXPLOIT_MODEL --> COLLECT_EVIDENCE["COLLECT_EVIDENCE<br>(Call Graph, SSA, Provenance)"]
+        COLLECT_EVIDENCE --> EVALUATE_CONDITIONS["EVALUATE_CONDITIONS<br>(Оценка Claims: True / False / Unknown)"]
+        EVALUATE_CONDITIONS <-->|Цикл устранения пробелов<br><i>(детерминистика + опция: AI Planner)</i>| GAP_ANALYSIS
+    end
+
+    subgraph G4 ["Фаза 4: Верификация, аудит и вердикт"]
+        EVALUATE_CONDITIONS --> NEGATIVE_CHECK["NEGATIVE_CHECK<br>(Проверка обходов: reflect, dynamic dispatch)"]
+        NEGATIVE_CHECK --> REVIEW["REVIEW<br><i>(Структурный аудит + опция: AI Reviewer)</i>"]
+        REVIEW <-->|Устранение противоречий (демоция)| REPAIR_ANALYSIS
+        REVIEW --> EVALUATE_VERDICT["EVALUATE_VERDICT<br>(EXPLOITABLE / NO_EXPLOIT_PATH_FOUND / INCONCLUSIVE)"]
+    end
+
+    subgraph G5 ["Фаза 5: Формирование отчётов"]
+        StateNotAffected --> BUILD_REPORT
+        EVALUATE_VERDICT --> BUILD_REPORT["BUILD_REPORT<br>(report.md, OpenVEX, CycloneDX)"]
+        BUILD_REPORT --> COMPLETED
+    end
+
+    CHECK_AFFECTED -.->|Ошибка| FAILED
+    RESOLVE_ROOT_CAUSE -.->|Дефект не найден| INCONCLUSIVE
 ```
 
 ### Описание стадий стейт-машины

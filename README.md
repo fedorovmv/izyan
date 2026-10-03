@@ -38,13 +38,11 @@ flowchart TD
     subgraph Intake ["Входные данные и Intake"]
         A["Тикет / Чат / Advisory"]
         DetParse["Детерминистический парсинг<br>(OSV JSON, regex)"]
-        LLMParse["AI-интейк (--llm-intake)<br>Семантическое извлечение"]
-        AntiHalluc["Anti-Hallucination Gate<br>(Проверка наличия в исходном тексте)"]
+        LLMParse["AI-интейк (--llm-intake)<br><i>(Anti-Hallucination Gate)</i>"]
 
         A --> DetParse
         A -.->|Свободный текст| LLMParse
-        LLMParse -.->|Структурированная гипотеза| AntiHalluc
-        AntiHalluc --> DetParse
+        LLMParse -.->|ID, пакет, метаданные| DetParse
     end
 
     DetParse --> B["Анализ графа сборки<br>(go list -m, go list -deps, semver)"]
