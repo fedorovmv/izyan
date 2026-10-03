@@ -96,13 +96,13 @@ flowchart TD
     subgraph G3 ["Фаза 3: Доказательная база и анализ пробелов"]
         BUILD_EXPLOIT_MODEL --> COLLECT_EVIDENCE["COLLECT_EVIDENCE<br>(Call Graph, SSA, Provenance)"]
         COLLECT_EVIDENCE --> EVALUATE_CONDITIONS["EVALUATE_CONDITIONS<br>(Оценка Claims: True / False / Unknown)"]
-        EVALUATE_CONDITIONS <-->|Цикл устранения пробелов<br><i>(детерминистика + опция: AI Planner)</i>| GAP_ANALYSIS
+        EVALUATE_CONDITIONS <-->|Цикл устранения пробелов| GAP_ANALYSIS["GAP_ANALYSIS<br><i>(детерминистика + опция: AI Planner)</i>"]
     end
 
     subgraph G4 ["Фаза 4: Верификация, аудит и вердикт"]
         EVALUATE_CONDITIONS --> NEGATIVE_CHECK["NEGATIVE_CHECK<br>(Проверка обходов: reflect, dynamic dispatch)"]
         NEGATIVE_CHECK --> REVIEW["REVIEW<br><i>(Структурный аудит + опция: AI Reviewer)</i>"]
-        REVIEW <-->|Устранение противоречий (демоция)| REPAIR_ANALYSIS
+        REVIEW <-->|Устранение противоречий| REPAIR_ANALYSIS["REPAIR_ANALYSIS<br><i>(демоция до UNKNOWN)</i>"]
         REVIEW --> EVALUATE_VERDICT["EVALUATE_VERDICT<br>(EXPLOITABLE / NO_EXPLOIT_PATH_FOUND / INCONCLUSIVE)"]
     end
 
