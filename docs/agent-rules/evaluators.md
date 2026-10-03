@@ -8,9 +8,18 @@
   `ServerTransportInput`, `ArgumentOrigin`, `Validation`, `Exposure`,
   `Authentication`, `ConfigFlag`, `Presence`, `VersionFact`,
   `Platform`, `Custom`.
+- `SymbolReachable`: проверяет как стандартную достижимость символов,
+  так и defect locus условия (`C-LOCUS`) через `evalLocus`.
+  При отсутствии пакета дефекта в графе сборки выставляет
+  `FalsifierLocusPackageAbsent`; при наличии пакета, но недостижимости
+  функции дефекта в callgraph продукта — `FalsifierLocusFunctionUnreached`.
+  Оба являются строгими валидными фальсификаторами для safe-negative вердикта.
 - `ArgumentOrigin`: INPUT_CONSTRAINT falsified by guards только при
   `unknown == 0` по всем flows и полном покрытии mutable-аргументов;
-  const/GENERATED не требуют Covers.
+  const/GENERATED не требуют Covers. При отсутствии внешних и неизвестных
+  источников и поступлении только compile-time констант/GENERATED генерирует
+  `FalsifierConstantOrGeneratedInput`; для чтения локальных конфигурационных
+  файлов (`OriginConfiguration`) — `FalsifierTrustedInfrastructure`.
 - `Authentication` никогда не FALSE: отсутствие auth-wiring в скане
   ≠ отсутствие auth (per-handler/gateway/deployment вне скана).
 - LLM claim-fallback — только в конце GAP_ANALYSIS после

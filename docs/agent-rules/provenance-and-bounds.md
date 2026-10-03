@@ -15,6 +15,14 @@
   обязательный default.
 - `&x.field` address-taken → field-guard покрытие отклоняется:
   pointer-alias пишет мимо write-site скана.
+- Изоляция константного пейлоада от парсеров: если все вызовы sink
+  принимают только константы или сгенерированные структуры (`SafeOrigin`),
+  эвристика `closureGate` не сбрасывает `FalsifierConstantOrGeneratedInput`
+  в `UNKNOWN` из-за вспомогательных обходов структур рефлексией/декодерами
+  внутри пакета парсера.
+- Локальная конфигурация (`OriginConfiguration`, напр. `os.ReadFile`):
+  трактуется как доверенная инфраструктура развёртывания
+  (`FalsifierTrustedInfrastructure`), когда внешние источники отсутствуют.
 
 ## Dependency scope (vendor-internal provenance)
 
@@ -40,9 +48,12 @@
   честный UNKNOWN, эвристика unexported+peer-driven остаётся fallback.
 - Dep-FALSE: `verifyInputFalse` перетрейсит те же dep-сайты
   (`FindDepCallers`), не product-callers; неразрешённый трейс →
-  INSUFFICIENT_SCOPE, никогда не FALSE. `ServerTransportInput`:
-  resolved flows → `ArgumentOrigin` (trace побеждает эвристику);
-  flows пусто/все UNKNOWN → эвристика.
+  INSUFFICIENT_SCOPE, никогда не FALSE. При `FalsifierConstantOrGeneratedInput`
+  (все вызовы от `SafeOrigin`) и `FalsifierTrustedInfrastructure`
+  (все вызовы от `OriginConfiguration`) negative verification даёт
+  VERIFIED без требования инвентаризации внутренних хелперов парсера.
+  `ServerTransportInput`: resolved flows → `ArgumentOrigin` (trace побеждает
+  эвристику); flows пусто/все UNKNOWN → эвристика.
 
 ## Numeric bounds
 

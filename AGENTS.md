@@ -21,7 +21,7 @@ Go vulnerability analyzer. Определяет применимость и эк
 * CLI: `cmd/analyzer`.
 * Тестовые mini-repo: `testdata/`.
 * Канонический backlog: `docs/dev/current/gap-analysis.md`.
-* Live corpus: `eval/README.md` и `eval/live-corpus.json`.
+* Бенчмарки и корпуса: автономный `eval/corpus-real.json` (38 кейсов) и live-корпус `eval/live-corpus.json` (`eval/README.md`).
 * Приватные локальные пути не коммитить.
 
 ## Правила изменения
@@ -43,7 +43,7 @@ go vet ./...
 go test ./...
 ```
 
-Для изменений анализатора также должен проходить live corpus с `false-safe=0`.
+Для изменений анализатора корпуса (`eval/corpus-real.json` и `eval/live-corpus.json`) должны проходить с `false-safe=0`.
 
 ## Дополнительные правила
 
@@ -62,7 +62,7 @@ go test ./...
 | правка `internal/goanalysis/knowledge.json`, `--knowledge` | `knowledge-base.md`                 |
 | `internal/goanalysis`                | `provenance-and-bounds.md`, `dynamic-markers.md` |
 | `internal/evaluator`, `cmd/analyzer` | `evaluators.md`                                  |
-| `internal/llm`, `internal/states`    | `llm-layer.md`                                   |
+| `internal/llm`, `internal/states`, `internal/cveanalysis` | `llm-layer.md`              |
 | документация и закрытие backlog      | `docs-sync.md`                                   |
 
 Если задача затрагивает несколько областей, прочитай все соответствующие правила.

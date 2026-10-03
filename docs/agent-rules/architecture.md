@@ -5,11 +5,11 @@
 ## Хребет системы
 
 - Сквозной пайплайн — state machine: `CREATED → SNAPSHOT_PRODUCT →
-  RESOLVE_VULNERABILITY → CHECK_AFFECTED → RESOLVE_ROOT_CAUSE →
-  BUILD_EXPLOIT_MODEL → COLLECT_EVIDENCE → EVALUATE_CONDITIONS →
-  [NEGATIVE_CHECK] → [REVIEW] → EVALUATE_VERDICT → BUILD_REPORT →
-  COMPLETED`. Новая логика — состояние или evidence-тип, не обходные
-  пути.
+  RESOLVE_VULNERABILITY → CHECK_AFFECTED → RESOLVE_ROOT_CAUSE
+  (с автономным CVE research) → BUILD_EXPLOIT_MODEL → COLLECT_EVIDENCE →
+  EVALUATE_CONDITIONS → [GAP_ANALYSIS] → NEGATIVE_CHECK → REVIEW →
+  [REPAIR_ANALYSIS] → EVALUATE_VERDICT → BUILD_REPORT → COMPLETED`.
+  Новая логика — состояние или evidence-тип, не обходные пути.
 - Детерминистическое ядро + опциональный LLM-слой: LLM — адаптеры с
   бюджетами и fallback'ами, никогда не источник истины. Всё, что можно
   проверить детерминистически — проверяется детерминистически.
