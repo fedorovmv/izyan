@@ -1,0 +1,133 @@
+name: Release
+
+on:
+  push:
+    branches: [ master ]
+    tags: [ 'v*' ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build & Publish Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          check-latest: true
+          cache: true
+
+      - name: Determine version metadata
+        id: vars
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/}"
+            IS_TAG="true"
+          else
+            VERSION="master-${GITHUB_SHA::7}"
+            IS_TAG="false"
+          fi
+          BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "is_tag=${IS_TAG}" >> "$GITHUB_OUTPUT"
+          echo "date=${BUILD_DATE}" >> "$GITHUB_OUTPUT"
+          echo "commit=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Build release binaries
+        run: |
+          mkdir -p dist
+          VERSION="${{ steps.vars.outputs.version }}"
+          COMMIT="${{ steps.vars.outputs.commit }}"
+          DATE="${{ steps.vars.outputs.date }}"
+          LDFLAGS="-s -w -X main.Version=${VERSION} -X main.Commit=${COMMIT} -X main.Date=${DATE}"
+
+          # Target platforms
+          targets=(
+            "linux/amd64/izyan-linux-amd64"
+            "linux/arm64/izyan-linux-arm64"
+            "darwin/arm64/izyan-darwin-arm64"
+            "darwin/amd64/izyan-darwin-amd64"
+            "windows/amd64/izyan-windows-amd64.exe"
+          )
+
+          for target in "${targets[@]}"; do
+            IFS='/' read -r goos goarch binary <<< "$target"
+            echo "==> Building ${binary} for ${goos}/${goarch}..."
+            CGO_ENABLED=0 GOOS="${goos}" GOARCH="${goarch}" go build \
+              -trimpath \
+              -ldflags="${LDFLAGS}" \
+              -o "dist/${binary}" \
+              ./cmd/izyan
+          done
+
+      - name: Package archives and checksums
+        run: |
+          VERSION="${{ steps.vars.outputs.version }}"
+          cd dist
+
+          # Package compressed archives for release distributions
+          tar -czvf "izyan-${VERSION}-linux-amd64.tar.gz" izyan-linux-amd64
+          tar -czvf "izyan-${VERSION}-linux-arm64.tar.gz" izyan-linux-arm64
+          tar -czvf "izyan-${VERSION}-darwin-arm64.tar.gz" izyan-darwin-arm64
+          tar -czvf "izyan-${VERSION}-darwin-amd64.tar.gz" izyan-darwin-amd64
+          zip -j "izyan-${VERSION}-windows-amd64.zip" izyan-windows-amd64.exe
+
+          # Generate SHA256 checksums
+          sha256sum izyan-* > SHA256SUMS
+          echo "Generated SHA256 checksums:"
+          cat SHA256SUMS
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: izyan-${{ steps.vars.outputs.version }}
+          path: dist/*
+          retention-days: 30
+
+      - name: Publish GitHub Release (Tags)
+        if: steps.vars.outputs.is_tag == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG_NAME="${{ steps.vars.outputs.version }}"
+          gh release create "${TAG_NAME}" dist/* \
+            --title "Release ${TAG_NAME}" \
+            --generate-notes || echo "::warning::Failed to create GitHub release for ${TAG_NAME}. Check Actions permissions."
+
+      - name: Publish / Update Latest Master Release
+        if: steps.vars.outputs.is_tag == 'false'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG_NAME="latest"
+          TITLE="Latest Build (master)"
+          NOTES="Automated release build from commit ${{ steps.vars.outputs.commit }} on master ($(date -u +'%Y-%m-%d %H:%M UTC'))."
+
+          if gh release view "${TAG_NAME}" >/dev/null 2>&1; then
+            echo "Release ${TAG_NAME} exists; updating assets..."
+            gh release upload "${TAG_NAME}" dist/* --clobber || true
+            gh release edit "${TAG_NAME}" \
+              --title "${TITLE}" \
+              --notes "${NOTES}" \
+              --target "${{ steps.vars.outputs.commit }}" || true
+          else
+            echo "Creating ${TAG_NAME} prerelease..."
+            gh release create "${TAG_NAME}" dist/* \
+              --title "${TITLE}" \
+              --notes "${NOTES}" \
+              --prerelease \
+              --target "${{ steps.vars.outputs.commit }}" || echo "::warning::Could not create release. Ensure GitHub Actions has 'Read and write permissions' enabled in Repository Settings -> Actions -> General -> Workflow permissions."
+          fi

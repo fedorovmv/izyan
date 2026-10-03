@@ -49,6 +49,9 @@ func main() {
 		err = runRemediate(os.Args[2:])
 	case "knowledge":
 		err = runKnowledge(os.Args[2:])
+	case "version", "-version", "--version", "-v":
+		printVersion()
+		return
 	default:
 		usage()
 	}
@@ -65,6 +68,7 @@ func usage() {
   izyan eval    --corpus <path> [--repo <path>] [--case <id|glob>] [-j <n>] [--clean] [options]  # corpus regression run
   izyan remediate --repo <path> --vuln <id> [--apply] [--run-tests]  # plan/apply fix + re-analyze
   izyan knowledge [--knowledge <path>]  # dump the effective ecosystem knowledge base
+  izyan version                           # show version information
 
 options:
   --vuln-file <path>     load advisory from local OSV JSON instead of api.osv.dev
