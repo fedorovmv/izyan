@@ -207,3 +207,34 @@ func TestCLI_CheckoutReleaseValidation(t *testing.T) {
 		t.Fatalf("expected error to mention 'no release specified', got: %s", string(out))
 	}
 }
+
+func TestCLI_VulnFileStandalone(t *testing.T) {
+	repoPath := filepath.Join("..", "..", "testdata", "locuslib")
+	vulnFile := filepath.Join("..", "..", "eval", "advisories", "real", "GO-2026-6443.json")
+	caseDir := filepath.Join(t.TempDir(), "case")
+
+	// Run analyze with only --vuln-file (omitting --vuln)
+	cmd := exec.Command("go", "run", ".", "analyze",
+		"--repo", repoPath,
+		"--vuln-file", vulnFile,
+		"--case-dir", caseDir,
+		"--deterministic-only",
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("command failed with --vuln-file alone: %v, output: %s", err, string(out))
+	}
+
+	matches, err := filepath.Glob(filepath.Join(caseDir, "*", "report.md"))
+	if err != nil || len(matches) == 0 {
+		t.Fatalf("failed to find report.md in %s, output: %s", caseDir, string(out))
+	}
+
+	data, err := os.ReadFile(matches[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "GO-2026-6443") {
+		t.Errorf("report missing vulnerability ID GO-2026-6443")
+	}
+}

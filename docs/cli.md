@@ -43,6 +43,126 @@ izyan analyze --repo /src/product --vuln GO-2025-3595 [флаги]
 | `--non-locus-basis <sym:reason[:author]>` | экспертное исключение символа из сайтов дефекта (L = declared set − basis); повторяемый флаг |
 | `--accept-locus-proposals` | автоматически применить проверенные машинные предложения (`ProposedNonLocus`) в модель анализа без ручного ввода `--non-locus-basis` (не модифицирует код продукта) |
 
+### Входные форматы описания уязвимости
+
+Анализатор может загружать описание уязвимости тремя путями:
+1. **По идентификатору из базы OSV API** (`--vuln <id>`): автоматический сетевой запрос к `api.osv.dev` (Go Vulnerability Database);
+2. **Из локального файла уязвимости OSV JSON** (`--vuln-file <path>`): офлайн-файл в открытом стандарте OSV;
+3. **Из файла задачи/тикета трекера или произвольного текста** (`--ticket <path>`): структурированный JSON либо свободный текст из Jira/GitLab/чата/сканера.
+
+#### 1. Локальный файл уязвимости OSV JSON (`--vuln-file <path>`)
+
+Флаг `--vuln-file` загружает документ уязвимости из локального файла. Идентификатор уязвимости (`--vuln`) можно опустить — он автоматически считывается из поля `id` внутри файла.
+
+Сценарии использования:
+* **Air-gapped и изолированные контуры**: выполнение анализа в закрытых средах без выхода в интернет;
+* **Приватные / unreleased / 0-day уязвимости**: проверка ещё не опубликованных отчётов безопасности и результатов внутреннего пентеста;
+* **Воспроизводимый аудит**: фиксация точной версии advisory для детерминированного повторения в CI/CD без сетевых зависимостей.
+
+Формат соответствует открытому стандарту **[OSV (Open Source Vulnerability Schema)](https://ossf.github.io/osv-schema/)**:
+
+```json
+{
+  "schema_version": "1.3.1",
+  "id": "GO-2026-6443",
+  "modified": "2026-09-15T18:39:25Z",
+  "published": "2026-09-15T18:39:25Z",
+  "aliases": ["CVE-2026-84445", "GHSA-2v4p-qf9q-27wj"],
+  "summary": "Server panic via missing authority or Host headers in google.golang.org/grpc",
+  "details": "In google.golang.org/grpc, servers configured with xDS routing can panic when processing requests that lack both :authority and Host headers. The HTTP/2 transport layer accepted requests missing these headers, and the xDS server routing interceptor attempted to index the empty authority slice, causing an unhandled panic and terminating the server.",
+  "affected": [
+    {
+      "package": {
+        "name": "google.golang.org/grpc",
+        "ecosystem": "Go"
+      },
+      "ranges": [
+        {
+          "type": "SEMVER",
+          "events": [
+            { "introduced": "0" },
+            { "fixed": "1.82.2" },
+            { "introduced": "1.83.0" },
+            { "fixed": "1.83.2" }
+          ]
+        }
+      ],
+      "ecosystem_specific": {
+        "imports": [
+          {
+            "path": "google.golang.org/grpc/internal/transport",
+            "symbols": [
+              "http2Server.HandleStreams",
+              "http2Server.operateHeaders"
+            ]
+          },
+          {
+            "path": "google.golang.org/grpc/internal/xds/server",
+            "symbols": [
+              "RouteAndProcess"
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "references": [
+    { "type": "FIX", "url": "https://github.com/grpc/grpc-go/pull/9365" }
+  ]
+}
+```
+
+Примеры запуска:
+```bash
+# Идентификатор уязвимости читается автоматически из поля "id":
+izyan analyze --repo /path/to/project --vuln-file ./advisory.json
+
+# С явным указанием ID уязвимости (для валидации совпадения с документом):
+izyan analyze --repo /path/to/project --vuln GO-2026-6443 --vuln-file ./advisory.json
+```
+
+#### 2. Структурированный файл задачи (`--ticket ticket.json`)
+
+Позволяет описать задачу аудита в едином JSON-файле:
+
+```json
+{
+  "id": "SEC-538506",
+  "vulnerability": "GO-2026-6443",
+  "aliases": ["CVE-2026-84445"],
+  "component": "api-gateway",
+  "release": "v24.2.0",
+  "module": "google.golang.org/grpc",
+  "package": "google.golang.org/grpc/internal/transport",
+  "fixed_versions": ["1.82.2"],
+  "description": "DoS-уязвимость в gRPC сервере при пустых HTTP/2 authority-заголовках"
+}
+```
+
+Если тикет содержит полный встроенный OSV-документ, его можно положить в поле `"osv"`:
+```json
+{
+  "id": "SEC-538506",
+  "vulnerability": "GO-2026-6443",
+  "component": "api-gateway",
+  "release": "24.2",
+  "osv": {
+    "id": "GO-2026-6443",
+    "affected": [
+      {
+        "package": { "name": "google.golang.org/grpc" },
+        "ranges": [{ "type": "SEMVER", "events": [{ "introduced": "0" }, { "fixed": "1.82.2" }] }]
+      }
+    ]
+  }
+}
+```
+
+Пример запуска:
+```bash
+izyan analyze --repo /path/to/project --ticket ./ticket.json --checkout-release
+```
+
 ### Интеграция с трекерами задач и произвольным текстом (`--ticket`)
 
 Анализатор поддерживает автоматический умный импорт информации без необходимости вручную вычленять идентификаторы:

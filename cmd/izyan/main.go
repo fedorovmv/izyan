@@ -269,6 +269,16 @@ func runAnalyze(args []string) error {
 			return err
 		}
 	}
+	if o.vulnID == "" && o.vulnFile != "" {
+		if b, err := os.ReadFile(o.vulnFile); err == nil {
+			var doc struct {
+				ID string `json:"id"`
+			}
+			if err := json.Unmarshal(b, &doc); err == nil && doc.ID != "" {
+				o.vulnID = doc.ID
+			}
+		}
+	}
 	if o.repo == "" || o.vulnID == "" {
 		usage()
 	}
