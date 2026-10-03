@@ -59,21 +59,22 @@ LLM используется для семантических задач: ан�
 В MVP входят:
 
 - Go repositories;
-- Go Vulnerability Database / OSV;
-- affected resolver;
+- Go Vulnerability Database / OSV API;
+- affected resolver (детерминистическая проверка `go list -m all`, `go list -deps`, semver);
 - fix/reference resolver;
-- Root Cause Resolver;
-- Exploit Condition Builder;
+- Root Cause Resolver и разделение локуса дефекта (`DefectLocus`, `ProposedNonLocus`, `--accept-locus-proposals`);
+- Exploit Condition Builder (декларативные паттерны по CWE и классам уязвимостей);
 - `govulncheck` как основной Go-specific reachability source;
-- targeted source analysis;
-- argument provenance;
-- поиск релевантной validation;
+- targeted source analysis и Data Provenance (с изоляцией константного ввода от рефлексии парсеров и распознаванием доверенной инфраструктуры);
+- поиск релевантной validation и сдерживающих проверок (guards);
 - EvidenceGraph;
 - `TRUE/FALSE/UNKNOWN` claims;
-- negative-check для сильного `FALSE`;
-- Reviewer;
+- negative-check для сильного `FALSE` с защитными предохранителями (Missing-Call Safety Gate);
+- Reviewer и Repair loop (только безопасная демоция claims);
 - deterministic Verdict Engine;
-- JSON + human-readable report.
+- автономный исследовательский AI-слой (`--cve-analysis assist|verified`);
+- планирование и применение обновлений зависимостей (`remediate --apply [--run-tests] [--worktree]`);
+- отчётность: двуязычные отчёты по принципу Inverted Pyramid (`report.md` RU с разделом `## Резюме` для Jira/GitLab, `report.en.md` EN) + экспорт в стандарты VEX (**OpenVEX**, **CycloneDX VEX**) и `report.json`.
 
 Не входят в MVP:
 
@@ -81,8 +82,7 @@ LLM используется для семантических задач: ан�
 - собственный полный call-graph engine вместо `govulncheck`;
 - RAG по всему репозиторию;
 - vector DB;
-- сложный multi-agent workflow;
-- автоматическое исправление кода и создание PR;
+- создание Pull Request через сетевые API внешних хостингов (GitHub/GitLab PR API — исправление применяется только локально/в git worktree через `remediate`);
 - полноценная runtime instrumentation platform.
 
 ## Критерий успеха
@@ -94,7 +94,8 @@ Root Cause
  -> Exploit Conditions
  -> Evidence
  -> Claims
- -> Verdict
+ -> deterministic Verdict
 ```
 
-Критическая ошибка — необоснованный safe verdict (`NO_EXPLOIT_PATH_FOUND`) для фактически эксплуатируемой или неразрешённой уязвимости.
+* **Абсолютный стоп-критерий (`false-safe = 0`)**: ни один необоснованный safe verdict (`NO_EXPLOIT_PATH_FOUND`) не допускается для фактически эксплуатируемой или неразрешённой уязвимости.
+* **Бизнес-эффект (Cleared Rate ≥ 50%)**: безопасное автоматическое снятие шумных алертов `govulncheck` (`REACHABLE` / `package-level`) при доказанной неэксплуатируемости дефекта в снимке продукта.

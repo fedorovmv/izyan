@@ -87,32 +87,74 @@ vuln-analyzer analyze --repo /src/product --vuln GO-XXXX-YYYY \
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 3,
   "language": "go",
   "name": "corp",
   "labels": ["corp", "internal"],
   "data_version": "2026-10-05",
-  "source_funcs": {"example.com/cfg.LoadSecrets": "SECRET"},
-  "passthrough_funcs": {"example.com/buf.Clone": [{"from": 0}]},
-  "slice_populate_funcs": ["example.com/x.FillAll"],
-  "read_into_methods": ["FetchInto"],
-  "recv_mutate_methods": ["Merge"],
-  "populate_names": ["FromYAML"],
-  "config_tag_keys": ["vault"],
-  "auth_call_names": ["WithToken"],
-  "db_pkgs": ["example.com/store"],
-  "service_call_pkg_hints": ["example.com/rpc"],
-  "http_client_pkgs": ["example.com/hclient"],
-  "listener_primitives": ["example.com/serve.Bind"],
-  "listen_addr_arg": {"example.com/serve.Bind": 0}
+  "source_funcs": {
+    "example.com/cfg.LoadSecrets": "CONFIGURATION",
+    "example.com/api.FetchExternal": "EXTERNAL_UNTRUSTED"
+  },
+  "passthrough_funcs": {
+    "example.com/buf.Clone": 0
+  },
+  "args_merge_funcs": {
+    "example.com/util.FormatKey": true
+  },
+  "passthrough_methods": {
+    "Payload": true
+  },
+  "slice_populate_funcs": {
+    "example.com/x.FillAll": [1, 0]
+  },
+  "read_into_methods": {
+    "FetchInto": true
+  },
+  "recv_mutate_methods": {
+    "Merge": true
+  },
+  "populate_names": {
+    "FromYAML": true
+  },
+  "config_tag_keys": [
+    "vault"
+  ],
+  "auth_call_names": {
+    "WithToken": true
+  },
+  "db_pkgs": [
+    "example.com/store"
+  ],
+  "db_pkg_hints": [
+    "corpstore"
+  ],
+  "service_call_pkg_hints": [
+    "example.com/rpc"
+  ],
+  "http_client_pkgs": {
+    "example.com/hclient": true
+  },
+  "listener_primitives": [
+    {
+      "package": "example.com/serve",
+      "symbol": "Bind"
+    }
+  ],
+  "listen_addr_arg": {
+    "example.com/serve.Bind": 0
+  },
+  "string_semantics": {
+    "example.com/url.Normalize": "identity_if_schemed"
+  }
 }
 ```
 
 Метаданные:
 
-- `schema_version` — уровень формата файла (текущий — 1). Файл без
-  поля читается как v1; сборка принимает схемы не новее своей, файл
-  свежей схемы отклоняется с понятной ошибкой, а не misparse-ом.
+- `schema_version` — уровень формата файла (текущий — 3). Файл без
+  поля читается как v1; сборка принимает схемы до 3 включительно, файл
+  более новой схемы отклоняется с понятной ошибкой, а не misparse-ом.
 - `language` — семейство анализатора; файл с чужим языком (например,
   `"java"`) отклоняется. Можно опустить.
 - `name` — имя источника; попадает в `sources` отчёта как
@@ -124,25 +166,31 @@ vuln-analyzer analyze --repo /src/product --vuln GO-XXXX-YYYY \
 
 Поля данных:
 
-- `source_funcs` — `полное имя вызова → DataOrigin`
-  (`REMOTE_INPUT`, `CONFIGURATION`, `FILESYSTEM`, `STDIN`, `SECRET`,
-  `CLI_ARG`, `DATABASE`, `SERVICE_CALL`, `INTERNAL_STATE`, `CONSTANT`).
-- `passthrough_funcs` — вызов возвращает данные аргумента `from`
-  (0-based).
-- `slice_populate_funcs` — вызов заполняет slice-аргумент целиком.
-- `read_into_methods` — методы читают данные в receiver/аргумент
-  (`Read`, `Scan`, …).
-- `recv_mutate_methods` — мутируют receiver (`Write`, `Set`, …).
-- `populate_names` — имена populate/unmarshal-семейства (`Unmarshal`,
-  `Decode`, `Set`, `Load`, …).
-- `config_tag_keys` — struct-теги конфиг-источников (`env`,
-  `mapstructure`, …).
-- `auth_call_names` — имена auth-вызовов на клиентских объектах.
-- `db_pkgs` — пакеты БД; `db_pkg_hints` — подстроки имён пакетов БД.
-- `service_call_pkg_hints` — подстроки имён сервисных клиентов.
-- `http_client_pkgs` — пакеты http-клиентов.
-- `listener_primitives` — вызовы, открывающие точку входа.
-- `listen_addr_arg` — `вызов → индекс аргумента-адреса`.
+- `source_funcs` — `полное имя вызова → DataOrigin`.
+  Допустимые значения перечисления `domain.DataOrigin`:
+  - `EXTERNAL_UNTRUSTED` — недоверенные внешние данные (сетевые запросы, публичный HTTP/gRPC);
+  - `EXTERNAL_AUTHENTICATED` — внешние данные от аутентифицированного клиента;
+  - `CONFIGURATION` — конфигурационные файлы, переменные окружения, аргументы CLI;
+  - `DATABASE` — данные из СУБД и постоянных хранилищ;
+  - `INTERNAL_SERVICE` — ответы доверенных внутренних сервисов;
+  - `CONSTANT` — неизменяемые константы и литералы времени компиляции;
+  - `GENERATED` — случайные или псевдослучайные значения (UUID, crypto/rand);
+  - `UNKNOWN` — неразрешимый источник.
+- `passthrough_funcs` — `вызов → индекс аргумента` (0-based), данные которого возвращаются в качестве результата.
+- `args_merge_funcs` — `вызов → true`: функции-комбинаторы, объединяющие происхождение нескольких аргументов (`fmt.Sprintf`, `errors.Join`, `bytes.Join`).
+- `passthrough_methods` — `метод → true`: методы-аксессоры, возвращающие данные ресивера (`Text()`, `Bytes()`, `String()`).
+- `slice_populate_funcs` — `вызов → [dst, src]`: функции, заполняющие срез `dst` из источника `src` (`io.ReadFull`, `binary.Read`, `io.Copy`).
+- `read_into_methods` — `метод → true`: методы, читающие данные в аргумент-срез (`Read`, `ReadAt`).
+- `recv_mutate_methods` — `метод → true`: методы, добавляющие данные аргумента в ресивер (`Write`, `WriteString`, `ReadFrom`).
+- `populate_names` — `имя метода/функции → true`: unmarshal/decode семейство (`Unmarshal`, `Decode`, `UnmarshalExact`).
+- `config_tag_keys` — struct-теги конфиг-источников (`env`, `mapstructure`, `yaml`, `toml`).
+- `auth_call_names` — `метод → true`: вызовы прикрепления авторизационных данных на клиентских объектах (`SetBasicAuth`, `WithToken`).
+- `db_pkgs` — точные пути пакетов БД; `db_pkg_hints` — подстроки имён пакетов БД.
+- `service_call_pkg_hints` — подстроки имён сервисных RPC-клиентов.
+- `http_client_pkgs` — `пакет → true`: пакеты http-клиентов.
+- `listener_primitives` — вызовы, открывающие точку входа (`[{"package": "...", "symbol": "..."}]`).
+- `listen_addr_arg` — `вызов → индекс аргумента-адреса` (-1, если адрес задается вне вызова).
+- `string_semantics` — `вызов → трансформация`: детерминированные строковые трансформации для разрешения ключей диспетчеризации (`identity_if_schemed`, `forced_split`, `subdir_split`).
 
 ## Семантика мержа
 
