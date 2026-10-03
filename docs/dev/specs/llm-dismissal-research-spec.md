@@ -5,12 +5,12 @@
 сохранении документа.
 
 План исполнения:
-[`llm-dismissal-research-plan.md`](../plans/llm-dismissal-research-plan.md).
+[`llm-dismissal-research-roadmap.md`](../roadmaps/llm-dismissal-research-roadmap.md).
 
 Следующее направление — самостоятельное исследование условий CVE,
 выбор стратегии, независимая валидация, контекстная критичность и полное
 обоснование решения: [спецификация](llm-cve-analysis-spec.md),
-[план реализации](../plans/llm-cve-analysis-plan.md). Они развивают
+[роадмап реализации](../roadmaps/llm-cve-analysis-roadmap.md). Они развивают
 §3.1–3.8; действующая экспертная граница B30 сохраняется до реализации
 проверенного necessity/completeness capability.
 

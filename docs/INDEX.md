@@ -6,8 +6,8 @@
 - `dev/specs/` — спецификации и контракты (что система должна делать;
   нормативные, меняются редко и осознанно)
 - `dev/decisions/` — принятые архитектурные решения и запреты
-- `dev/plans/` — планы реализации фич (рабочие документы срезов; после
-  завершения остаются как история решения, статус в колонке)
+- `dev/roadmaps/` — роадмапы развития фич и исследовательских направлений
+  (стратегические документы срезов; после завершения фичи переносятся в архив)
 - `dev/current/` — живое состояние для разработчиков: статус,
   gap analysis + бэклог
 - `agent-rules/` — рабочие правила для агентов (on-demand, индекс в
@@ -39,15 +39,15 @@
 | [`dev/specs/llm-cve-analysis-spec.md`](dev/specs/llm-cve-analysis-spec.md) | актуальный | Автономное LLM-исследование механизма CVE, стратегии, валидация доказательств, контекстная критичность; B31–B33 |
 | [`dev/specs/llm-dismissal-research-spec.md`](dev/specs/llm-dismissal-research-spec.md) | исследовательская | LLM-assisted отклонение, экспертное досье, deployment и контекстная критичность; B27 |
 
-#### Активные планы развития / роадмапы (`dev/plans/`)
+#### Роадмапы развития (`dev/roadmaps/`)
 
 | Файл | Статус | Назначение |
 |---|---|---|
-| [`dev/plans/llm-cve-analysis-plan.md`](dev/plans/llm-cve-analysis-plan.md) | в работе | Поэтапная поставка research/dossier, validated proof capabilities и критичности (задачи 1–6 выполнены, 7–16 в плане); B31–B33 |
-| [`dev/plans/ingress-closure-plan.md`](dev/plans/ingress-closure-plan.md) | в работе | Ingress closure: полный inventory входов в reachable dep cone; falsifier `constant-or-generated-input`; B26 |
-| [`dev/plans/corpus-expansion-plan.md`](dev/plans/corpus-expansion-plan.md) | бэклог | Расширение доказательной базы: generated-manifest продукты, baseline vs govulncheck; B13 |
-| [`dev/plans/llm-dismissal-research-plan.md`](dev/plans/llm-dismissal-research-plan.md) | исследование | Пошаговая проверка локального type gate в jose2go: 4 контрольных продукта, baseline, LLM-прогоны и досье; B27 |
-| [`dev/plans/llm-advisory-plan.md`](dev/plans/llm-advisory-plan.md) | бэклог | LLM advisory-контур (D16): параллельная оценка, llm_assessment.json; B17 |
+| [`dev/roadmaps/llm-cve-analysis-roadmap.md`](dev/roadmaps/llm-cve-analysis-roadmap.md) | в работе | Поэтапная поставка research/dossier, validated proof capabilities и критичности (задачи 1–6 выполнены, 7–16 в плане); B31–B33 |
+| [`dev/roadmaps/ingress-closure-roadmap.md`](dev/roadmaps/ingress-closure-roadmap.md) | в работе | Ingress closure: полный inventory входов в reachable dep cone; falsifier `constant-or-generated-input`; B26 |
+| [`dev/roadmaps/corpus-expansion-roadmap.md`](dev/roadmaps/corpus-expansion-roadmap.md) | бэклог | Расширение доказательной базы: generated-manifest продукты, baseline vs govulncheck; B13 |
+| [`dev/roadmaps/llm-dismissal-research-roadmap.md`](dev/roadmaps/llm-dismissal-research-roadmap.md) | исследование | Пошаговая проверка локального type gate в jose2go: 4 контрольных продукта, baseline, LLM-прогоны и досье; B27 |
+| [`dev/roadmaps/llm-advisory-roadmap.md`](dev/roadmaps/llm-advisory-roadmap.md) | бэклог | LLM advisory-контур (D16): параллельная оценка, llm_assessment.json; B17 |
 
 #### Текущее состояние разработки (`dev/current/`)
 
