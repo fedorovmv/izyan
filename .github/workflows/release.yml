@@ -14,9 +14,6 @@ on:
         required: true
         type: string
 
-env:
-  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
-
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
@@ -46,6 +43,8 @@ jobs:
     name: Build & Publish Release
     needs: verify
     runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
         with:
