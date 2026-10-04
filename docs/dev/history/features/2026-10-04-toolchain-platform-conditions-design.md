@@ -64,9 +64,9 @@
 ```
 
 ### 2.1. Извлечение версии Go из тикета (включая LLM-интейк)
-1. В структуре [`tracker.Ticket`](file:///Users/fedorov.m.v/work/personal/vuln-analyzer/internal/tracker/intake.go) добавляются поля `GoVersion` и `Toolchain`.
+1. В структуре `tracker.Ticket` (`internal/tracker/intake.go`) добавляются поля `GoVersion` и `Toolchain`.
 2. В детерминистическом парсере тикетов (`intake.go`) поля `Go version:`, `Toolchain:`, `Compiler:` заполняют `Ticket.GoVersion`.
-3. В LLM-интейке ([`internal/tracker/llm_intake.go`](file:///Users/fedorov.m.v/work/personal/vuln-analyzer/internal/tracker/llm_intake.go)):
+3. В LLM-интейке (`internal/tracker/llm_intake.go`):
    - Промпт `ticketExtractorSystemPrompt` инструктирует LLM извлекать `go_version` (например, `"go1.22.4"`, `"1.21"`).
    - В структуру `llmTicketExtraction` добавляется `GoVersion string json:"go_version"`.
    - Проводится детерминированная валидация (проверка формата и наличия подстроки в исходном тексте для защиты от галлюцинаций).
@@ -102,11 +102,11 @@
    - Если явная граница не найдена, но класс `ClassCryptoDowngrade` касается TLS MinVersion в Go, используется дефолтный платформенный пол `"<1.18"`.
 
 ### 2.4. Вычисление вердикта и негативная верификация
-1. Оценщик [`evaluator.Platform`](file:///Users/fedorov.m.v/work/personal/vuln-analyzer/internal/evaluator/platform.go) получает `C-PLATFORM`:
+1. Оценщик `evaluator.Platform` (`internal/evaluator/platform.go`) получает `C-PLATFORM`:
    - Извлекает версию компилятора продукта `productGoVersion(c.Product)`.
    - Проверяет границу: для `productGoVersion = "v1.26.1"` условие `<1.18` нарушается.
    - Формирует результат: `ClaimFalse`, фальсификатор `FalsifierSnapshotFactMismatch`, пояснение: `"snapshot fact mismatch: go_version: want <1.18, product is v1.26.1"`.
-2. В [`internal/goanalysis/negative.go`](file:///Users/fedorov.m.v/work/personal/vuln-analyzer/internal/goanalysis/negative.go) функция `verifySnapshotFalse` подтверждает фальсификатор по фактам компилятора (`Status: VERIFIED`).
+2. В `internal/goanalysis/negative.go` функция `verifySnapshotFalse` подтверждает фальсификатор по фактам компилятора (`Status: VERIFIED`).
 3. Так как опровергнуто обязательное условие (`Mandatory`), выносится аудируемый вердикт **`NO_EXPLOIT_PATH_FOUND`** (0 fail, 0 false-safe).
 
 ---
