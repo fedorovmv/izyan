@@ -2087,6 +2087,271 @@ func (ix *Index) moduleEdges(pkgs []*packages.Package, module string) (map[strin
 		}
 		edges[key][callee] = true
 	}
+	fieldOwners := map[*types.Var]string{}
+	indexScope := func(scope *types.Scope) {
+		if scope == nil {
+			return
+		}
+		for _, name := range scope.Names() {
+			tn, ok := scope.Lookup(name).(*types.TypeName)
+			if !ok {
+				continue
+			}
+			st, ok := tn.Type().Underlying().(*types.Struct)
+			if !ok {
+				continue
+			}
+			pp := ""
+			if tn.Pkg() != nil {
+				pp = tn.Pkg().Path()
+			}
+			owner := pp + "." + tn.Name()
+			for i := 0; i < st.NumFields(); i++ {
+				f := st.Field(i)
+				fieldOwners[f] = owner + "." + f.Name()
+			}
+		}
+	}
+	for _, pkg := range pkgs {
+		if pkg.Types != nil {
+			indexScope(pkg.Types.Scope())
+			for _, imp := range pkg.Types.Imports() {
+				indexScope(imp.Scope())
+			}
+		}
+	}
+
+	structFieldKey := func(f *types.Var, recv types.Type) string {
+		if k, ok := fieldOwners[f]; ok && k != "" {
+			return k
+		}
+		if recv != nil {
+			if ptr, ok := recv.(*types.Pointer); ok {
+				recv = ptr.Elem()
+			}
+			if named, ok := recv.(*types.Named); ok && named.Obj() != nil {
+				pp := ""
+				if named.Obj().Pkg() != nil {
+					pp = named.Obj().Pkg().Path()
+				}
+				return pp + "." + named.Obj().Name() + "." + f.Name()
+			}
+		}
+		if f.Pkg() != nil {
+			return f.Pkg().Path() + ".." + f.Name()
+		}
+		return f.Name()
+	}
+
+	pkgVarKey := func(v *types.Var) string {
+		if v.Pkg() != nil {
+			return v.Pkg().Path() + "." + v.Name()
+		}
+		return v.Name()
+	}
+
+	structFieldFuncs := map[string][]*types.Func{}
+	pkgVarFuncs := map[string][]*types.Func{}
+
+	addFunc := func(m map[string][]*types.Func, key string, fn *types.Func) {
+		if fn == nil || key == "" {
+			return
+		}
+		for _, existing := range m[key] {
+			if existing == fn {
+				return
+			}
+		}
+		m[key] = append(m[key], fn)
+	}
+
+	var extractTargetFuncs func(info *types.Info, encDecl *ast.FuncDecl, rhs ast.Expr, depth int) []*types.Func
+	extractTargetFuncs = func(info *types.Info, encDecl *ast.FuncDecl, rhs ast.Expr, depth int) []*types.Func {
+		if depth > 5 || rhs == nil || info == nil {
+			return nil
+		}
+		for {
+			if p, ok := rhs.(*ast.ParenExpr); ok {
+				rhs = p.X
+				continue
+			}
+			break
+		}
+		var out []*types.Func
+		switch e := rhs.(type) {
+		case *ast.SelectorExpr:
+			if sel, ok := info.Selections[e]; ok {
+				if fn, ok := sel.Obj().(*types.Func); ok {
+					out = append(out, fn)
+				} else if sel.Kind() == types.FieldVal {
+					if fv, ok := sel.Obj().(*types.Var); ok {
+						if _, isSig := fv.Type().Underlying().(*types.Signature); isSig {
+							key := structFieldKey(fv, sel.Recv())
+							out = append(out, structFieldFuncs[key]...)
+						}
+					}
+				}
+			}
+			if len(out) == 0 {
+				if fn, ok := info.ObjectOf(e.Sel).(*types.Func); ok {
+					out = append(out, fn)
+				} else if v, ok := info.ObjectOf(e.Sel).(*types.Var); ok && v.Pkg() != nil && v.Parent() == v.Pkg().Scope() {
+					out = append(out, pkgVarFuncs[pkgVarKey(v)]...)
+				}
+			}
+		case *ast.Ident:
+			if fn, ok := info.ObjectOf(e).(*types.Func); ok {
+				out = append(out, fn)
+			} else if v, ok := info.ObjectOf(e).(*types.Var); ok {
+				if v.Pkg() != nil && v.Parent() == v.Pkg().Scope() {
+					out = append(out, pkgVarFuncs[pkgVarKey(v)]...)
+				} else if encDecl != nil {
+					if _, isSig := v.Type().Underlying().(*types.Signature); isSig {
+						for _, r := range assignRHS(info, encDecl, v) {
+							out = append(out, extractTargetFuncs(info, encDecl, r.expr, depth+1)...)
+						}
+					}
+				}
+			}
+		case *ast.CallExpr:
+			if len(e.Args) == 1 {
+				if tv, ok := info.Types[e.Fun]; ok && tv.IsType() {
+					out = append(out, extractTargetFuncs(info, encDecl, e.Args[0], depth+1)...)
+				}
+			}
+		}
+		return out
+	}
+
+	// Pre-pass: collect struct field and package-level function assignments
+	for _, pkg := range pkgs {
+		info := pkg.TypesInfo
+		if info == nil {
+			continue
+		}
+		for _, f := range pkg.Syntax {
+			for _, decl := range f.Decls {
+				gd, ok := decl.(*ast.GenDecl)
+				if !ok || gd.Tok != token.VAR {
+					continue
+				}
+				for _, spec := range gd.Specs {
+					vs, ok := spec.(*ast.ValueSpec)
+					if !ok {
+						continue
+					}
+					for i, name := range vs.Names {
+						if i >= len(vs.Values) {
+							continue
+						}
+						obj := info.ObjectOf(name)
+						v, ok := obj.(*types.Var)
+						if !ok {
+							continue
+						}
+						if _, isSig := v.Type().Underlying().(*types.Signature); !isSig {
+							continue
+						}
+						for _, target := range extractTargetFuncs(info, nil, vs.Values[i], 0) {
+							addFunc(pkgVarFuncs, pkgVarKey(v), target)
+						}
+					}
+				}
+			}
+			var encDecl *ast.FuncDecl
+			ast.Inspect(f, func(n ast.Node) bool {
+				if fn, ok := n.(*ast.FuncDecl); ok {
+					encDecl = fn
+					return true
+				}
+				if lit, ok := n.(*ast.CompositeLit); ok {
+					typ := info.Types[lit].Type
+					if typ != nil {
+						if ptr, ok := typ.(*types.Pointer); ok {
+							typ = ptr.Elem()
+						}
+						if st, ok := typ.Underlying().(*types.Struct); ok {
+							for i, elt := range lit.Elts {
+								if kv, ok := elt.(*ast.KeyValueExpr); ok {
+									if keyId, ok := kv.Key.(*ast.Ident); ok {
+										var fieldVar *types.Var
+										if fv, ok := info.Uses[keyId].(*types.Var); ok {
+											fieldVar = fv
+										} else {
+											for j := 0; j < st.NumFields(); j++ {
+												if st.Field(j).Name() == keyId.Name {
+													fieldVar = st.Field(j)
+													break
+												}
+											}
+										}
+										if fieldVar != nil {
+											if _, isSig := fieldVar.Type().Underlying().(*types.Signature); isSig {
+												for _, target := range extractTargetFuncs(info, encDecl, kv.Value, 0) {
+													addFunc(structFieldFuncs, structFieldKey(fieldVar, typ), target)
+												}
+											}
+										}
+									}
+								} else if i < st.NumFields() {
+									fieldVar := st.Field(i)
+									if _, isSig := fieldVar.Type().Underlying().(*types.Signature); isSig {
+										for _, target := range extractTargetFuncs(info, encDecl, elt, 0) {
+											addFunc(structFieldFuncs, structFieldKey(fieldVar, typ), target)
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+				if assign, ok := n.(*ast.AssignStmt); ok {
+					for i, lhs := range assign.Lhs {
+						var rhs ast.Expr
+						if i < len(assign.Rhs) {
+							rhs = assign.Rhs[i]
+						} else if len(assign.Rhs) == 1 {
+							rhs = assign.Rhs[0]
+						}
+						if rhs == nil {
+							continue
+						}
+						if sel, ok := lhs.(*ast.SelectorExpr); ok {
+							if selection, ok := info.Selections[sel]; ok && selection.Kind() == types.FieldVal {
+								if fieldVar, ok := selection.Obj().(*types.Var); ok {
+									if _, isSig := fieldVar.Type().Underlying().(*types.Signature); isSig {
+										for _, target := range extractTargetFuncs(info, encDecl, rhs, 0) {
+											addFunc(structFieldFuncs, structFieldKey(fieldVar, selection.Recv()), target)
+										}
+									}
+								}
+							} else if info.Selections[sel] == nil {
+								obj := info.ObjectOf(sel.Sel)
+								if v, ok := obj.(*types.Var); ok && v.Pkg() != nil && v.Parent() == v.Pkg().Scope() {
+									if _, isSig := v.Type().Underlying().(*types.Signature); isSig {
+										for _, target := range extractTargetFuncs(info, encDecl, rhs, 0) {
+											addFunc(pkgVarFuncs, pkgVarKey(v), target)
+										}
+									}
+								}
+							}
+						} else if id, ok := lhs.(*ast.Ident); ok {
+							obj := info.ObjectOf(id)
+							if v, ok := obj.(*types.Var); ok && v.Pkg() != nil && v.Parent() == v.Pkg().Scope() {
+								if _, isSig := v.Type().Underlying().(*types.Signature); isSig {
+									for _, target := range extractTargetFuncs(info, encDecl, rhs, 0) {
+										addFunc(pkgVarFuncs, pkgVarKey(v), target)
+									}
+								}
+							}
+						}
+					}
+				}
+				return true
+			})
+		}
+	}
+
 	for _, pkg := range pkgs {
 		info := pkg.TypesInfo
 		if info == nil {
@@ -2155,40 +2420,72 @@ func (ix *Index) moduleEdges(pkgs []*packages.Package, module string) (map[strin
 					handleCallee(fn)
 					return true
 				}
-				if v, ok := obj.(*types.Var); ok && encDecl != nil {
+				if v, ok := obj.(*types.Var); ok {
 					if _, isSig := v.Type().Underlying().(*types.Signature); isSig {
-						rhss := assignRHS(info, encDecl, v)
-						if len(rhss) > 0 {
-							allResolved := true
-							for _, r := range rhss {
-								rhs := r.expr
-								for {
-									if p, ok := rhs.(*ast.ParenExpr); ok {
-										rhs = p.X
-										continue
+						// 1. Struct field func callback dispatch
+						if sel, ok := fun.(*ast.SelectorExpr); ok {
+							if selection, ok := info.Selections[sel]; ok && selection.Kind() == types.FieldVal {
+								key := structFieldKey(v, selection.Recv())
+								targets := structFieldFuncs[key]
+								if len(targets) > 0 {
+									allResolved := true
+									for _, t := range targets {
+										if t != nil && t.Pkg() != nil {
+											handleCallee(t)
+										} else {
+											allResolved = false
+										}
 									}
-									break
+									if allResolved {
+										return true
+									}
 								}
-								var targetFunc *types.Func
-								switch e := rhs.(type) {
-								case *ast.SelectorExpr:
-									if sel, ok := info.Selections[e]; ok {
-										targetFunc, _ = sel.Obj().(*types.Func)
+								opaqueCallers[pkg.PkgPath+"."+caller] = true
+								return true
+							}
+						}
+						// 2. Package-level function variable
+						if v.Pkg() != nil && v.Parent() == v.Pkg().Scope() {
+							key := pkgVarKey(v)
+							targets := pkgVarFuncs[key]
+							if len(targets) > 0 {
+								allResolved := true
+								for _, t := range targets {
+									if t != nil && t.Pkg() != nil {
+										handleCallee(t)
+									} else {
+										allResolved = false
 									}
-									if targetFunc == nil {
-										targetFunc, _ = info.ObjectOf(e.Sel).(*types.Func)
-									}
-								case *ast.Ident:
-									targetFunc, _ = info.ObjectOf(e).(*types.Func)
 								}
-								if targetFunc != nil && targetFunc.Pkg() != nil {
-									handleCallee(targetFunc)
-								} else {
-									allResolved = false
+								if allResolved {
+									return true
 								}
 							}
-							if allResolved {
-								return true
+							opaqueCallers[pkg.PkgPath+"."+caller] = true
+							return true
+						}
+						// 3. Local func variable / method value
+						if encDecl != nil {
+							rhss := assignRHS(info, encDecl, v)
+							if len(rhss) > 0 {
+								allResolved := true
+								for _, r := range rhss {
+									targets := extractTargetFuncs(info, encDecl, r.expr, 0)
+									if len(targets) > 0 {
+										for _, t := range targets {
+											if t != nil && t.Pkg() != nil {
+												handleCallee(t)
+											} else {
+												allResolved = false
+											}
+										}
+									} else {
+										allResolved = false
+									}
+								}
+								if allResolved {
+									return true
+								}
 							}
 						}
 					}

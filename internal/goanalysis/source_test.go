@@ -896,3 +896,274 @@ func Caller(cond bool) string {
 		t.Fatalf("Caller should not be marked opaque")
 	}
 }
+
+func TestModuleEdges_StructFieldFunc(t *testing.T) {
+	dir := t.TempDir()
+	mod := `module example.com/testpkg
+
+go 1.22
+`
+	src := `package testpkg
+
+type Target struct{}
+func (Target) Action() {}
+
+type Runner struct {
+	runFn func()
+}
+
+func NewRunner(t *Target) *Runner {
+	return &Runner{runFn: t.Action}
+}
+
+func (r *Runner) Execute() {
+	r.runFn()
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(mod), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "testpkg.go"), []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	fset := token.NewFileSet()
+	cfg := &packages.Config{
+		Mode: loadMode,
+		Dir:  dir,
+		Fset: fset,
+	}
+	pkgs, err := packages.Load(cfg, "example.com/testpkg")
+	if err != nil || len(pkgs) == 0 {
+		t.Fatalf("load testpkg: pkgs=%d err=%v", len(pkgs), err)
+	}
+	if packages.PrintErrors(pkgs) > 0 {
+		t.Fatal("package load had errors")
+	}
+
+	ix := &Index{Dir: dir, pkgs: pkgs, fset: fset}
+	edges, opaque := ix.moduleEdges(pkgs, "example.com/testpkg")
+
+	if !edges["example.com/testpkg.Runner.Execute"]["example.com/testpkg.Target.Action"] {
+		t.Fatalf("expected edge Runner.Execute -> Target.Action, got: %v", edges["example.com/testpkg.Runner.Execute"])
+	}
+	if opaque["example.com/testpkg.Runner.Execute"] {
+		t.Fatalf("Runner.Execute should not be marked opaque")
+	}
+}
+
+func TestModuleEdges_StructFieldFunc_AssignStmt(t *testing.T) {
+	dir := t.TempDir()
+	mod := `module example.com/testpkg
+
+go 1.22
+`
+	src := `package testpkg
+
+type Target struct{}
+func (Target) Action() {}
+
+type Runner struct {
+	runFn func()
+}
+
+func Setup(r *Runner, t *Target) {
+	r.runFn = t.Action
+}
+
+func (r *Runner) Execute() {
+	r.runFn()
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(mod), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "testpkg.go"), []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	fset := token.NewFileSet()
+	cfg := &packages.Config{
+		Mode: loadMode,
+		Dir:  dir,
+		Fset: fset,
+	}
+	pkgs, err := packages.Load(cfg, "example.com/testpkg")
+	if err != nil || len(pkgs) == 0 {
+		t.Fatalf("load testpkg: pkgs=%d err=%v", len(pkgs), err)
+	}
+	if packages.PrintErrors(pkgs) > 0 {
+		t.Fatal("package load had errors")
+	}
+
+	ix := &Index{Dir: dir, pkgs: pkgs, fset: fset}
+	edges, opaque := ix.moduleEdges(pkgs, "example.com/testpkg")
+
+	if !edges["example.com/testpkg.Runner.Execute"]["example.com/testpkg.Target.Action"] {
+		t.Fatalf("expected edge Runner.Execute -> Target.Action, got: %v", edges["example.com/testpkg.Runner.Execute"])
+	}
+	if opaque["example.com/testpkg.Runner.Execute"] {
+		t.Fatalf("Runner.Execute should not be marked opaque")
+	}
+}
+
+func TestModuleEdges_StructFieldFunc_Interface(t *testing.T) {
+	dir := t.TempDir()
+	mod := `module example.com/testpkg
+
+go 1.22
+`
+	src := `package testpkg
+
+type Greeter interface {
+	Greet() string
+}
+
+type greeterImpl struct{}
+
+func (greeterImpl) Greet() string { return "hello" }
+
+var _ Greeter = greeterImpl{}
+
+type Runner struct {
+	greetFn func() string
+}
+
+func NewRunner(g Greeter) *Runner {
+	return &Runner{greetFn: g.Greet}
+}
+
+func (r *Runner) Execute() string {
+	return r.greetFn()
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(mod), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "testpkg.go"), []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	fset := token.NewFileSet()
+	cfg := &packages.Config{
+		Mode: loadMode,
+		Dir:  dir,
+		Fset: fset,
+	}
+	pkgs, err := packages.Load(cfg, "example.com/testpkg")
+	if err != nil || len(pkgs) == 0 {
+		t.Fatalf("load testpkg: pkgs=%d err=%v", len(pkgs), err)
+	}
+	if packages.PrintErrors(pkgs) > 0 {
+		t.Fatal("package load had errors")
+	}
+
+	ix := &Index{Dir: dir, pkgs: pkgs, fset: fset}
+	edges, opaque := ix.moduleEdges(pkgs, "example.com/testpkg")
+
+	// 1. Runner.Execute -> Greeter.Greet
+	if !edges["example.com/testpkg.Runner.Execute"]["example.com/testpkg.Greeter.Greet"] {
+		t.Fatalf("expected edge Runner.Execute -> Greeter.Greet, got: %v", edges["example.com/testpkg.Runner.Execute"])
+	}
+	// 2. Greeter.Greet -> greeterImpl.Greet
+	if !edges["example.com/testpkg.Greeter.Greet"]["example.com/testpkg.greeterImpl.Greet"] {
+		t.Fatalf("expected edge Greeter.Greet -> greeterImpl.Greet, got: %v", edges["example.com/testpkg.Greeter.Greet"])
+	}
+	// 3. Runner.Execute is not opaque
+	if opaque["example.com/testpkg.Runner.Execute"] {
+		t.Fatalf("Runner.Execute should not be marked opaque")
+	}
+}
+
+func TestModuleEdges_PackageLevelFuncVar(t *testing.T) {
+	dir := t.TempDir()
+	mod := `module example.com/testpkg
+
+go 1.22
+`
+	src := `package testpkg
+
+func Target() string { return "target" }
+
+var fn = Target
+
+func Caller() string {
+	return fn()
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(mod), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "testpkg.go"), []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	fset := token.NewFileSet()
+	cfg := &packages.Config{
+		Mode: loadMode,
+		Dir:  dir,
+		Fset: fset,
+	}
+	pkgs, err := packages.Load(cfg, "example.com/testpkg")
+	if err != nil || len(pkgs) == 0 {
+		t.Fatalf("load testpkg: pkgs=%d err=%v", len(pkgs), err)
+	}
+	if packages.PrintErrors(pkgs) > 0 {
+		t.Fatal("package load had errors")
+	}
+
+	ix := &Index{Dir: dir, pkgs: pkgs, fset: fset}
+	edges, opaque := ix.moduleEdges(pkgs, "example.com/testpkg")
+
+	if !edges["example.com/testpkg.Caller"]["example.com/testpkg.Target"] {
+		t.Fatalf("expected edge Caller -> Target, got: %v", edges["example.com/testpkg.Caller"])
+	}
+	if opaque["example.com/testpkg.Caller"] {
+		t.Fatalf("Caller should not be marked opaque")
+	}
+}
+
+func TestModuleEdges_StructFieldFunc_Unresolvable(t *testing.T) {
+	dir := t.TempDir()
+	mod := `module example.com/testpkg
+
+go 1.22
+`
+	src := `package testpkg
+
+type Runner struct {
+	runFn func()
+}
+
+func (r *Runner) Execute() {
+	r.runFn()
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(mod), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "testpkg.go"), []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	fset := token.NewFileSet()
+	cfg := &packages.Config{
+		Mode: loadMode,
+		Dir:  dir,
+		Fset: fset,
+	}
+	pkgs, err := packages.Load(cfg, "example.com/testpkg")
+	if err != nil || len(pkgs) == 0 {
+		t.Fatalf("load testpkg: pkgs=%d err=%v", len(pkgs), err)
+	}
+	if packages.PrintErrors(pkgs) > 0 {
+		t.Fatal("package load had errors")
+	}
+
+	ix := &Index{Dir: dir, pkgs: pkgs, fset: fset}
+	_, opaque := ix.moduleEdges(pkgs, "example.com/testpkg")
+
+	if !opaque["example.com/testpkg.Runner.Execute"] {
+		t.Fatalf("Runner.Execute should be marked opaque when struct field func is unresolvable")
+	}
+}
