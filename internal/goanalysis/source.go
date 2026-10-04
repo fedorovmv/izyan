@@ -567,11 +567,15 @@ func splitSymbol(sym string) (typeName, name string) {
 	return "", sym
 }
 
-// isCheckMember reports whether a method name suggests a validation, verification,
+// IsCheckMember reports whether a method name suggests a validation, verification,
 // or authorization check whose omission is itself the vulnerable behavior
 // (missing-call shape like GO-2020-0017 MapClaims.VerifyAudience).
 // Non-check methods (action sinks like SendFile, ServeFile, Exec, Write) are
 // execution sites where deadness proves the vulnerable code is never executed.
+func IsCheckMember(name string) bool {
+	return isCheckMember(name)
+}
+
 func isCheckMember(name string) bool {
 	checkPrefixes := []string{"Verify", "Validate", "Check", "Authenticate", "Authorize", "Is", "Has"}
 	for _, p := range checkPrefixes {
@@ -1001,6 +1005,94 @@ func (ix *Index) DepInvocationState(ctx context.Context, ref domain.SymbolRef) (
 		}
 	}
 	return 0, false, false, nil
+}
+
+// ReceiverPipelines finds sibling methods on the receiver type of ref that are
+// live in the dependency / reachable from callers (e.g. MapClaims.Valid).
+func (ix *Index) ReceiverPipelines(ctx context.Context, ref domain.SymbolRef) ([]domain.SymbolRef, error) {
+	if ix == nil {
+		return nil, nil
+	}
+	typeName, name := splitSymbol(ref.Symbol)
+	if typeName == "" || !isCheckMember(name) {
+		return nil, nil
+	}
+	ix.mu.Lock()
+	defer ix.mu.Unlock()
+	if _, err := ix.loadExtra(ctx, ref.Package); err != nil {
+		return nil, err
+	}
+	subjPkgs := ix.extrasFor(ref.Package)
+	mod := ""
+	for _, p := range subjPkgs {
+		if p.Module != nil {
+			mod = p.Module.Path
+			break
+		}
+	}
+	pkgs := ix.extrasFor(ref.Package)
+	if mod != "" {
+		pkgs = ix.modulePkgs(mod)
+	}
+
+	var pipelines []domain.SymbolRef
+	seen := map[string]bool{}
+
+	for _, dep := range pkgs {
+		if dep.Types == nil || dep.TypesInfo == nil {
+			continue
+		}
+		tn, ok := dep.Types.Scope().Lookup(typeName).(*types.TypeName)
+		if !ok {
+			continue
+		}
+		named := mustNamed(tn)
+		if named == nil {
+			continue
+		}
+		var ms *types.MethodSet
+		if _, isIface := named.Underlying().(*types.Interface); isIface {
+			ms = types.NewMethodSet(named)
+		} else {
+			ms = types.NewMethodSet(types.NewPointer(named))
+		}
+		for i := 0; i < ms.Len(); i++ {
+			m := ms.At(i).Obj()
+			mName := m.Name()
+			if mName == name || isCheckMember(mName) {
+				continue
+			}
+			if mName != "Valid" && !strings.HasSuffix(mName, "Valid") {
+				continue
+			}
+			mref := domain.SymbolRef{Package: ref.Package, Symbol: typeName + "." + mName}
+			if seen[mref.Symbol] {
+				continue
+			}
+
+			live := false
+			if len(ix.productRefsTo(mref)) > 0 {
+				live = true
+			} else {
+				sites := ix.findCallSitesIn(pkgs, mref)
+				for _, iref := range ix.ifaceCallerRefs(mref) {
+					sites = append(sites, ix.findCallSitesIn(pkgs, iref)...)
+				}
+				for _, s := range sites {
+					if ix.depSiteLive(ctx, s, depLiveFuel, map[string]bool{}) {
+						live = true
+						break
+					}
+				}
+			}
+
+			if live {
+				seen[mref.Symbol] = true
+				pipelines = append(pipelines, mref)
+			}
+		}
+	}
+	return pipelines, nil
 }
 
 // modulePkgs returns the extras of one module — sibling-method scans

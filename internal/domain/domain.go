@@ -223,6 +223,7 @@ const (
 	ConditionAuthn           ConditionKind = "AUTHENTICATION_CONDITION"
 	ConditionRuntime         ConditionKind = "RUNTIME_CONDITION"
 	ConditionCustom          ConditionKind = "CUSTOM"
+	ConditionMissingCall     ConditionKind = "MISSING_CALL"
 )
 
 type DataOrigin string
@@ -305,6 +306,9 @@ const (
 	// subject-escape arguments: code absent from the build cannot execute
 	// through any dispatch.
 	CheckLocus = "locus"
+	// CheckMissingCall verifies that an advisory-declared security check is
+	// omitted on an active execution pipeline.
+	CheckMissingCall = "missing_call"
 )
 
 // Exposure scope values — deterministic classification of a resolved

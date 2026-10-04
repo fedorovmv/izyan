@@ -33,3 +33,15 @@ func ParseClaims() error {
 	c := Claims{}
 	return c.Valid()
 }
+
+// MapClaims models jwt-go MapClaims shape for missing-call validation.
+type MapClaims map[string]interface{}
+
+func (m MapClaims) VerifyAudience() bool { return true }
+
+func (m MapClaims) Valid() error { return nil }
+
+func ParseMapClaims() error {
+	m := MapClaims{}
+	return m.Valid()
+}
