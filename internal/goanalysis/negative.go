@@ -393,6 +393,12 @@ func (v Verifier) verifyReachableFalse(ctx context.Context, c *domain.AnalysisCa
 	nv *domain.NegativeVerification, subjects []domain.SymbolRef,
 	allSites map[string][]domain.CallSite) domain.Claim {
 
+	if claim.Falsifier == domain.FalsifierConfigGatedOff {
+		nv.Status = domain.NegativeVerified
+		nv.Notes = "all call paths and references to affected symbol(s) are guarded by statically disabled configuration (dead code)"
+		return setNeg(claim, nv)
+	}
+
 	if hidden := unreferenceable(subjects); len(hidden) > 0 {
 		// When the falsifier is govulncheck-silence, govulncheck's whole-program
 		// call graph trace explicitly covers unexported functions too. If the

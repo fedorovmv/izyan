@@ -571,6 +571,11 @@ type CallSite struct {
 	// ModuleOwner is the module path reported for Callee's package by the
 	// product's import graph. Empty means ownership was not resolved.
 	ModuleOwner string `json:"module_owner,omitempty"`
+	// DeadCode is true when the call site is enclosed in a statically false condition
+	// (e.g. an unassigned bool field or literal false feature flag).
+	DeadCode bool `json:"dead_code,omitempty"`
+	// GatedBy describes the condition guarding this call site (e.g. "cfg.EnableFeature").
+	GatedBy string `json:"gated_by,omitempty"`
 }
 
 type CallPath struct {

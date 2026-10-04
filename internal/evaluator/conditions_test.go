@@ -1,6 +1,7 @@
 package evaluator
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/fedorovmv/izyan/internal/domain"
@@ -582,5 +583,63 @@ func TestVersionFactStdlibSubjectSelectedModule(t *testing.T) {
 	}, c)
 	if claim.Result != domain.ClaimTrue {
 		t.Fatalf("got %s, want TRUE: stdlib subject belongs to selected std module", claim.Result)
+	}
+}
+
+func TestReachable_ConfigGatedDeadCode(t *testing.T) {
+	c := &domain.AnalysisCase{}
+	c.EvidenceGraph.AddEvidence(domain.Evidence{Tool: "goanalysis.Index.ModuleUsage"})
+	c.EvidenceGraph.AddModuleUsages(domain.CallSite{
+		Package:  "example.com/app",
+		Function: "callVulnerableGated",
+		Callee:   "example.com/dep.VulnFunc",
+		DeadCode: true,
+		GatedBy:  "appCfg.EnableVulnerableFeature (statically false)",
+	})
+
+	cond := domain.Condition{
+		ID:       "C-REACH",
+		Kind:     domain.ConditionSymbolReachable,
+		Subjects: []domain.SymbolRef{{Package: "example.com/dep", Symbol: "VulnFunc"}},
+	}
+
+	claim := SymbolReachable{}.Evaluate(cond, c)
+	if claim.Result != domain.ClaimFalse {
+		t.Fatalf("result=%s, want FALSE", claim.Result)
+	}
+	if claim.Falsifier != domain.FalsifierConfigGatedOff {
+		t.Fatalf("falsifier=%s, want %s", claim.Falsifier, domain.FalsifierConfigGatedOff)
+	}
+}
+
+func TestReachable_ConfigGatedDynamic(t *testing.T) {
+	c := &domain.AnalysisCase{}
+	c.EvidenceGraph.AddEvidence(domain.Evidence{Tool: "goanalysis.Index.ModuleUsage"})
+	c.EvidenceGraph.AddModuleUsages(domain.CallSite{
+		Package:  "example.com/app",
+		Function: "callVulnerableDynamic",
+		Callee:   "example.com/dep.VulnFunc",
+		DeadCode: false,
+		GatedBy:  "os.Getenv(\"DYNAMIC_FEATURE\")",
+	})
+
+	cond := domain.Condition{
+		ID:       "C-REACH",
+		Kind:     domain.ConditionSymbolReachable,
+		Subjects: []domain.SymbolRef{{Package: "example.com/dep", Symbol: "VulnFunc"}},
+	}
+
+	claim := SymbolReachable{}.Evaluate(cond, c)
+	if claim.Result != domain.ClaimTrue {
+		t.Fatalf("result=%s, want TRUE", claim.Result)
+	}
+	found := false
+	for _, lim := range claim.Limitations {
+		if strings.Contains(lim, "conditional-reachability") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected conditional-reachability limitation, got %+v", claim.Limitations)
 	}
 }

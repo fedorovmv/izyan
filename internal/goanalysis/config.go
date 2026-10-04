@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"go/ast"
+	"go/constant"
 	"go/token"
 	"go/types"
 	"regexp"
@@ -23,6 +24,10 @@ func (ix *Index) FieldAssignments(ctx context.Context, ref domain.SymbolRef) ([]
 	if err := ix.load(ctx); err != nil {
 		return nil, err
 	}
+	return ix.fieldAssignmentsLocked(ref), nil
+}
+
+func (ix *Index) fieldAssignmentsLocked(ref domain.SymbolRef) []domain.ConfigAssignment {
 	key := ref.Package + "." + ref.Symbol
 	var out []domain.ConfigAssignment
 	for _, pkg := range ix.pkgs {
@@ -69,7 +74,7 @@ func (ix *Index) FieldAssignments(ctx context.Context, ref domain.SymbolRef) ([]
 			})
 		}
 	}
-	return out, nil
+	return out
 }
 
 func (ix *Index) assignment(info *types.Info, pkg *packages.Package, enc *ast.FuncDecl,
@@ -124,9 +129,13 @@ func (ix *Index) SymbolFieldType(ctx context.Context, ref domain.SymbolRef) (str
 	if err := ix.load(ctx); err != nil {
 		return "", err
 	}
+	return ix.symbolFieldTypeLocked(ctx, ref), nil
+}
+
+func (ix *Index) symbolFieldTypeLocked(ctx context.Context, ref domain.SymbolRef) string {
 	typeName, name := splitSymbol(ref.Symbol)
 	if typeName == "" {
-		return "", nil
+		return ""
 	}
 	find := func(pkgs []*packages.Package) string {
 		for _, pkg := range pkgs {
@@ -150,18 +159,35 @@ func (ix *Index) SymbolFieldType(ctx context.Context, ref domain.SymbolRef) (str
 		return ""
 	}
 	if t := find(ix.pkgs); t != "" {
-		return t, nil
+		return t
 	}
 	extra, err := ix.loadExtra(ctx, ref.Package)
 	if err != nil {
-		return "", err
+		return ""
 	}
-	return find(extra), nil
+	return find(extra)
 }
 
 // configRefRe matches identifier prefixes conventionally bound to
-// configuration: cfg, config, opts, settings, env, flag.
-var configRefRe = regexp.MustCompile(`(?i)^(cfg|config|opts?|settings?|env|flags?)[_.]?`)
+// configuration: cfg, config, opts, settings, env, flag, appcfg.
+var configRefRe = regexp.MustCompile(`(?i)^(cfg|config|opts?|settings?|env|flags?|appcfg)[_.]?`)
+
+// CheckCallSiteGuard inspects the statement at site to determine if it sits inside an if statement,
+// and whether that guard condition is a configuration knob and/or statically dead code.
+func (ix *Index) CheckCallSiteGuard(ctx context.Context, site domain.CallSite) (gated bool, deadCode bool, detail string, err error) {
+	ix.mu.Lock()
+	defer ix.mu.Unlock()
+	if err := ix.load(ctx); err != nil {
+		return false, false, "", err
+	}
+	return ix.checkCallSiteGuardLocked(ctx, site)
+}
+
+// IsCallSiteDeadCode reports whether the call site sits inside a statically disabled feature gate or dead code.
+func (ix *Index) IsCallSiteDeadCode(ctx context.Context, site domain.CallSite) (bool, string, error) {
+	_, dead, detail, err := ix.CheckCallSiteGuard(ctx, site)
+	return dead, detail, err
+}
 
 // ConfigGated reports whether the statement at site sits inside an `if`
 // whose condition reads configuration — os.Getenv/flag.* calls, idents
@@ -169,57 +195,168 @@ var configRefRe = regexp.MustCompile(`(?i)^(cfg|config|opts?|settings?|env|flags
 // through such a site is conditional on a knob the analyzer may not have
 // resolved: a guard/call under it cannot silently count as unconditional.
 func (ix *Index) ConfigGated(ctx context.Context, site domain.CallSite) (bool, string, error) {
-	ix.mu.Lock()
-	defer ix.mu.Unlock()
-	if err := ix.load(ctx); err != nil {
-		return false, "", err
-	}
+	gated, _, detail, err := ix.CheckCallSiteGuard(ctx, site)
+	return gated, detail, err
+}
+
+func (ix *Index) checkCallSiteGuardLocked(ctx context.Context, site domain.CallSite) (bool, bool, string, error) {
 	for _, pkg := range ix.pkgs {
 		for _, f := range pkg.Syntax {
 			pos := ix.fset.Position(f.Pos())
-			if pos.Filename != site.File {
+			if pos.Filename != site.File && !strings.HasSuffix(pos.Filename, "/"+site.File) {
 				continue
 			}
 			enc := funcAt(ix.fset, f, site.Line)
 			if enc == nil || enc.Body == nil {
 				continue
 			}
-			gated := false
+			var gated, deadCode bool
 			var condSrc string
 			ast.Inspect(enc.Body, func(n ast.Node) bool {
 				ifs, ok := n.(*ast.IfStmt)
-				if !ok || gated {
+				if !ok || gated || deadCode {
 					return true
 				}
-				// Does the site's line live inside this if's branches?
 				beg := ix.fset.Position(ifs.Body.Pos()).Line
 				end := ix.fset.Position(ifs.End()).Line
 				if site.Line < beg || site.Line > end {
 					return true
 				}
-				if c := condConfigRef(ifs.Cond); c != "" {
-					gated = true
-					condSrc = fmt.Sprintf("%s:%d guarded by config condition %q",
-						site.File, site.Line, c)
-					return false
-				}
-				// Ident in cond assigned from a config read earlier in enc?
-				for _, id := range condIdents(ifs.Cond) {
-					if isConfigAssigned(enc.Body, id, pkg.TypesInfo) {
-						gated = true
-						condSrc = fmt.Sprintf("%s:%d guarded by config-bound %s",
-							site.File, site.Line, id)
-						return false
-					}
-				}
-				return true
+				gated, deadCode, condSrc = ix.evalGuardCondition(ctx, pkg, enc, ifs.Cond, site)
+				return false
 			})
-			if gated {
-				return true, condSrc, nil
+			if gated || deadCode {
+				return gated, deadCode, condSrc, nil
 			}
 		}
 	}
-	return false, "", nil
+	return false, false, "", nil
+}
+
+func (ix *Index) evalGuardCondition(ctx context.Context, pkg *packages.Package, enc *ast.FuncDecl, cond ast.Expr, site domain.CallSite) (bool, bool, string) {
+	if pkg.TypesInfo != nil {
+		if tv, ok := pkg.TypesInfo.Types[cond]; ok && tv.Value != nil && tv.Value.Kind() == constant.Bool {
+			if !constant.BoolVal(tv.Value) {
+				return true, true, fmt.Sprintf("%s:%d guarded by constant false", site.File, site.Line)
+			}
+			return false, false, ""
+		}
+	}
+
+	if un, ok := cond.(*ast.UnaryExpr); ok && un.Op == token.NOT {
+		g, d, detail := ix.evalGuardCondition(ctx, pkg, enc, un.X, site)
+		if g && d {
+			return true, false, detail
+		}
+		return g, false, detail
+	}
+
+	if sel, ok := cond.(*ast.SelectorExpr); ok {
+		return ix.evalSelectorGuard(ctx, pkg, enc, sel, site)
+	}
+
+	if id, ok := cond.(*ast.Ident); ok {
+		var hitRhs ast.Expr
+		ast.Inspect(enc.Body, func(n ast.Node) bool {
+			if hitRhs != nil {
+				return false
+			}
+			as, ok := n.(*ast.AssignStmt)
+			if !ok {
+				return true
+			}
+			for i, lhs := range as.Lhs {
+				if li, ok := lhs.(*ast.Ident); ok && li.Name == id.Name && i < len(as.Rhs) {
+					hitRhs = as.Rhs[i]
+					return false
+				}
+			}
+			return true
+		})
+		if hitRhs != nil {
+			if lit, ok := hitRhs.(*ast.BasicLit); ok && lit.Value == "false" {
+				return true, true, fmt.Sprintf("%s:%d guarded by %s = false", site.File, site.Line, id.Name)
+			}
+			if rsel, ok := hitRhs.(*ast.SelectorExpr); ok {
+				return ix.evalSelectorGuard(ctx, pkg, enc, rsel, site)
+			}
+			if isConfigAssigned(enc.Body, id.Name, pkg.TypesInfo) {
+				return true, false, fmt.Sprintf("%s:%d guarded by config-bound %s", site.File, site.Line, id.Name)
+			}
+		}
+	}
+
+	if c := condConfigRef(cond); c != "" {
+		return true, false, fmt.Sprintf("%s:%d guarded by config condition %q", site.File, site.Line, c)
+	}
+	for _, id := range condIdents(cond) {
+		if isConfigAssigned(enc.Body, id, pkg.TypesInfo) {
+			return true, false, fmt.Sprintf("%s:%d guarded by config-bound %s", site.File, site.Line, id)
+		}
+	}
+	return false, false, ""
+}
+
+func (ix *Index) evalSelectorGuard(ctx context.Context, pkg *packages.Package, enc *ast.FuncDecl, sel *ast.SelectorExpr, site domain.CallSite) (bool, bool, string) {
+	fieldName := sel.Sel.Name
+	var typeName, pkgPath string
+	if seln, ok := pkg.TypesInfo.Selections[sel]; ok {
+		recv := seln.Recv()
+		if p, ok := recv.(*types.Pointer); ok {
+			recv = p.Elem()
+		}
+		if named, ok := recv.(*types.Named); ok {
+			typeName = named.Obj().Name()
+			if named.Obj().Pkg() != nil {
+				pkgPath = named.Obj().Pkg().Path()
+			}
+		}
+	}
+	if typeName == "" {
+		if tv, ok := pkg.TypesInfo.Types[sel.X]; ok && tv.Type != nil {
+			recv := tv.Type
+			if p, ok := recv.(*types.Pointer); ok {
+				recv = p.Elem()
+			}
+			if named, ok := recv.(*types.Named); ok {
+				typeName = named.Obj().Name()
+				if named.Obj().Pkg() != nil {
+					pkgPath = named.Obj().Pkg().Path()
+				}
+			}
+		}
+	}
+
+	if typeName != "" {
+		ref := domain.SymbolRef{Package: pkgPath, Symbol: typeName + "." + fieldName}
+		fieldType := ix.symbolFieldTypeLocked(ctx, ref)
+		if fieldType == "bool" {
+			assigns := ix.fieldAssignmentsLocked(ref)
+			if len(assigns) == 0 {
+				return true, true, fmt.Sprintf("%s:%d guarded by %s.%s (zero-value false)", site.File, site.Line, typeName, fieldName)
+			}
+			allFalse := true
+			anyStatic := false
+			for _, a := range assigns {
+				if a.Value == "true" {
+					allFalse = false
+				} else if a.Value == "false" {
+					anyStatic = true
+				} else {
+					allFalse = false
+				}
+			}
+			if allFalse && anyStatic {
+				return true, true, fmt.Sprintf("%s:%d guarded by %s.%s (statically false)", site.File, site.Line, typeName, fieldName)
+			}
+			return true, false, fmt.Sprintf("%s:%d guarded by config condition %s.%s", site.File, site.Line, typeName, fieldName)
+		}
+	}
+
+	if c := condConfigRef(sel); c != "" {
+		return true, false, fmt.Sprintf("%s:%d guarded by config condition %q", site.File, site.Line, c)
+	}
+	return false, false, ""
 }
 
 // funcAt returns the function declaration whose body contains line.

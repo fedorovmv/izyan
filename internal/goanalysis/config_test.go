@@ -59,3 +59,46 @@ func TestSymbolFieldType(t *testing.T) {
 		t.Fatalf("kind=%q err=%v", kind, err)
 	}
 }
+
+func TestCheckCallSiteGuard_DeadCodeAndDynamic(t *testing.T) {
+	ix := fixture(t, "cfggateprod")
+	sites, err := ix.ModuleUsage(context.Background(), "example.com/dep")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var foundGatedDead, foundZeroValueDead, foundDynamic bool
+	for _, s := range sites {
+		if s.Function == "callVulnerableGated" {
+			foundGatedDead = true
+			if !s.DeadCode {
+				t.Errorf("callVulnerableGated: expected DeadCode=true, got false (gated_by=%s)", s.GatedBy)
+			}
+		}
+		if s.Function == "callVulnerableZeroValue" {
+			foundZeroValueDead = true
+			if !s.DeadCode {
+				t.Errorf("callVulnerableZeroValue: expected DeadCode=true, got false (gated_by=%s)", s.GatedBy)
+			}
+		}
+		if s.Function == "callVulnerableDynamic" {
+			foundDynamic = true
+			if s.DeadCode {
+				t.Errorf("callVulnerableDynamic: expected DeadCode=false, got true")
+			}
+			if s.GatedBy == "" {
+				t.Errorf("callVulnerableDynamic: expected GatedBy non-empty")
+			}
+		}
+	}
+
+	if !foundGatedDead {
+		t.Errorf("callVulnerableGated not found in sites: %+v", sites)
+	}
+	if !foundZeroValueDead {
+		t.Errorf("callVulnerableZeroValue not found in sites: %+v", sites)
+	}
+	if !foundDynamic {
+		t.Errorf("callVulnerableDynamic not found in sites: %+v", sites)
+	}
+}

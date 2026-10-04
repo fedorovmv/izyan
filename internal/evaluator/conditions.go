@@ -86,7 +86,36 @@ func (SymbolReachable) Evaluate(cond domain.Condition, c *domain.AnalysisCase) d
 		}
 	}
 	if len(matched) > 0 {
+		allPathsDead := true
+		var gatedDetail string
+		hasUsages := false
+		for _, cp := range c.EvidenceGraph.CallPaths {
+			if len(cp.Frames) > 0 {
+				rootFrame := cp.Frames[0]
+				for _, u := range c.EvidenceGraph.ModuleUsages {
+					if u.File == rootFrame.File && u.Line == rootFrame.Line {
+						hasUsages = true
+						if !u.DeadCode {
+							allPathsDead = false
+						}
+						if u.GatedBy != "" && gatedDetail == "" {
+							gatedDetail = u.GatedBy
+						}
+					}
+				}
+			}
+		}
+		if hasUsages && allPathsDead && gatedDetail != "" {
+			claim.Result = domain.ClaimFalse
+			claim.Falsifier = domain.FalsifierConfigGatedOff
+			claim.Explanation = fmt.Sprintf("all call path(s) to affected symbol(s) are dead code under disabled feature gates (%s)", gatedDetail)
+			return claim
+		}
 		claim.Result = domain.ClaimTrue
+		if gatedDetail != "" {
+			claim.Limitations = append(claim.Limitations,
+				"conditional-reachability (guarded by config: "+gatedDetail+")")
+		}
 		claim.Explanation = "govulncheck produced call path(s) to the affected symbol(s)"
 		return claim
 	}
@@ -98,6 +127,37 @@ func (SymbolReachable) Evaluate(cond domain.Condition, c *domain.AnalysisCase) d
 	for _, subj := range symbols {
 		want := subj.Package + "." + subj.Symbol
 		if chain, ok := c.EvidenceGraph.ModuleReachable[want]; ok {
+			entry := chain[0]
+			var entryUsages []domain.CallSite
+			for _, u := range c.EvidenceGraph.ModuleUsages {
+				if u.Callee == entry {
+					entryUsages = append(entryUsages, u)
+				}
+			}
+			if len(entryUsages) > 0 {
+				allDead := true
+				var gatedDetail string
+				for _, eu := range entryUsages {
+					if !eu.DeadCode {
+						allDead = false
+					}
+					if eu.GatedBy != "" && gatedDetail == "" {
+						gatedDetail = eu.GatedBy
+					}
+				}
+				if allDead {
+					claim.Result = domain.ClaimFalse
+					claim.Falsifier = domain.FalsifierConfigGatedOff
+					claim.Explanation = fmt.Sprintf(
+						"call chain to %s originates from %s which is dead code under disabled feature gate (%s)",
+						want, entry, gatedDetail)
+					return claim
+				}
+				if gatedDetail != "" {
+					claim.Limitations = append(claim.Limitations,
+						"conditional-reachability (guarded by config: "+gatedDetail+")")
+				}
+			}
 			claim.Result = domain.ClaimTrue
 			claim.EvidenceIDs = append(moduleReachEvidence(c), moduleUsageEvidence(c)...)
 			claim.Explanation = fmt.Sprintf(
@@ -176,6 +236,37 @@ func libraryUsageVerdict(claim domain.Claim, c *domain.AnalysisCase, subjects []
 	for _, subj := range subjects {
 		want := subj.Package + "." + subj.Symbol
 		if chain, ok := c.EvidenceGraph.ModuleReachable[want]; ok {
+			entry := chain[0]
+			var entryUsages []domain.CallSite
+			for _, u := range usages {
+				if u.Callee == entry {
+					entryUsages = append(entryUsages, u)
+				}
+			}
+			if len(entryUsages) > 0 {
+				allDead := true
+				var gatedDetail string
+				for _, eu := range entryUsages {
+					if !eu.DeadCode {
+						allDead = false
+					}
+					if eu.GatedBy != "" && gatedDetail == "" {
+						gatedDetail = eu.GatedBy
+					}
+				}
+				if allDead {
+					claim.Result = domain.ClaimFalse
+					claim.Falsifier = domain.FalsifierConfigGatedOff
+					claim.Explanation = fmt.Sprintf(
+						"%s; call chain to %s originates from %s which is dead code under disabled feature gate (%s)",
+						why, want, entry, gatedDetail)
+					return claim
+				}
+				if gatedDetail != "" {
+					claim.Limitations = append(claim.Limitations,
+						"conditional-reachability (guarded by config: "+gatedDetail+")")
+				}
+			}
 			claim.Result = domain.ClaimTrue
 			claim.EvidenceIDs = append(moduleReachEvidence(c), moduleUsageEvidence(c)...)
 			claim.Explanation = fmt.Sprintf(
@@ -183,15 +274,41 @@ func libraryUsageVerdict(claim domain.Claim, c *domain.AnalysisCase, subjects []
 				why, want, strings.Join(chain, " -> "))
 			return claim
 		}
+		var matchingUsages []domain.CallSite
 		for _, u := range usages {
 			if u.Callee == want {
-				claim.Result = domain.ClaimTrue
-				claim.EvidenceIDs = moduleUsageEvidence(c)
+				matchingUsages = append(matchingUsages, u)
+			}
+		}
+		if len(matchingUsages) > 0 {
+			allDead := true
+			var gatedDetail string
+			for _, mu := range matchingUsages {
+				if !mu.DeadCode {
+					allDead = false
+				}
+				if mu.GatedBy != "" && gatedDetail == "" {
+					gatedDetail = mu.GatedBy
+				}
+			}
+			if allDead {
+				claim.Result = domain.ClaimFalse
+				claim.Falsifier = domain.FalsifierConfigGatedOff
 				claim.Explanation = fmt.Sprintf(
-					"%s; product directly calls %s at %s:%d",
-					why, want, u.File, u.Line)
+					"%s; all direct calls to %s are dead code under disabled feature gate (%s)",
+					why, want, gatedDetail)
 				return claim
 			}
+			claim.Result = domain.ClaimTrue
+			claim.EvidenceIDs = moduleUsageEvidence(c)
+			if gatedDetail != "" {
+				claim.Limitations = append(claim.Limitations,
+					"conditional-reachability (guarded by config: "+gatedDetail+")")
+			}
+			claim.Explanation = fmt.Sprintf(
+				"%s; product directly calls %s at %s:%d",
+				why, want, matchingUsages[0].File, matchingUsages[0].Line)
+			return claim
 		}
 	}
 	// FALSE only when the intra-module call graph was actually checked —

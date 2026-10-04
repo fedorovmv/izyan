@@ -82,4 +82,3 @@ func TestListenSites_ConfigFieldAndPackageVar(t *testing.T) {
 		t.Fatalf("expected ScopeLoopback, got %s", fField.Scope)
 	}
 }
-

@@ -1999,6 +1999,11 @@ func (ix *Index) ModuleUsage(ctx context.Context, module string) ([]domain.CallS
 					}
 					site.Callee = p + "." + rn + "." + fn.Name()
 				}
+				gated, dead, detail, _ := ix.checkCallSiteGuardLocked(ctx, site)
+				site.DeadCode = dead
+				if gated || dead {
+					site.GatedBy = detail
+				}
 				out = append(out, site)
 				return true
 			})
