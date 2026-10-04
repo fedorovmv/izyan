@@ -17,9 +17,9 @@
 |---|---|---|
 | **Всего кейсов** | **38** | Реальные уязвимости в 12 классах зависимостей Go |
 | **Cleared Rate** | **20 / 38 (53%)** | Доказанное закрытие алертов без участия человека (`NOT_AFFECTED` + `NO_EXPLOIT_PATH_FOUND`) |
-| **Signal-Cleared Rate** | **9 / 26 (35%)** | Безопасное снятие алертов там, где `govulncheck` выдал шумные сигналы (`REACHABLE` / `package-level`) |
+| **Signal-Cleared Rate** | **9 / 27 (33%)** | Безопасное снятие алертов там, где `govulncheck` выдал шумные сигналы (`REACHABLE` / `package-level`) |
 | **False-Safe Rate** | **0 / 38 (0%)** | Строгий инвариант: ни одного ложно-безопасного вердикта |
-| **Требуют триажа** | **18 / 38 (47%)** | 17 доказанно уязвимых (`EXPLOITABLE`) + 1 кейс с недостаточным контекстом (`INCONCLUSIVE`) |
+| **Требуют триажа** | **18 / 38 (47%)** | 18 / 38 (47%) доказанно уязвимых (`EXPLOITABLE`), 0 / 38 (0%) с недостаточным контекстом (`INCONCLUSIVE`) |
 
 ---
 
@@ -97,7 +97,7 @@ analyzer eval --corpus eval/corpus-real.json --case real-micro-plain-6443x
 | `real-ssh-fixed` | NOT_AFFECTED | silent | **да — детерминистически безопасная версия** |
 | `real-jose-fixed` | NOT_AFFECTED | silent | **да — детерминистически безопасная версия** |
 | `real-ssh-callback` | EXPLOITABLE | reachable | нет — callback авторизации уязвим |
-| `real-micro-xds` | INCONCLUSIVE | package-level | нет — внутренняя регистрация фильтров (`httpfilter.Register`) и watcher-колбэки требуют ручной проверки (B24) |
+| `real-micro-xds` | EXPLOITABLE | package-level | нет — внутренняя цепочка диспетчеризации фильтров доказана через статическое разрешение функциональных полей и method values в gRPC xDS |
 | `real-micro-xds-fixed` | NOT_AFFECTED | silent | **да — детерминистически безопасная версия** |
 | `real-micro-plain` | NOT_AFFECTED | module-level | **да — пакет rbac не входит в build graph продукта** |
 | `real-micro-plain-6443` | EXPLOITABLE | reachable | нет — консервативный контроль: без сужения локуса транспортный символ в трейсе считается уязвимым |
