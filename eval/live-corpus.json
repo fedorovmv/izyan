@@ -23,8 +23,7 @@
       "vuln": "GHSA-465g-fh3v-9jw4",
       "vuln_file": "advisories/live/GHSA-465g-fh3v-9jw4.json",
       "expect": [
-        "NO_EXPLOIT_PATH_FOUND",
-        "INCONCLUSIVE"
+        "NO_EXPLOIT_PATH_FOUND"
       ]
     },
     {

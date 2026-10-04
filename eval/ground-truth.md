@@ -43,7 +43,7 @@ Threat-модель: брокер может быть враждебным/MITM 
 | GO-2026-6372 | то же (alias 6c5v) | **EXPLOITABLE** | NO_EXPLOIT_PATH_FOUND | **FALSE-SAFE** → D1 |
 | GHSA-rm6m | RESOURCE_EXHAUSTION (`Qos` signed→unsigned) | NO_EXPLOIT_PATH_FOUND | NO_EXPLOIT_PATH_FOUND | корректно (bound-гарды [0,1024]/[0,1GiB] на всех write-site'ах; аргументы из config) |
 | GHSA-27gv | INFO_LEAK (`Config.SASL` PlainAuth plaintext) | INCONCLUSIVE | INCONCLUSIVE | корректно (creds retained — TRUE; reader не найден статически, dynamic-читатели не исключаемы) |
-| GHSA-465g | URI_CONFUSION (`URI.String`→`ParseURI` round-trip) | **NO_EXPLOIT_PATH_FOUND** | INCONCLUSIVE | консервативно приемлемо (вериф. FALSE демотирован reflect-маркером; см. обоснование) |
+| GHSA-465g | URI_CONFUSION (`URI.String`→`ParseURI` round-trip) | **NO_EXPLOIT_PATH_FOUND** | NO_EXPLOIT_PATH_FOUND | корректно: NO_EXPLOIT_PATH_FOUND (0 fail, 0 false-safe; закрыто в B19) |
 | GHSA-33mj | TLS MinVersion в `tlsConfigFromURI` | **NO_EXPLOIT_PATH_FOUND** | INCONCLUSIVE | консервативно приемлемо (snapshot go1.26 → implicit floor TLS1.2; нужен PLATFORM_CONDITION по go_version) |
 | GHSA-j497 | INTEGER_OVERFLOW (shortstr uint8 trunc) | **INCONCLUSIVE** | INCONCLUSIVE | корректно — re-pin с EXPLOITABLE, см. обоснование |
 
@@ -100,16 +100,16 @@ meta-ключи от брокерских header-ключей тоже ≤255. �
 over-approximation'ом. Остаётся вопрос: CONSTANT-ориджин не должен был
 «отвечать» на peer-input вопрос — см. D2.
 
-### GHSA-465g → NO_EXPLOIT_PATH_FOUND (прогон: INCONCLUSIVE)
+### GHSA-465g → NO_EXPLOIT_PATH_FOUND (прогон: NO_EXPLOIT_PATH_FOUND)
 
 Round-trip требует `amqp091.URI.String()` + `ParseURI`. Продукт
 обращается с URL через `net/url` (`helper.go` getUrls/`u.String()`),
 `amqp091.URI` нигде не создаёт — значения типа URI в продукте не
 существует, reflect-диспатч `URI.String` без инстанса невозможен.
-Верифицированный FALSE на неполной паре верен; демоция ревьюером по
-общему reflect-маркеру — консервативно приемлемое отклонение (artifact-
-gate в REPAIR_ANALYSIS пропускает цитирование маркера, но блокирует
-семантические misread'ы без артефакта).
+Верифицированный FALSE на неполной паре верен; после закрытия B19
+`ModuleInternalReach` учитывает субъектную непрозрачность, а
+негативная верификация фильтрует `reflect_method` по инстанцированию
+типа ресивера. Вердикт: `NO_EXPLOIT_PATH_FOUND` (0 fail, 0 false-safe).
 
 ### GHSA-33mj → NO_EXPLOIT_PATH_FOUND (прогон: INCONCLUSIVE)
 
@@ -157,6 +157,4 @@ module usage). Hostile broker — threat-модель корпуса. Root cause
 - **D3 (P2, backlog)**: классификатор 33mj пометил TLS-MinVersion как
   INFO_LEAK → модель задаёт нерелевантные условия. Истина требует
   PLATFORM_CONDITION по `go_version` (floor TLS1.2 с Go 1.18).
-- **D4 (P2, backlog)**: reflect-демоция VERIFIED-FALSE не проверяет,
-  существует ли в продукте значение целевого типа (465g: `amqp091.URI`
-  нигде не конструируется — reflect нечего диспатчить).
+- **D4 (P2, исправлен)**: reflect-демоция и ModuleInternalReach учитывают достижимость и инстанцирование типа субъекта; 465g даёт NO_EXPLOIT_PATH_FOUND.
