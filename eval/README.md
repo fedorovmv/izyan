@@ -28,14 +28,14 @@
 ### Прогон всего корпуса
 Параллельный запуск всех 38 кейсов с автоматической генерацией манифестов `go.mod`/`go.sum` и переиспользованием кэша:
 ```bash
-analyzer eval --corpus eval/corpus-real.json -j 4
+izyan eval --corpus eval/corpus-real.json -j 4
 ```
 
 ### Запуск и отладка отдельного кейса
 Запуск конкретного сценария (занимает 5–9 секунд):
 ```bash
-analyzer eval --corpus eval/corpus-real.json --case real-jwt-auth
-analyzer eval --corpus eval/corpus-real.json --case real-micro-plain-6443x
+izyan eval --corpus eval/corpus-real.json --case real-jwt-auth
+izyan eval --corpus eval/corpus-real.json --case real-micro-plain-6443x
 ```
 
 ### Основные флаги
@@ -136,7 +136,7 @@ analyzer eval --corpus eval/corpus-real.json --case real-micro-plain-6443x
 
 Запуск:
 ```bash
-PATH=$HOME/go/bin:$PATH VA_PRODUCT_REPO=<product-repo> analyzer eval --corpus eval/live-corpus.json
+PATH=$HOME/go/bin:$PATH VA_PRODUCT_REPO=<product-repo> izyan eval --corpus eval/live-corpus.json
 ```
 
 Подробная ручная разметка истинности (ground truth), доказательная база и история анализа кейсов вынесены в отдельный документ: [`eval/ground-truth.md`](ground-truth.md).
@@ -147,6 +147,19 @@ PATH=$HOME/go/bin:$PATH VA_PRODUCT_REPO=<product-repo> analyzer eval --corpus ev
 
 ### Контроль неопределенности и безопасные отрицания
 * **Инвариант отрицательного вывода**: вердикт `NO_EXPLOIT_PATH_FOUND` выносится только тогда, когда опровергнуто хотя бы одно обязательное условие эксплуатации (`mandatory condition`), а отрицание подтверждено фазой негативной верификации (`Negative Verification: VERIFIED`).
+* **Субъектно-ориентированная непрозрачность и инстанцирование рефлексии (B19)**:
+  В кейсе `ghsa-465g-fh3v-9jw4` (URI confusion) внутренние вызовы зависимостей считаются непрозрачными только если они потенциально достигают дефектного субъекта. Маркер `reflect_method` в негативной верификации фильтруется по наличию инстанцирования типа ресивера (`amqp091.URI`) в продукте или коде зависимостей: отсутствие созданных экземпляров типа не позволяет динамическому вызову опровергнуть безопасность отрицательного условия, подтверждая вердикт `NO_EXPLOIT_PATH_FOUND`.
+
+  #### Эволюция отчёта анализатора (Case Study: GHSA-465g):
+  * **До закрытия B19 (`INCONCLUSIVE`):**
+    - `C-ROUNDTRIP`: `UNKNOWN` (ограничение: *«pair member(s) ... not statically reached; module dispatch is opaque (func values/dynamic dispatch)»* из-за сетевого диалера и вызовов `error.Error()` в кодовой базе зависимости).
+    - `Negative Verification`: даже при потенциальном FALSE общий маркер `reflect_method` в коде продукта порождал ограничение *«reflect method dispatch usage in product widens the call graph»*, приводя к демоции вердикта.
+    - **Итог отчёта:** *«Требуется ручной анализ (Inconclusive)»*.
+  * **После закрытия B19 (`NO_EXPLOIT_PATH_FOUND`):**
+    - `ModuleInternalReach`: доказано, что ни один непрозрачный сайт в `amqp091-go` (сетевые диалеры с сигнатурой `func(string, string) (net.Conn, error)`, дедлайны `SetDeadline`) не совместим по сигнатуре/интерфейсу с методом `URI.String() func() string`. Вызовы predeclared-функций (`error.Error()`) корректно классифицированы как статические. Непрозрачность снята (`opaque = false`).
+    - `Negative Verification`: проверено, что именованный тип `amqp091.URI` продуктом не инстанцируется (нет композитных литералов, `new()`, `make()`, явных переменных или возвратов вызываемых API). Динамический вызов метода через `reflect.Value.MethodByName` физически не имеет объекта в памяти. Маркер `reflect_method` отфильтрован без внесения ограничений (`Status: VERIFIED`).
+    - `C-ROUNDTRIP`: подтверждён результат **`FALSE`** с фальсификатором `missing-pair-member` на обязательном условии.
+    - **Итог отчёта:** чёткий аудируемый вердикт **`NO_EXPLOIT_PATH_FOUND`** (0 fail, 0 false-safe). Раздел `## Резюме` формирует готовый комментарий для закрытия тикета безопасности без необходимости отвлекать инженеров на ручной триаж.
 * **Защита от ложной безопасности при пропущенных проверках (missing-call)**:
   В кейсе `real-jwt-auth` метод `VerifyAudience` физически не вызывается в программе. Наивный сканер посчитал бы отсутствие вызова доказательством безопасности. В анализаторе действует защитный предохранитель (`DepInvocationState`): если целевая проверка не вызывается, но родственные методы валидации того же типа (`MapClaims.Valid`) активно обрабатывают внешний ввод, отсутствие вызова блокирует отрицательный вердикт и сохраняет `INCONCLUSIVE`.
 * **Защита константных данных от рефлексии парсеров**:
