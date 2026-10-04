@@ -2,6 +2,8 @@ package goanalysis
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/fedorovmv/izyan/internal/domain"
@@ -120,5 +122,46 @@ func TestModuleInternalReachOpaqueScoping(t *testing.T) {
 	}
 	if opaque2 {
 		t.Fatal("expected opaque=false when entry does not reach any opaque callers")
+	}
+}
+
+// Integration test on real-micro-xds verifying full static reachability from
+// xds gRPC server entrypoints to the RBAC filter parser without opaque degradation.
+func TestModuleInternalReach_XDS(t *testing.T) {
+	dir, err := filepath.Abs(filepath.Join("..", "..", "eval", ".gen", "real-micro-xds"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		t.Skip("skipping integration test: eval/.gen/real-micro-xds not generated")
+	}
+
+	ix := &Index{Dir: dir}
+	entries := []string{
+		"google.golang.org/grpc/xds.NewGRPCServer",
+		"google.golang.org/grpc/xds.GRPCServer.Serve",
+	}
+	subjects := []domain.SymbolRef{
+		{
+			Package: "google.golang.org/grpc/internal/xds/httpfilter/rbac",
+			Symbol:  "builder.ParseFilterConfig",
+		},
+		{
+			Package: "google.golang.org/grpc/internal/xds/httpfilter/rbac",
+			Symbol:  "parseConfig",
+		},
+	}
+
+	reach, _, err := ix.ModuleInternalReach(context.Background(), "google.golang.org/grpc", entries, subjects)
+	if err != nil {
+		t.Fatalf("ModuleInternalReach failed: %v", err)
+	}
+
+	chain := reach["google.golang.org/grpc/internal/xds/httpfilter/rbac.parseConfig"]
+	if len(chain) < 15 {
+		t.Fatalf("reach chain for parseConfig len = %d, want >= 15; chain: %v", len(chain), chain)
+	}
+	if reach["google.golang.org/grpc/internal/xds/httpfilter/rbac.builder.ParseFilterConfig"] == nil {
+		t.Fatalf("reach chain for builder.ParseFilterConfig missing; reach: %v", reach)
 	}
 }
