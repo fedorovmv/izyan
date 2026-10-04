@@ -797,3 +797,102 @@ func Caller(fn func() string) string {
 		t.Fatalf("Caller should be marked opaque when func var is unresolvable")
 	}
 }
+
+func TestModuleEdges_ExternalInterfaceCall(t *testing.T) {
+	dir := t.TempDir()
+	mod := `module example.com/testpkg
+
+go 1.22
+`
+	src := `package testpkg
+
+import "io"
+
+func Caller(c io.Closer) error {
+	return c.Close()
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(mod), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "testpkg.go"), []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	fset := token.NewFileSet()
+	cfg := &packages.Config{
+		Mode: loadMode,
+		Dir:  dir,
+		Fset: fset,
+	}
+	pkgs, err := packages.Load(cfg, "example.com/testpkg")
+	if err != nil || len(pkgs) == 0 {
+		t.Fatalf("load testpkg: pkgs=%d err=%v", len(pkgs), err)
+	}
+	if packages.PrintErrors(pkgs) > 0 {
+		t.Fatal("package load had errors")
+	}
+
+	ix := &Index{Dir: dir, pkgs: pkgs, fset: fset}
+	_, opaque := ix.moduleEdges(pkgs, "example.com/testpkg")
+
+	if opaque["example.com/testpkg.Caller"] {
+		t.Fatalf("Caller should not be marked opaque when invoking external interface method")
+	}
+}
+
+func TestModuleEdges_ConditionalBranchAssignment(t *testing.T) {
+	dir := t.TempDir()
+	mod := `module example.com/testpkg
+
+go 1.22
+`
+	src := `package testpkg
+
+func BranchA() string { return "a" }
+func BranchB() string { return "b" }
+
+func Caller(cond bool) string {
+	var fn func() string
+	if cond {
+		fn = BranchA
+	} else {
+		fn = BranchB
+	}
+	return fn()
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(mod), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "testpkg.go"), []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	fset := token.NewFileSet()
+	cfg := &packages.Config{
+		Mode: loadMode,
+		Dir:  dir,
+		Fset: fset,
+	}
+	pkgs, err := packages.Load(cfg, "example.com/testpkg")
+	if err != nil || len(pkgs) == 0 {
+		t.Fatalf("load testpkg: pkgs=%d err=%v", len(pkgs), err)
+	}
+	if packages.PrintErrors(pkgs) > 0 {
+		t.Fatal("package load had errors")
+	}
+
+	ix := &Index{Dir: dir, pkgs: pkgs, fset: fset}
+	edges, opaque := ix.moduleEdges(pkgs, "example.com/testpkg")
+
+	if !edges["example.com/testpkg.Caller"]["example.com/testpkg.BranchA"] {
+		t.Fatalf("expected edge Caller -> BranchA, got: %v", edges["example.com/testpkg.Caller"])
+	}
+	if !edges["example.com/testpkg.Caller"]["example.com/testpkg.BranchB"] {
+		t.Fatalf("expected edge Caller -> BranchB, got: %v", edges["example.com/testpkg.Caller"])
+	}
+	if opaque["example.com/testpkg.Caller"] {
+		t.Fatalf("Caller should not be marked opaque")
+	}
+}

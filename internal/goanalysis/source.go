@@ -2122,6 +2122,9 @@ func (ix *Index) moduleEdges(pkgs []*packages.Package, module string) (map[strin
 						return false
 					}
 					p := fn.Pkg().Path()
+					if p != module && !strings.HasPrefix(p, module+"/") {
+						return false
+					}
 					callee := p + "." + fn.Name()
 					if sig, ok := fn.Type().(*types.Signature); ok && sig.Recv() != nil {
 						rt := sig.Recv().Type()
@@ -2145,9 +2148,7 @@ func (ix *Index) moduleEdges(pkgs []*packages.Package, module string) (map[strin
 							}
 						}
 					}
-					if p == module || strings.HasPrefix(p, module+"/") {
-						addEdge(pkg.PkgPath+"."+caller, callee)
-					}
+					addEdge(pkg.PkgPath+"."+caller, callee)
 					return true
 				}
 				if fn, ok := obj.(*types.Func); ok && fn.Pkg() != nil {
@@ -2156,36 +2157,39 @@ func (ix *Index) moduleEdges(pkgs []*packages.Package, module string) (map[strin
 				}
 				if v, ok := obj.(*types.Var); ok && encDecl != nil {
 					if _, isSig := v.Type().Underlying().(*types.Signature); isSig {
-						resolved := false
-						for _, r := range assignRHS(info, encDecl, v) {
-							rhs := r.expr
-							for {
-								if p, ok := rhs.(*ast.ParenExpr); ok {
-									rhs = p.X
-									continue
+						rhss := assignRHS(info, encDecl, v)
+						if len(rhss) > 0 {
+							allResolved := true
+							for _, r := range rhss {
+								rhs := r.expr
+								for {
+									if p, ok := rhs.(*ast.ParenExpr); ok {
+										rhs = p.X
+										continue
+									}
+									break
 								}
-								break
+								var targetFunc *types.Func
+								switch e := rhs.(type) {
+								case *ast.SelectorExpr:
+									if sel, ok := info.Selections[e]; ok {
+										targetFunc, _ = sel.Obj().(*types.Func)
+									}
+									if targetFunc == nil {
+										targetFunc, _ = info.ObjectOf(e.Sel).(*types.Func)
+									}
+								case *ast.Ident:
+									targetFunc, _ = info.ObjectOf(e).(*types.Func)
+								}
+								if targetFunc != nil && targetFunc.Pkg() != nil {
+									handleCallee(targetFunc)
+								} else {
+									allResolved = false
+								}
 							}
-							var targetFunc *types.Func
-							switch e := rhs.(type) {
-							case *ast.SelectorExpr:
-								if sel, ok := info.Selections[e]; ok {
-									targetFunc, _ = sel.Obj().(*types.Func)
-								}
-								if targetFunc == nil {
-									targetFunc, _ = info.ObjectOf(e.Sel).(*types.Func)
-								}
-							case *ast.Ident:
-								targetFunc, _ = info.ObjectOf(e).(*types.Func)
+							if allResolved {
+								return true
 							}
-							if targetFunc != nil && targetFunc.Pkg() != nil {
-								if handleCallee(targetFunc) {
-									resolved = true
-								}
-							}
-						}
-						if resolved {
-							return true
 						}
 					}
 				}
