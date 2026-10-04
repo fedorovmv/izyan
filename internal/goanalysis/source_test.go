@@ -2,9 +2,13 @@ package goanalysis
 
 import (
 	"context"
+	"go/token"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"golang.org/x/tools/go/packages"
 
 	"github.com/fedorovmv/izyan/internal/domain"
 )
@@ -593,5 +597,203 @@ func TestMethodInAnyInterface(t *testing.T) {
 		if ix.methodInAnyInterface(m) {
 			t.Errorf("expected %s NOT to be recognized as an interface method", m)
 		}
+	}
+}
+
+func TestModuleEdges_LocalMethodValue(t *testing.T) {
+	dir := t.TempDir()
+	mod := `module example.com/testpkg
+
+go 1.22
+`
+	src := `package testpkg
+
+type Greeter interface {
+	Greet() string
+}
+
+type greeterImpl struct{}
+
+func (greeterImpl) Greet() string { return "hello" }
+
+var _ Greeter = greeterImpl{}
+
+func Run(g Greeter) string {
+	fn := g.Greet
+	return fn()
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(mod), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "testpkg.go"), []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	fset := token.NewFileSet()
+	cfg := &packages.Config{
+		Mode: loadMode,
+		Dir:  dir,
+		Fset: fset,
+	}
+	pkgs, err := packages.Load(cfg, "example.com/testpkg")
+	if err != nil || len(pkgs) == 0 {
+		t.Fatalf("load testpkg: pkgs=%d err=%v", len(pkgs), err)
+	}
+	if packages.PrintErrors(pkgs) > 0 {
+		t.Fatal("package load had errors")
+	}
+
+	ix := &Index{Dir: dir, pkgs: pkgs, fset: fset}
+	edges, opaque := ix.moduleEdges(pkgs, "example.com/testpkg")
+
+	// 1. Run -> Greeter.Greet edge
+	if !edges["example.com/testpkg.Run"]["example.com/testpkg.Greeter.Greet"] {
+		t.Fatalf("expected edge Run -> Greeter.Greet, got: %v", edges["example.com/testpkg.Run"])
+	}
+	// 2. Greeter.Greet -> greeterImpl.Greet edge
+	if !edges["example.com/testpkg.Greeter.Greet"]["example.com/testpkg.greeterImpl.Greet"] {
+		t.Fatalf("expected edge Greeter.Greet -> greeterImpl.Greet, got: %v", edges["example.com/testpkg.Greeter.Greet"])
+	}
+	// 3. Run is NOT in opaque callers
+	if opaque["example.com/testpkg.Run"] {
+		t.Fatalf("Run should not be marked opaque")
+	}
+}
+
+func TestModuleEdges_LocalFuncVariable(t *testing.T) {
+	dir := t.TempDir()
+	mod := `module example.com/testpkg
+
+go 1.22
+`
+	src := `package testpkg
+
+func Target(s string) string { return s }
+
+func Caller() string {
+	fn := Target
+	return fn("test")
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(mod), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "testpkg.go"), []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	fset := token.NewFileSet()
+	cfg := &packages.Config{
+		Mode: loadMode,
+		Dir:  dir,
+		Fset: fset,
+	}
+	pkgs, err := packages.Load(cfg, "example.com/testpkg")
+	if err != nil || len(pkgs) == 0 {
+		t.Fatalf("load testpkg: pkgs=%d err=%v", len(pkgs), err)
+	}
+	if packages.PrintErrors(pkgs) > 0 {
+		t.Fatal("package load had errors")
+	}
+
+	ix := &Index{Dir: dir, pkgs: pkgs, fset: fset}
+	edges, opaque := ix.moduleEdges(pkgs, "example.com/testpkg")
+
+	if !edges["example.com/testpkg.Caller"]["example.com/testpkg.Target"] {
+		t.Fatalf("expected edge Caller -> Target, got: %v", edges["example.com/testpkg.Caller"])
+	}
+	if opaque["example.com/testpkg.Caller"] {
+		t.Fatalf("Caller should not be marked opaque")
+	}
+}
+
+func TestModuleEdges_LocalMethodValue_Concrete(t *testing.T) {
+	dir := t.TempDir()
+	mod := `module example.com/testpkg
+
+go 1.22
+`
+	src := `package testpkg
+
+type Service struct{}
+
+func (s *Service) DoWork() string { return "done" }
+
+func Caller(s *Service) string {
+	fn := s.DoWork
+	return fn()
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(mod), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "testpkg.go"), []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	fset := token.NewFileSet()
+	cfg := &packages.Config{
+		Mode: loadMode,
+		Dir:  dir,
+		Fset: fset,
+	}
+	pkgs, err := packages.Load(cfg, "example.com/testpkg")
+	if err != nil || len(pkgs) == 0 {
+		t.Fatalf("load testpkg: pkgs=%d err=%v", len(pkgs), err)
+	}
+	if packages.PrintErrors(pkgs) > 0 {
+		t.Fatal("package load had errors")
+	}
+
+	ix := &Index{Dir: dir, pkgs: pkgs, fset: fset}
+	edges, opaque := ix.moduleEdges(pkgs, "example.com/testpkg")
+
+	if !edges["example.com/testpkg.Caller"]["example.com/testpkg.Service.DoWork"] {
+		t.Fatalf("expected edge Caller -> Service.DoWork, got: %v", edges["example.com/testpkg.Caller"])
+	}
+	if opaque["example.com/testpkg.Caller"] {
+		t.Fatalf("Caller should not be marked opaque")
+	}
+}
+
+func TestModuleEdges_UnresolvableFuncVar(t *testing.T) {
+	dir := t.TempDir()
+	mod := `module example.com/testpkg
+
+go 1.22
+`
+	src := `package testpkg
+
+func Caller(fn func() string) string {
+	return fn()
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(mod), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "testpkg.go"), []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	fset := token.NewFileSet()
+	cfg := &packages.Config{
+		Mode: loadMode,
+		Dir:  dir,
+		Fset: fset,
+	}
+	pkgs, err := packages.Load(cfg, "example.com/testpkg")
+	if err != nil || len(pkgs) == 0 {
+		t.Fatalf("load testpkg: pkgs=%d err=%v", len(pkgs), err)
+	}
+	if packages.PrintErrors(pkgs) > 0 {
+		t.Fatal("package load had errors")
+	}
+
+	ix := &Index{Dir: dir, pkgs: pkgs, fset: fset}
+	_, opaque := ix.moduleEdges(pkgs, "example.com/testpkg")
+
+	if !opaque["example.com/testpkg.Caller"] {
+		t.Fatalf("Caller should be marked opaque when func var is unresolvable")
 	}
 }

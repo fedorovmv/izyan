@@ -2108,49 +2108,97 @@ func (ix *Index) moduleEdges(pkgs []*packages.Package, module string) (map[strin
 				if !ok || caller == "" {
 					return true
 				}
-				obj := calleeObject(info, call.Fun)
-				fn, ok := obj.(*types.Func)
-				if !ok || fn.Pkg() == nil {
-					// Func values and map-indexed calls hide their target
-					// from the chain — absence of a found chain is then
-					// not evidence of absence. Builtins and type
-					// conversions resolve to no *types.Func either, but
-					// call nothing user-defined.
-					switch obj.(type) {
-					case *types.Builtin, *types.TypeName:
-					default:
-						opaqueCallers[pkg.PkgPath+"."+caller] = true
+				fun := call.Fun
+				for {
+					if p, ok := fun.(*ast.ParenExpr); ok {
+						fun = p.X
+						continue
+					}
+					break
+				}
+				obj := calleeObject(info, fun)
+				handleCallee := func(fn *types.Func) bool {
+					if fn == nil || fn.Pkg() == nil {
+						return false
+					}
+					p := fn.Pkg().Path()
+					callee := p + "." + fn.Name()
+					if sig, ok := fn.Type().(*types.Signature); ok && sig.Recv() != nil {
+						rt := sig.Recv().Type()
+						callee = p + "." + recvTypeName(rt) + "." + fn.Name()
+						// Interface dispatch: the callee is the interface
+						// method — record the site so impl edges below can be
+						// narrowed by the dispatch key.
+						switch rt.Underlying().(type) {
+						case *types.Interface:
+							if named := ifaceNamed(rt); named != nil {
+								if ifaceSites[named] == nil {
+									ifaceSites[named] = map[string][]ifaceSite{}
+								}
+								ifaceSites[named][fn.Name()] = append(ifaceSites[named][fn.Name()], ifaceSite{pkg, encDecl, call})
+							} else {
+								// Anonymous/interface-literal receiver: the
+								// call resolves to the interface method but
+								// no impl edges are enumerable — the graph
+								// is incomplete, not "no path".
+								opaqueCallers[pkg.PkgPath+"."+caller] = true
+							}
+						}
+					}
+					if p == module || strings.HasPrefix(p, module+"/") {
+						addEdge(pkg.PkgPath+"."+caller, callee)
 					}
 					return true
 				}
-				p := fn.Pkg().Path()
-				if p != module && !strings.HasPrefix(p, module+"/") {
+				if fn, ok := obj.(*types.Func); ok && fn.Pkg() != nil {
+					handleCallee(fn)
 					return true
 				}
-				callee := p + "." + fn.Name()
-				if sig, ok := fn.Type().(*types.Signature); ok && sig.Recv() != nil {
-					rt := sig.Recv().Type()
-					callee = p + "." + recvTypeName(rt) + "." + fn.Name()
-					// Interface dispatch: the callee is the interface
-					// method — record the site so impl edges below can be
-					// narrowed by the dispatch key.
-					switch rt.Underlying().(type) {
-					case *types.Interface:
-						if named := ifaceNamed(rt); named != nil {
-							if ifaceSites[named] == nil {
-								ifaceSites[named] = map[string][]ifaceSite{}
+				if v, ok := obj.(*types.Var); ok && encDecl != nil {
+					if _, isSig := v.Type().Underlying().(*types.Signature); isSig {
+						resolved := false
+						for _, r := range assignRHS(info, encDecl, v) {
+							rhs := r.expr
+							for {
+								if p, ok := rhs.(*ast.ParenExpr); ok {
+									rhs = p.X
+									continue
+								}
+								break
 							}
-							ifaceSites[named][fn.Name()] = append(ifaceSites[named][fn.Name()], ifaceSite{pkg, encDecl, call})
-						} else {
-							// Anonymous/interface-literal receiver: the
-							// call resolves to the interface method but
-							// no impl edges are enumerable — the graph
-							// is incomplete, not "no path".
-							opaqueCallers[pkg.PkgPath+"."+caller] = true
+							var targetFunc *types.Func
+							switch e := rhs.(type) {
+							case *ast.SelectorExpr:
+								if sel, ok := info.Selections[e]; ok {
+									targetFunc, _ = sel.Obj().(*types.Func)
+								}
+								if targetFunc == nil {
+									targetFunc, _ = info.ObjectOf(e.Sel).(*types.Func)
+								}
+							case *ast.Ident:
+								targetFunc, _ = info.ObjectOf(e).(*types.Func)
+							}
+							if targetFunc != nil && targetFunc.Pkg() != nil {
+								if handleCallee(targetFunc) {
+									resolved = true
+								}
+							}
+						}
+						if resolved {
+							return true
 						}
 					}
 				}
-				addEdge(pkg.PkgPath+"."+caller, callee)
+				// Func values and map-indexed calls hide their target
+				// from the chain — absence of a found chain is then
+				// not evidence of absence. Builtins and type
+				// conversions resolve to no *types.Func either, but
+				// call nothing user-defined.
+				switch obj.(type) {
+				case *types.Builtin, *types.TypeName:
+				default:
+					opaqueCallers[pkg.PkgPath+"."+caller] = true
+				}
 				return true
 			})
 		}
