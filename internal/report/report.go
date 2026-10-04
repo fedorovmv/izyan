@@ -1696,4 +1696,3 @@ func formatRiskStatus(s domain.ContextualRiskStatus, isRU bool) string {
 		return "**" + string(s) + "**"
 	}
 }
-

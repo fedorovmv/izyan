@@ -1243,4 +1243,3 @@ func TestReportTriageAssessmentTable(t *testing.T) {
 		t.Fatalf("report.json missing priority P2: %s", string(repJSON))
 	}
 }
-
