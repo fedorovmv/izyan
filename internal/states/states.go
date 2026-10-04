@@ -363,6 +363,7 @@ func (h CollectEvidence) Run(ctx context.Context, c *domain.AnalysisCase) (workf
 			Content: fmt.Sprintf("sources=%v digest=%s", kb.Sources, kb.Digest()),
 		})
 		h.runSourceAnalysis(ctx, c)
+		h.actCollectEvidence(ctx, c)
 		h.runListenerScan(ctx, c)
 		h.runModuleUsage(ctx, c)
 		h.runExposure(ctx, c)
