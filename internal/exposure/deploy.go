@@ -53,6 +53,11 @@ var ingressKinds = map[string]string{
 	"IngressRoute":   "traefik:IngressRoute",
 }
 
+var authPolicyKinds = map[string]string{
+	"AuthorizationPolicy":   "istio:AuthorizationPolicy",
+	"RequestAuthentication": "istio:RequestAuthentication",
+}
+
 // ScanDeploy walks root for deployment manifests in deploy-scoped paths
 // and returns one fact per published surface it can statically describe.
 func ScanDeploy(root string) ([]domain.ExposureFact, error) {
@@ -116,15 +121,37 @@ func scanDeployFile(root, path string) ([]domain.ExposureFact, error) {
 	var out []domain.ExposureFact
 	kind := ""
 	line := 0
+	svcLine := 0
+	sawSvcType := false
+
+	flushService := func() {
+		if kind == "Service" && !sawSvcType && svcLine > 0 {
+			out = append(out, deployFactWithScope("k8s:Service:ClusterIP", "ClusterIP", rel, svcLine, domain.ScopeLoopback))
+		}
+	}
+
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 64<<10), 1<<20)
 	for sc.Scan() {
 		line++
 		text := sc.Text()
+		trimmed := strings.TrimSpace(text)
+		if trimmed == "---" {
+			flushService()
+			kind = ""
+			svcLine = 0
+			sawSvcType = false
+			continue
+		}
 		if m := kindRe.FindStringSubmatch(text); m != nil {
+			flushService()
 			kind = m[1]
+			svcLine = line
+			sawSvcType = false
 			if t, ok := ingressKinds[kind]; ok {
 				out = append(out, deployFact(t, "", rel, line))
+			} else if t, ok := authPolicyKinds[kind]; ok {
+				out = append(out, deployAuthFact(t, rel, line))
 			}
 			continue
 		}
@@ -138,13 +165,17 @@ func scanDeployFile(root, path string) ([]domain.ExposureFact, error) {
 		}
 		if kind == "Service" {
 			if m := svcTypeRe.FindStringSubmatch(text); m != nil {
+				sawSvcType = true
 				switch m[1] {
 				case "LoadBalancer", "NodePort", "ExternalName":
 					out = append(out, deployFact("k8s:Service:"+m[1], m[1], rel, line))
+				case "ClusterIP":
+					out = append(out, deployFactWithScope("k8s:Service:ClusterIP", m[1], rel, line, domain.ScopeLoopback))
 				}
 				continue
 			}
 			if m := nodePortRe.FindStringSubmatch(text); m != nil {
+				sawSvcType = true
 				out = append(out, deployFact("k8s:Service:NodePort", "nodePort="+m[1], rel, line))
 			}
 			continue
@@ -163,6 +194,7 @@ func scanDeployFile(root, path string) ([]domain.ExposureFact, error) {
 				m[1]+":"+m[2], rel, line))
 		}
 	}
+	flushService()
 	return out, sc.Err()
 }
 
@@ -180,5 +212,22 @@ func deployFact(target, addr, file string, line int) domain.ExposureFact {
 		Address:       addr,
 		AddressSource: src + " " + file,
 		Scope:         domain.ScopeAllInterfaces,
+	}
+}
+
+func deployFactWithScope(target, addr, file string, line int, scope string) domain.ExposureFact {
+	fact := deployFact(target, addr, file, line)
+	fact.Scope = scope
+	return fact
+}
+
+func deployAuthFact(target, file string, line int) domain.ExposureFact {
+	return domain.ExposureFact{
+		CallSite:      domain.CallSite{File: file, Line: line},
+		Direction:     "inbound",
+		Kind:          "auth-middleware",
+		Target:        target,
+		AddressSource: "manifest " + file,
+		Scope:         domain.ScopeLoopback,
 	}
 }

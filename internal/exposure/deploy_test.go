@@ -88,3 +88,80 @@ spec:
 		t.Fatalf("ingress host not resolved: %+v", ing)
 	}
 }
+
+func TestScanDeploy_ClusterIPAndIstioAuth(t *testing.T) {
+	root := t.TempDir()
+	mk := func(p, content string) {
+		full := filepath.Join(root, p)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// 1. Kubernetes Service of type ClusterIP (cluster-internal mesh service)
+	mk("deploy/service-internal.yaml", `apiVersion: v1
+kind: Service
+metadata:
+  name: internal-svc
+spec:
+  type: ClusterIP
+  ports:
+  - port: 8080
+`)
+
+	// 2. Istio AuthorizationPolicy (inbound auth middleware)
+	mk("deploy/auth-policy.yaml", `apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: require-jwt
+spec:
+  action: ALLOW
+`)
+
+	// 3. Istio RequestAuthentication (inbound auth middleware)
+	mk("deploy/req-auth.yaml", `apiVersion: security.istio.io/v1beta1
+kind: RequestAuthentication
+metadata:
+  name: jwt-auth
+`)
+
+	facts, err := ScanDeploy(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var foundClusterIP, foundAuthPolicy, foundReqAuth bool
+	for _, f := range facts {
+		if f.Target == "k8s:Service:ClusterIP" {
+			foundClusterIP = true
+			if f.Scope != domain.ScopeLoopback {
+				t.Errorf("ClusterIP scope=%s, want %s", f.Scope, domain.ScopeLoopback)
+			}
+		}
+		if f.Target == "istio:AuthorizationPolicy" {
+			foundAuthPolicy = true
+			if f.Kind != "auth-middleware" || f.Direction != "inbound" {
+				t.Errorf("AuthorizationPolicy fact kind=%s dir=%s, want auth-middleware inbound", f.Kind, f.Direction)
+			}
+		}
+		if f.Target == "istio:RequestAuthentication" {
+			foundReqAuth = true
+			if f.Kind != "auth-middleware" || f.Direction != "inbound" {
+				t.Errorf("RequestAuthentication fact kind=%s dir=%s, want auth-middleware inbound", f.Kind, f.Direction)
+			}
+		}
+	}
+
+	if !foundClusterIP {
+		t.Errorf("k8s:Service:ClusterIP fact not found in %+v", facts)
+	}
+	if !foundAuthPolicy {
+		t.Errorf("istio:AuthorizationPolicy fact not found in %+v", facts)
+	}
+	if !foundReqAuth {
+		t.Errorf("istio:RequestAuthentication fact not found in %+v", facts)
+	}
+}

@@ -68,6 +68,12 @@ func (Exposure) Evaluate(cond domain.Condition, c *domain.AnalysisCase) domain.C
 			outboundConfigured = true
 		}
 	}
+	if cond.Params[domain.ParamScope] == "public" && inboundLocal && !inboundPublic {
+		claim.Result = domain.ClaimFalse
+		claim.Falsifier = domain.FalsifierLoopbackOnly
+		claim.Explanation = "all resolved inbound network binds are loopback/cluster-internal; public network exposure falsified: " + strings.Join(parts, "; ")
+		return claim
+	}
 	claim.Result = domain.ClaimTrue
 	claim.Explanation = "network exposure resolved: " + strings.Join(parts, "; ")
 	if inboundLocal && !inboundPublic {

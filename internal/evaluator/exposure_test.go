@@ -90,3 +90,36 @@ func TestExposureNoFacts(t *testing.T) {
 		t.Fatalf("result=%s lims=%v", cl.Result, cl.Limitations)
 	}
 }
+
+func TestExposure_PublicScopeFalsified(t *testing.T) {
+	c := exposureCase(
+		domain.ExposureFact{Direction: "inbound", Kind: "listener",
+			Target: "net.Listen", Address: "127.0.0.1:8080", AddressSource: "literal", Scope: domain.ScopeLoopback},
+		domain.ExposureFact{Direction: "inbound", Kind: "deployment",
+			Target: "k8s:Service:ClusterIP", Address: "ClusterIP", AddressSource: "manifest", Scope: domain.ScopeLoopback},
+	)
+	cond := exposureCond()
+	cond.Params[domain.ParamScope] = "public"
+	cl := Exposure{}.Evaluate(cond, c)
+	if cl.Result != domain.ClaimFalse {
+		t.Fatalf("result=%s, want FALSE", cl.Result)
+	}
+	if cl.Falsifier != domain.FalsifierLoopbackOnly {
+		t.Fatalf("falsifier=%s, want %s", cl.Falsifier, domain.FalsifierLoopbackOnly)
+	}
+}
+
+func TestExposure_PublicScopeSatisfied(t *testing.T) {
+	c := exposureCase(
+		domain.ExposureFact{Direction: "inbound", Kind: "listener",
+			Target: "net.Listen", Address: "127.0.0.1:8080", AddressSource: "literal", Scope: domain.ScopeLoopback},
+		domain.ExposureFact{Direction: "inbound", Kind: "deployment",
+			Target: "gateway-api:Gateway", Address: "api.example.com", AddressSource: "manifest", Scope: domain.ScopeAllInterfaces},
+	)
+	cond := exposureCond()
+	cond.Params[domain.ParamScope] = "public"
+	cl := Exposure{}.Evaluate(cond, c)
+	if cl.Result != domain.ClaimTrue {
+		t.Fatalf("result=%s, want TRUE", cl.Result)
+	}
+}

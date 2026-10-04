@@ -284,6 +284,8 @@ const (
 	// ParamInsecure is the knob value that enables the vulnerable
 	// configuration (default "true").
 	ParamInsecure = "insecure_value"
+	// ParamScope specifies the required network exposure scope ("public", etc.).
+	ParamScope = "scope"
 )
 
 const (
