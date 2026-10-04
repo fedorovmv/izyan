@@ -88,26 +88,30 @@ func (ix *Index) CheckMissingCall(ctx context.Context, check, pipeline domain.Sy
 
 	// 5. Search for invocations of check in pipeline body and its dep-internal callees.
 	pipelinePkg, pipelineFn := findFuncDecl(pkgs, pipeline)
-	if pipelineFn != nil {
-		if site := callsSymbol(pipelinePkg, pipelineFn, check, checkIfaceRefs); site != nil {
-			return false, fmt.Sprintf("security check %s is invoked in pipeline body at %s:%d (%s.%s)",
-				check.Symbol, filepathBase(site.File), site.Line, site.Package, site.Function), nil
-		}
+	if pipelineFn == nil {
+		return false, fmt.Sprintf("cannot inspect pipeline: declaration %s not found in analyzed packages", pipeline.Symbol), nil
+	}
+	if site := callsSymbol(pipelinePkg, pipelineFn, check, checkIfaceRefs); site != nil {
+		return false, fmt.Sprintf("security check %s is invoked in pipeline body at %s:%d (%s.%s)",
+			check.Symbol, filepathBase(site.File), site.Line, site.Package, site.Function), nil
+	}
 
-		// Transitive callees of pipeline within the dependency module.
-		if site := ix.searchCalleesForCheck(pkgs, pipelinePkg, pipelineFn, check, checkIfaceRefs, mod); site != nil {
-			return false, fmt.Sprintf("security check %s is invoked in pipeline callee at %s:%d (%s.%s)",
-				check.Symbol, filepathBase(site.File), site.Line, site.Package, site.Function), nil
-		}
+	// Transitive callees of pipeline within the dependency module.
+	site, truncated := ix.searchCalleesForCheck(pkgs, pipelinePkg, pipelineFn, check, checkIfaceRefs, mod)
+	if site != nil {
+		return false, fmt.Sprintf("security check %s is invoked in pipeline callee at %s:%d (%s.%s)",
+			check.Symbol, filepathBase(site.File), site.Line, site.Package, site.Function), nil
+	}
+	if truncated {
+		return false, fmt.Sprintf("cannot verify omission: callee search for %s exceeded search depth limit", pipeline.Symbol), nil
 	}
 
 	// 6. Pipeline reached and check has 0 invocations on this active path.
 	typeName, _ := splitSymbol(check.Symbol)
 	content := fmt.Sprintf(
-		"security check %s is omitted on active pipeline %s (receiver: %s.%s); path: %s; check invocations on path: 0",
-		check.Symbol, pipeline.Symbol, check.Package, typeName, pathStr,
+		"security check %s is omitted on active pipeline %s (receiver: %s.%s; product callers: %d); path: %s; check invocations on path: 0",
+		check.Symbol, pipeline.Symbol, check.Package, typeName, len(prodCallers), pathStr,
 	)
-	_ = prodCallers
 	return true, content, nil
 }
 
@@ -120,6 +124,9 @@ type funcDeclItem struct {
 func (ix *Index) findPipelineReach(ctx context.Context, pipeline domain.SymbolRef, pkgs []*packages.Package, mod string) (bool, string, []domain.CallSite, []funcDeclItem) {
 	// A. Direct product call sites to pipeline.
 	directProdCalls := ix.productRefsTo(pipeline)
+	for _, iref := range ix.ifaceCallerRefs(pipeline) {
+		directProdCalls = append(directProdCalls, ix.productRefsTo(iref)...)
+	}
 	if len(directProdCalls) > 0 {
 		site := directProdCalls[0]
 		pathStr := fmt.Sprintf("%s.%s (%s:%d) -> %s", site.Package, site.Function, filepathBase(site.File), site.Line, pipeline.Symbol)
@@ -204,7 +211,8 @@ func (ix *Index) findPipelineReach(ctx context.Context, pipeline domain.SymbolRe
 }
 
 // searchCalleesForCheck performs a BFS over callees reachable from startFn within the dep module.
-func (ix *Index) searchCalleesForCheck(pkgs []*packages.Package, startPkg *packages.Package, startFn *ast.FuncDecl, check domain.SymbolRef, ifaces []domain.SymbolRef, mod string) *domain.CallSite {
+// Returns (foundSite, truncated).
+func (ix *Index) searchCalleesForCheck(pkgs []*packages.Package, startPkg *packages.Package, startFn *ast.FuncDecl, check domain.SymbolRef, ifaces []domain.SymbolRef, mod string) (*domain.CallSite, bool) {
 	visited := map[string]bool{}
 	startKey := startPkg.PkgPath + "." + funcDeclSymbol(startFn)
 	visited[startKey] = true
@@ -231,12 +239,15 @@ func (ix *Index) searchCalleesForCheck(pkgs []*packages.Package, startPkg *packa
 
 			// Check if this callee calls check.
 			if site := callsSymbol(callee.pkg, callee.fn, check, ifaces); site != nil {
-				return site
+				return site, false
 			}
 			queue = append(queue, callee)
 		}
 	}
-	return nil
+	if len(queue) > 0 {
+		return nil, true
+	}
+	return nil, false
 }
 
 // findCalleesInFunc finds all function declarations within the module called by fn.

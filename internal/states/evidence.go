@@ -28,7 +28,7 @@ func (h CollectEvidence) actCollectEvidence(ctx context.Context, c *domain.Analy
 		pipelineRef := domain.SymbolRef{Package: checkRef.Package, Symbol: pipelineSym}
 
 		for _, mc := range c.Exploit.MandatoryConditions {
-			if mc.ID == "C-REACH" && len(mc.Subjects) > 0 {
+			if (mc.ID == "C-REACH" || mc.Kind == domain.ConditionSymbolReachable) && len(mc.Subjects) > 0 {
 				for _, s := range mc.Subjects {
 					if s.Symbol == pipelineSym || pipelineSym == "" {
 						pipelineRef = s
