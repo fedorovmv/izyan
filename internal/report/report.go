@@ -287,10 +287,19 @@ func renderGovulncheckComparison(b *strings.Builder, c *domain.AnalysisCase, isR
 		} else {
 			b.WriteString("- 🔍 **Вердикт govulncheck:** **Трасса вызовов не обнаружена (Clean)**\n")
 			b.WriteString("  - Сканер не нашёл статических путей вызова от кода приложения к функциям из advisory.\n")
-			if c.Verdict != nil {
-				fmt.Fprintf(b, "- 🛡️ **Вердикт анализатора:** **`%s`**\n", c.Verdict.Verdict)
+			if c.Verdict != nil && c.Verdict.Verdict == domain.VerdictExploitable {
+				b.WriteString("- ⚠️ **Вердикт анализатора:** **`EXPLOITABLE` (Уязвимость подтверждена)**\n")
+				if hasMissingCall(c) {
+					b.WriteString("- ⚖️ **Сопоставление (Расхождение с govulncheck):** `govulncheck` ищет вызовы функций из advisory, но дефект заключается в пропуске обязательной проверки (missing-call) на активном конвейере исполнения; условия эксплуатации подтверждены.\n\n")
+				} else {
+					b.WriteString("- ⚖️ **Сопоставление (Расхождение с govulncheck):** Сканер `govulncheck` не зафиксировал прямых вызовов функций из advisory, однако анализ подтвердил эксплуатируемость уязвимости.\n\n")
+				}
+			} else {
+				if c.Verdict != nil {
+					fmt.Fprintf(b, "- 🛡️ **Вердикт анализатора:** **`%s`**\n", c.Verdict.Verdict)
+				}
+				b.WriteString("- ⚖️ **Сопоставление:** Результаты согласуются — вызовы уязвимых функций отсутствуют.\n\n")
 			}
-			b.WriteString("- ⚖️ **Сопоставление:** Результаты согласуются — вызовы уязвимых функций отсутствуют.\n\n")
 		}
 	} else {
 		b.WriteString("### Govulncheck Comparison & Divergence Analysis\n\n")
@@ -328,12 +337,30 @@ func renderGovulncheckComparison(b *strings.Builder, c *domain.AnalysisCase, isR
 		} else {
 			b.WriteString("- 🔍 **Govulncheck Finding:** **Clean (No call path found)**\n")
 			b.WriteString("  - Scanner detected no static call paths from product code to advisory functions.\n")
-			if c.Verdict != nil {
-				fmt.Fprintf(b, "- 🛡️ **Analyzer Verdict:** **`%s`**\n", c.Verdict.Verdict)
+			if c.Verdict != nil && c.Verdict.Verdict == domain.VerdictExploitable {
+				b.WriteString("- ⚠️ **Analyzer Verdict:** **`EXPLOITABLE` (Vulnerability confirmed)**\n")
+				if hasMissingCall(c) {
+					b.WriteString("- ⚖️ **Divergence Rationale:** `govulncheck` checks for invocations of advisory functions, but the defect stems from omission of a security check (missing-call) along an active execution pipeline; exploit conditions are verified.\n\n")
+				} else {
+					b.WriteString("- ⚖️ **Divergence Rationale:** `govulncheck` detected no direct call paths to advisory functions, but comprehensive analysis confirmed vulnerability exploitability.\n\n")
+				}
+			} else {
+				if c.Verdict != nil {
+					fmt.Fprintf(b, "- 🛡️ **Analyzer Verdict:** **`%s`**\n", c.Verdict.Verdict)
+				}
+				b.WriteString("- ⚖️ **Comparison:** Findings agree — no calls to vulnerable functions detected.\n\n")
 			}
-			b.WriteString("- ⚖️ **Comparison:** Findings agree — no calls to vulnerable functions detected.\n\n")
 		}
 	}
+}
+
+func hasMissingCall(c *domain.AnalysisCase) bool {
+	for _, e := range c.EvidenceGraph.Evidence {
+		if e.ID == "EV-MISSING-CALL" || strings.HasPrefix(string(e.ID), "EV-MISSING-CALL") {
+			return true
+		}
+	}
+	return false
 }
 
 func Markdown(c *domain.AnalysisCase, lang ...string) string {

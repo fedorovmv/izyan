@@ -38,7 +38,7 @@ func (h CollectEvidence) actCollectEvidence(ctx context.Context, c *domain.Analy
 			}
 		}
 
-		omitted, content, err := h.Source.CheckMissingCall(ctx, checkRef, pipelineRef)
+		omitted, content, callers, err := h.Source.CheckMissingCall(ctx, checkRef, pipelineRef)
 		if err != nil {
 			c.EvidenceGraph.AddToolLimitation(fmt.Sprintf("missing-call check failed: %v", err))
 			continue
@@ -53,6 +53,23 @@ func (h CollectEvidence) actCollectEvidence(ctx context.Context, c *domain.Analy
 				Tool:    "goanalysis.Index.CheckMissingCall",
 				Content: content,
 			})
+			for _, mc := range c.Exploit.MandatoryConditions {
+				if mc.ID == "C-INPUT" || mc.Kind == domain.ConditionAttackerControl || mc.Kind == domain.ConditionInputConstraint {
+					for _, site := range callers {
+						flows, evs, terr := h.traceArgs(ctx, site, mc)
+						if terr != nil {
+							continue
+						}
+						for _, flow := range flows {
+							flow.ConditionID = mc.ID
+							c.EvidenceGraph.AddDataFlows(flow)
+						}
+						for _, e := range evs {
+							c.EvidenceGraph.AddEvidence(e)
+						}
+					}
+				}
+			}
 		} else if content != "" && strings.Contains(content, "is invoked") {
 			c.EvidenceGraph.AddEvidence(domain.Evidence{
 				ID:      "EV-CHECK-PRESENT",

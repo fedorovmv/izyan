@@ -1070,6 +1070,56 @@ func TestReportGovulncheckCleanComparison(t *testing.T) {
 	}
 }
 
+func TestReportGovulncheckCleanMissingCallDivergence(t *testing.T) {
+	c := &domain.AnalysisCase{
+		ID: "CASE-MISSING-CALL",
+		Vulnerability: domain.Vulnerability{
+			ID:     "GO-2020-0017",
+			Module: "github.com/dgrijalva/jwt-go",
+		},
+		Verdict: &domain.VerdictResult{
+			Verdict: domain.VerdictExploitable,
+			Reason:  "all mandatory exploit conditions are satisfied",
+		},
+		Affected: &domain.AffectedResult{
+			VersionAffected: domain.ClaimTrue,
+			ResolvedVersion: "v3.2.0+incompatible",
+			ModulePresent:   domain.ClaimTrue,
+			PackagePresent:  domain.ClaimTrue,
+			BuildRelevant:   domain.ClaimTrue,
+		},
+		EvidenceGraph: domain.EvidenceGraph{
+			CallPaths: nil,
+			ToolExecutions: []domain.ToolExecution{
+				{Tool: "govulncheck", Args: []string{"./..."}, ExitCode: 0, DurationMs: 120},
+			},
+			Evidence: []domain.Evidence{
+				{
+					ID:      "EV-MISSING-CALL",
+					Tool:    "goanalysis.Index.CheckMissingCall",
+					Content: "security check MapClaims.VerifyAudience is omitted on active pipeline MapClaims.Valid",
+				},
+			},
+		},
+	}
+
+	mdRU := Markdown(c, "ru")
+	if !strings.Contains(mdRU, "Сопоставление (Расхождение с govulncheck)") {
+		t.Errorf("missing divergence header in Russian")
+	}
+	if !strings.Contains(mdRU, "missing-call") {
+		t.Errorf("missing missing-call explanation in Russian")
+	}
+
+	mdEN := Markdown(c, "en")
+	if !strings.Contains(mdEN, "Divergence Rationale:") {
+		t.Errorf("missing divergence rationale in English")
+	}
+	if !strings.Contains(mdEN, "missing-call") {
+		t.Errorf("missing missing-call explanation in English")
+	}
+}
+
 func TestReportTicketMetadata(t *testing.T) {
 	c := &domain.AnalysisCase{
 		ID:              "CASE-1234",

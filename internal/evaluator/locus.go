@@ -39,6 +39,19 @@ func evalLocus(cond domain.Condition, c *domain.AnalysisCase) domain.Claim {
 	// graph? The note is advisory — it never changes this claim's result.
 	proposed := proposedLocusNote(c, symbols)
 
+	for _, e := range c.EvidenceGraph.Evidence {
+		if e.ID == "EV-MISSING-CALL" || strings.HasPrefix(string(e.ID), "EV-MISSING-CALL") {
+			claim.Result = domain.ClaimTrue
+			claim.EvidenceIDs = appendUniqueID(claim.EvidenceIDs, e.ID)
+			claim.Explanation = fmt.Sprintf(
+				"дефектный конвейер достижим и исполняется в сборке (доказано %s)", e.ID)
+			if proposed != "" {
+				claim.Limitations = append(claim.Limitations, proposed)
+			}
+			return claim
+		}
+	}
+
 	if govulncheckRan(c) {
 		for _, cp := range c.EvidenceGraph.CallPaths {
 			for _, fr := range cp.Frames {

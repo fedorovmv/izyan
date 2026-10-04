@@ -46,6 +46,18 @@ func (SymbolReachable) Evaluate(cond domain.Condition, c *domain.AnalysisCase) d
 
 		Producer: "evaluator.SymbolReachable",
 	}
+	if cond.Params["pipeline"] != "" {
+		for _, e := range c.EvidenceGraph.Evidence {
+			if (e.ID == "EV-MISSING-CALL" || strings.HasPrefix(string(e.ID), "EV-MISSING-CALL")) &&
+				strings.Contains(e.Content, cond.Params["pipeline"]) {
+				claim.Result = domain.ClaimTrue
+				claim.EvidenceIDs = appendUniqueID(claim.EvidenceIDs, e.ID)
+				claim.Explanation = fmt.Sprintf("validation pipeline %s is reached from product code (proven by EV-MISSING-CALL)",
+					cond.Params["pipeline"])
+				return claim
+			}
+		}
+	}
 	symbols := reachabilitySubjects(cond, c)
 	if len(symbols) == 0 {
 		claim.Limitations = append(claim.Limitations,
