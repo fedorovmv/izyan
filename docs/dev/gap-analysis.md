@@ -16,7 +16,7 @@
 | Condition kinds | `AUTHENTICATION_CONDITION` по дизайну не FALSE (per-route/gateway/deployment проверки вне скана) — только TRUE при покрытии wiring | → B7 |
 | Data origins | `EXTERNAL_AUTHENTICATED` различён для outbound, inbound — deployment-hint не per-route доказательство → B7; детекция DB-драйверов по pkg path — эвристика; reflect/pointer-записи в поля невидимы скану → B11 | → B7, B11 |
 | Transformations | Семантика трансформов не моделируется: opaque call → UNKNOWN (честно, но закрывает claim'ы) | limitation, не бэклог |
-| Negative check | Конфигурация, меняющая reachability (не гарды) — в резерве | → B6 |
+| Config-gated reachability & Mesh ingress (B6) | Разрешение адресов сетевых слушателей из полей структур и пакетных переменных; учет периметра Service Mesh/Istio (AuthorizationPolicy, RequestAuthentication, ClusterIP); отсечение мертвого кода при отключенных флагах (FalsifierConfigGatedOff) и conditional-reachability | закрыто |
 | Reviewer | «patch misinterpretation» и «scope mismatch» из §21 не проверяются — Structural ловит только структурные дефекты | → B15 |
 | Proof validation | Machine proposals о необходимости условия/полноте локусов не имеют отдельного проверяемого proof gate; B30 остаётся expert-basis веткой | → B32 |
 | Контекстная критичность и триаж (B33) | Детерминированный движок triage assessment (internal/risk) сопоставляет базовый CVSS 10.0 с сетевой экспозицией (0.0.0.0 vs 127.0.0.1 vs none), аутентификацией и графом сборки, назначая приоритеты P0..P3 / DISMISSED с SLA и структурированным обоснованием переоценки | закрыто |
@@ -54,7 +54,6 @@
 | # | Пункт | Done-критерий |
 |---|-------|----------------|
 | B5 | Build-tag варианты в dep-коде | Snapshot фиксирует tag-set; claims помечаются при tag-зависимом покрытии; компилируемость tag-варианта проверяется, не только синтаксический импорт |
-| B6 | Config-gated reachability | Config-gates влияют на гарды (учтено); reachability-config — нет → conditional-reachability метка в claim; связывание `var:`/`field:` bind-источников с config-значениями; различение `0.0.0.0`/`127.0.0.1` на уровне условия, не только supporting-scope |
 | B7 | `AUTHENTICATION_CONDITION` per-route | Route→handler→middleware маппинг; TRUE только при покрытии конкретного handler'а |
 | B8 | Bound-семантика шире | `len(x)`, `x != 0`, float, арифметика в термах; юнит-тесты каждой формы |
 | B15 | Reviewer: patch-misinterpretation + scope-mismatch | §21 требует проверок, которые Structural не делает: «условие описывает не тот класс, что патч», «claim вне скоупа advisory» → детерминистический чек или semantic-review правило + тест; live 6c5v/GO-2026-6372: fix-subjects `openTune`/`pick` не связывают peer-controlled `recvContent` payload с условием, xwwf: peer tune value не доказан через opaque `pick`; truth EXPLOITABLE, допустимый результат INCONCLUSIVE до независимого доказательства payload, без args-only fallback |
