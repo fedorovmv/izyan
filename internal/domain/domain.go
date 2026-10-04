@@ -73,6 +73,8 @@ type Vulnerability struct {
 	AffectedModules []AffectedModule  `json:"affected_modules,omitempty"`
 	Summary         string            `json:"summary,omitempty"`
 	Description     string            `json:"description,omitempty"`
+	BaseSeverity    string            `json:"base_severity,omitempty"`
+	BaseScore       float64           `json:"base_score,omitempty"`
 	CWE             []string          `json:"cwe,omitempty"`
 	Modified        string            `json:"modified,omitempty"`
 	References      []Reference       `json:"references,omitempty"`
@@ -1137,6 +1139,56 @@ type VerdictResult struct {
 	Limitations  []string      `json:"limitations,omitempty"`
 }
 
+type RiskLevel string
+
+const (
+	RiskLevelCritical RiskLevel = "CRITICAL"
+	RiskLevelHigh     RiskLevel = "HIGH"
+	RiskLevelMedium   RiskLevel = "MEDIUM"
+	RiskLevelLow      RiskLevel = "LOW"
+	RiskLevelNone     RiskLevel = "NONE"
+	RiskLevelUnknown  RiskLevel = "UNKNOWN"
+)
+
+type TriagePriority string
+
+const (
+	PriorityP0        TriagePriority = "P0"        // Blocker (SLA: 24h immediate)
+	PriorityP1        TriagePriority = "P1"        // Critical (SLA: 7d)
+	PriorityP2        TriagePriority = "P2"        // Medium / High (SLA: Sprint / 30d)
+	PriorityP3        TriagePriority = "P3"        // Low / Minor (SLA: Backlog)
+	PriorityDismissed TriagePriority = "DISMISSED" // No action / False alarm (SLA: None)
+)
+
+type ContextualRiskStatus string
+
+const (
+	RiskStatusAssessed      ContextualRiskStatus = "ASSESSED"
+	RiskStatusProvisional   ContextualRiskStatus = "PROVISIONAL"
+	RiskStatusNotApplicable ContextualRiskStatus = "NOT_APPLICABLE"
+	RiskStatusUnassessed    ContextualRiskStatus = "UNASSESSED"
+)
+
+type ContextualRisk struct {
+	Status           ContextualRiskStatus `json:"status"`
+	BaseSeverity     string               `json:"base_severity,omitempty"`
+	BaseScore        float64              `json:"base_score,omitempty"`
+	ContextualLevel  RiskLevel            `json:"contextual_level"`
+	ContextualScore  float64              `json:"contextual_score,omitempty"`
+	Priority         TriagePriority       `json:"priority"`
+	SLA              string               `json:"sla,omitempty"`
+	AdjustmentReason string               `json:"adjustment_reason"`
+	Factors          RiskFactors          `json:"factors"`
+}
+
+type RiskFactors struct {
+	Verdict        string `json:"verdict"`
+	Exposure       string `json:"exposure"`        // PUBLIC (0.0.0.0), INTERNAL (127.0.0.1), NONE (no listeners)
+	Authentication string `json:"authentication"`  // REQUIRED, NONE, UNKNOWN
+	PayloadControl string `json:"payload_control"` // UNTRUSTED_EXTERNAL, CONSTANT, TRUSTED_INFRASTRUCTURE
+	BlastRadius    string `json:"blast_radius"`    // PROCESS_CRASH_DOS, DATA_LEAK, RCE, DOWNGRADE, UNKNOWN
+}
+
 type AnalysisLimits struct {
 	MaxIterations       int `json:"max_iterations"`
 	MaxToolCalls        int `json:"max_tool_calls"`
@@ -1213,6 +1265,7 @@ type AnalysisCase struct {
 	StrategyPlan       *StrategyPlan          `json:"strategy_plan,omitempty"`
 	SemanticReview     *SemanticReview        `json:"semantic_review,omitempty"`
 	Justification      *AnalysisJustification `json:"justification,omitempty"`
+	ContextualRisk     *ContextualRisk        `json:"contextual_risk,omitempty"`
 }
 
 // AddHypothesis appends a hypothesis with an assigned H-id.

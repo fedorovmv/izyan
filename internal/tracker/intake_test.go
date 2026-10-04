@@ -314,3 +314,23 @@ go_version: go1.22.5
 	}
 }
 
+func TestParseTicket_SeverityAndCVSS(t *testing.T) {
+	text := `ticket: SEC-777
+vulnerability: CVE-2026-9999
+severity: BLOCKER
+cvss: 10.0
+`
+	tickets, err := ParseTickets([]byte(text))
+	if err != nil {
+		t.Fatalf("ParseTickets failed: %v", err)
+	}
+	if len(tickets) != 1 {
+		t.Fatalf("expected 1 ticket, got %d", len(tickets))
+	}
+	if tickets[0].Severity != "BLOCKER" {
+		t.Fatalf("expected Severity BLOCKER, got %q", tickets[0].Severity)
+	}
+	if tickets[0].CVSS != "10.0" {
+		t.Fatalf("expected CVSS 10.0, got %q", tickets[0].CVSS)
+	}
+}

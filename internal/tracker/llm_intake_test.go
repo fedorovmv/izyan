@@ -175,4 +175,3 @@ func TestExtractTicketWithLLM_WithGoVersion(t *testing.T) {
 		t.Fatalf("expected GoVersion go1.22.4, got %q", tk.GoVersion)
 	}
 }
-

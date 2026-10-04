@@ -31,6 +31,8 @@ type Ticket struct {
 	Release       string          `json:"release,omitempty"`
 	GoVersion     string          `json:"go_version,omitempty"`
 	Toolchain     string          `json:"toolchain,omitempty"`
+	Severity      string          `json:"severity,omitempty"`
+	CVSS          string          `json:"cvss,omitempty"`
 	Summary       string          `json:"summary,omitempty"`
 	Description   string          `json:"description,omitempty"`
 	Rationale     string          `json:"rationale,omitempty"`
@@ -194,6 +196,8 @@ var (
 	rePackageLabel   = regexp.MustCompile(`(?i)(?:библиотека|пакет|модуль|library|package|module)[\s:=]+([^\s,;]+)`)
 	reVersionLabel   = regexp.MustCompile(`(?i)(?:версия библиотеки|версия пакета|версия|version|ver)[\s:=]+([^\s,;]+)`)
 	reGoVersionLabel = regexp.MustCompile(`(?i)(?:версия go|версия компилятора|go_version|go version|toolchain|compiler)[\s:=]+([^\s,;]+)`)
+	reSeverityLabel  = regexp.MustCompile(`(?i)(?:критичность|приоритет|severity|priority)[\s:=]+([^\s,;]+)`)
+	reCVSSLabel      = regexp.MustCompile(`(?i)(?:cvss|score)[\s:=]+([^\s,;]+)`)
 )
 
 func extractVulnIDs(s string) []string {
@@ -441,6 +445,10 @@ func parseSingleTicketJSON(data []byte) (*Ticket, error) {
 		t.GoVersion = t.Toolchain
 	}
 
+	// Severity & CVSS
+	t.Severity = findField(m, []string{"severity", "priority"}, "severity", "priority")
+	t.CVSS = findField(m, []string{"cvss", "cvss_score", "score"}, "cvss")
+
 	type osvWrapper struct {
 		OSV json.RawMessage `json:"osv"`
 	}
@@ -501,6 +509,14 @@ func parseTextTicket(text string) (*Ticket, error) {
 	// Go Version / Toolchain
 	if m := reGoVersionLabel.FindStringSubmatch(text); len(m) > 1 {
 		t.GoVersion = strings.TrimSpace(m[1])
+	}
+
+	// Severity & CVSS
+	if m := reSeverityLabel.FindStringSubmatch(text); len(m) > 1 {
+		t.Severity = strings.TrimSpace(m[1])
+	}
+	if m := reCVSSLabel.FindStringSubmatch(text); len(m) > 1 {
+		t.CVSS = strings.TrimSpace(m[1])
 	}
 
 	t.Description = strings.TrimSpace(text)
