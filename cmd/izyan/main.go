@@ -330,6 +330,13 @@ func applyTicket(o *analyzeOpts, path string, completer tracker.TextCompleter) e
 	if o.ticketRel == "" && t.Release != "" {
 		o.ticketRel = t.Release
 	}
+	if o.releaseGo == "" {
+		if t.GoVersion != "" {
+			o.releaseGo = t.GoVersion
+		} else if t.Toolchain != "" {
+			o.releaseGo = t.Toolchain
+		}
+	}
 
 	// Resolve repo if not explicitly provided
 	if o.repo == "" {

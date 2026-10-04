@@ -25,6 +25,7 @@ Output ONLY a single valid JSON object with the following fields:
   "component": "<component or service name, if mentioned>",
   "product": "<product name or code, if mentioned>",
   "release": "<product release version, if mentioned>",
+  "go_version": "<Go toolchain or compiler version, e.g. go1.22.4, 1.21, if mentioned>",
   "summary": "<one sentence summary of the issue in the language of the input>"
 }
 
@@ -42,6 +43,7 @@ type llmTicketExtraction struct {
 	Component     string   `json:"component"`
 	Product       string   `json:"product"`
 	Release       string   `json:"release"`
+	GoVersion     string   `json:"go_version"`
 	Summary       string   `json:"summary"`
 }
 
@@ -105,6 +107,14 @@ func ExtractTicketWithLLM(ctx context.Context, completer TextCompleter, rawText 
 		Release:       strings.TrimSpace(ext.Release),
 		Summary:       strings.TrimSpace(ext.Summary),
 		Description:   trimmed,
+	}
+
+	// Validate GoVersion
+	if ext.GoVersion != "" {
+		cleanGo := strings.TrimSpace(ext.GoVersion)
+		if containsIgnoringPunctuation(rawText, cleanGo) || strings.Contains(strings.ToLower(rawText), strings.ToLower(cleanGo)) {
+			t.GoVersion = cleanGo
+		}
 	}
 
 	// Validate aliases

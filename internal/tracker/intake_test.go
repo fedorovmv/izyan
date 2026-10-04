@@ -295,3 +295,22 @@ func TestRepoMapResolution(t *testing.T) {
 		t.Errorf("Resolve flat t2 = %q, want /repos/flat-repo", got)
 	}
 }
+
+func TestParseTicket_GoVersion(t *testing.T) {
+	text := `ticket: SEC-888
+vulnerability: CVE-2026-77405
+package: github.com/rabbitmq/amqp091-go
+go_version: go1.22.5
+`
+	tickets, err := ParseTickets([]byte(text))
+	if err != nil {
+		t.Fatalf("ParseTickets failed: %v", err)
+	}
+	if len(tickets) != 1 {
+		t.Fatalf("expected 1 ticket, got %d", len(tickets))
+	}
+	if tickets[0].GoVersion != "go1.22.5" {
+		t.Fatalf("expected GoVersion go1.22.5, got %q", tickets[0].GoVersion)
+	}
+}
+

@@ -154,3 +154,25 @@ func TestLoadTicketWithOptions_Fallback(t *testing.T) {
 		t.Errorf("Component = %q, want MESSAGE_BROKER", tk.Component)
 	}
 }
+
+func TestExtractTicketWithLLM_WithGoVersion(t *testing.T) {
+	rawText := `В задаче SEC-999 для сервиса AUTH обнаружена CVE-2026-77405 в amqp091-go v1.10.0. Сервис собран на Go 1.22.4.`
+	mockResp := `{
+		"vulnerability": "CVE-2026-77405",
+		"ticket_id": "SEC-999",
+		"package": "github.com/rabbitmq/amqp091-go",
+		"version": "v1.10.0",
+		"component": "AUTH",
+		"go_version": "go1.22.4",
+		"summary": "TLS min version weakness in amqp"
+	}`
+	completer := mockCompleter{response: mockResp}
+	tk, err := ExtractTicketWithLLM(context.Background(), completer, rawText)
+	if err != nil {
+		t.Fatalf("ExtractTicketWithLLM failed: %v", err)
+	}
+	if tk.GoVersion != "go1.22.4" {
+		t.Fatalf("expected GoVersion go1.22.4, got %q", tk.GoVersion)
+	}
+}
+

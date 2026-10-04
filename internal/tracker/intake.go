@@ -29,6 +29,8 @@ type Ticket struct {
 	Component     string          `json:"component,omitempty"`
 	Product       string          `json:"product,omitempty"`
 	Release       string          `json:"release,omitempty"`
+	GoVersion     string          `json:"go_version,omitempty"`
+	Toolchain     string          `json:"toolchain,omitempty"`
 	Summary       string          `json:"summary,omitempty"`
 	Description   string          `json:"description,omitempty"`
 	Rationale     string          `json:"rationale,omitempty"`
@@ -191,6 +193,7 @@ var (
 	reProductLabel   = regexp.MustCompile(`(?i)(?:версия продукта|продукт|product version|product|release|релиз)[\s:=]+([^\r\n,;]+)`)
 	rePackageLabel   = regexp.MustCompile(`(?i)(?:библиотека|пакет|модуль|library|package|module)[\s:=]+([^\s,;]+)`)
 	reVersionLabel   = regexp.MustCompile(`(?i)(?:версия библиотеки|версия пакета|версия|version|ver)[\s:=]+([^\s,;]+)`)
+	reGoVersionLabel = regexp.MustCompile(`(?i)(?:версия go|версия компилятора|go_version|go version|toolchain|compiler)[\s:=]+([^\s,;]+)`)
 )
 
 func extractVulnIDs(s string) []string {
@@ -431,6 +434,13 @@ func parseSingleTicketJSON(data []byte) (*Ticket, error) {
 	t.Rationale = findField(m, []string{"rationale", "comment", "notes", "analysis", "resolution", "result"}, "rationale", "comment", "analysis", "result")
 	t.Repo = findField(m, []string{"repo", "repository"}, "repo")
 
+	// Go version & Toolchain
+	t.GoVersion = findField(m, []string{"go_version", "goversion", "release_go_version", "release_go", "compiler_version", "compiler", "go"}, "go_version", "toolchain")
+	t.Toolchain = findField(m, []string{"toolchain"}, "toolchain")
+	if t.GoVersion == "" && t.Toolchain != "" {
+		t.GoVersion = t.Toolchain
+	}
+
 	type osvWrapper struct {
 		OSV json.RawMessage `json:"osv"`
 	}
@@ -486,6 +496,11 @@ func parseTextTicket(text string) (*Ticket, error) {
 	// Version
 	if m := reVersionLabel.FindStringSubmatch(text); len(m) > 1 {
 		t.Version = strings.TrimSpace(m[1])
+	}
+
+	// Go Version / Toolchain
+	if m := reGoVersionLabel.FindStringSubmatch(text); len(m) > 1 {
+		t.GoVersion = strings.TrimSpace(m[1])
 	}
 
 	t.Description = strings.TrimSpace(text)
