@@ -1,63 +1,87 @@
-# Contributing to Izyan
+# Участие в разработке Izyan (Contributing)
 
-Thank you for your interest in contributing to **Izyan**!
+Оригинальный репозиторий проекта: [https://github.com/fedorovmv/izyan](https://github.com/fedorovmv/izyan)
 
-## Core Invariants
+Спасибо за интерес к развитию **Izyan**! Проект открыт для предложений, исправлений дефектов и добавления поддержки новых классов уязвимостей.
 
-Izyan is a deterministic Go vulnerability analyzer designed to weed out false positives without compromising safety. All contributions must respect these fundamental invariants:
+---
 
-1. **`false-safe = 0`**: Never produce an unsafe negative verdict without rigorous proof. A negative verdict (`NO_EXPLOIT_PATH_FOUND`) requires a verified `Falsifier` on a mandatory condition.
-2. **Absence of proof is not proof of absence**: If an exploit path is not found, the fallback verdict is `INCONCLUSIVE` (or `UNKNOWN`), never `NOT_AFFECTED` or `NO_EXPLOIT_PATH_FOUND`.
-3. **Deterministic verification overrides AI**: Compiler analysis and static reachability checks are authoritative. LLM outputs are treated strictly as structured proposals.
-4. **Reproducibility**: Analysis results, evidence IDs, and dossiers must be deterministic and verifiable.
+## 1. Форки, зеркала и обратная связь (Upstream First)
 
-## Development Setup
+* **Оригинал и синхронизация:** Если вы форкаете или зеркалируете проект (в том числе во внутренние корпоративные контуры GitLab, Bitbucket и др.), сохраняйте ссылку на оригинальный репозиторий и регулярно синхронизируйте изменения ядра и базы знаний (`knowledge.json`).
+* **Pull Requests обязательны:** Все исправления ошибок, оптимизации и новые возможности приветствуются в виде **Pull Request** в ветку `master` оригинального репозитория. Разработка вне апстрима приводит к расхождению баз знаний и потере точности анализа.
+* **Атомарность:** Придерживайтесь правила: *один Pull Request — одно логическое изменение*. Не объединяйте исправление ошибки с масштабным рефакторингом или правкой нерелевантной документации.
 
-1. Requires Go 1.25 or later.
-2. Clone the repository:
+---
+
+## 2. Главные инварианты анализатора
+
+Izyan — детерминированный анализатор уязвимостей Go, созданный для исключения ложных срабатываний без компромиссов по безопасности. Любой PR обязан строго соблюдать ключевые инварианты:
+
+1. **`false-safe = 0`**: Запрещено выдавать ложно-безопасный вердикт. Вердикт `NO_EXPLOIT_PATH_FOUND` допустим только при наличии математически доказанного `Falsifier` на обязательном условии атаки.
+2. **Отсутствие найденного пути эксплуатации не доказывает его отсутствие**: Если цепочка вызовов не найдена или прерывается на динамическом вызове, вердикт должен оставаться `INCONCLUSIVE` (или `UNKNOWN`). Запрещено дожимать вердикт до «безопасного» ради красивой статистики.
+3. **Детерминизм превыше LLM**: Проверки компилятора Go (`go/types`, AST, reachability) и семантика языка абсолютны. Выводы языковых моделей (LLM) являются исключительно структурированными гипотезами и обязаны верифицироваться детерминированным кодом.
+4. **Генеральность кода (Generality Rule)**: Запрещён любой case-specific хардкод имён конкретных анализируемых продуктов, пакетов или уязвимостей в коде ядра (`internal/goanalysis/`, `internal/evaluator/`). Логика строится на семантике типов Go, а частные свойства библиотек вносятся в расширяемую базу знаний (`--knowledge` или `internal/goanalysis/knowledge.json`).
+5. **Приватность и безопасность**: Строгий запрет на попадание в коммиты любых приватных локальных путей, названий внутренних корпоративных систем, учетных данных или токенов.
+
+---
+
+## 3. Окружение и разработка
+
+1. Требуется **Go 1.25** или новее.
+2. Клонирование оригинального репозитория:
    ```bash
    git clone https://github.com/fedorovmv/izyan.git
    cd izyan
    ```
-3. Build the binary:
+3. Сборка CLI:
    ```bash
    go build -o izyan ./cmd/izyan
    ```
 
-## Local Validation
+---
 
-Before submitting a Pull Request, ensure that all checks pass:
+## 4. Локальная проверка качества (Quality Gates)
+
+Перед отправкой Pull Request убедитесь, что все проверки проходят локально:
 
 ```bash
-# Check code formatting
+# Проверка форматирования
 gofmt -l .
 
-# Run static analysis
+# Статический анализ
 go vet ./...
 
-# Run the test suite
+# Запуск юнит-тестов
 go test ./...
 ```
 
-For changes affecting the evaluator or negative verification, verify the real benchmark corpus:
+Если ваши изменения затрагивают логику вычисления достижимости, эвалуатор или негативную верификацию, обязателен прогон эталонного корпуса бенчмарков:
+
 ```bash
 go run ./cmd/izyan eval --corpus eval/corpus-real.json -j 4
 ```
-Ensure that `false-safe = 0` is strictly maintained.
 
-## Commit Message Guidelines (Conventional Commits)
+Критерий успешности: `cases=38 fail=0 false-safe=0`.
 
-This repository uses automated release tagging based on **Conventional Commits**:
+---
 
-* `feat: ...` or `feat(scope): ...` triggers a **minor** release (`v0.1.0` -> `v0.2.0`).
-* `fix: ...`, `fix(scope): ...`, `perf: ...`, `refactor: ...` triggers a **patch** release (`v0.1.0` -> `v0.1.1`).
-* `feat!: ...` or commit body containing `BREAKING CHANGE:` triggers a **major** release (`v1.0.0` -> `v2.0.0`).
+## 5. Формат сообщений коммитов (Conventional Commits)
 
-Please format your commit messages accordingly.
+В проекте используется автоматическое тегирование версий релизов на основе спецификации **Conventional Commits**:
 
-## Pull Request Guidelines
+* `feat: ...` или `feat(scope): ...` — новая функциональность (минорный релиз, `v0.1.0` -> `v0.2.0`).
+* `fix: ...`, `fix(scope): ...`, `perf: ...`, `refactor: ...` — исправление дефектов и оптимизации (патч-релиз, `v0.1.0` -> `v0.1.1`).
+* `docs: ...`, `test: ...`, `chore: ...` — документация, тесты, внутренняя гигиена.
+* `feat!: ...` или текст `BREAKING CHANGE:` в описании — мажорный релиз с изменением обратной совместимости (`v1.0.0` -> `v2.0.0`).
 
-* Keep diffs focused and minimal.
-* Include unit tests for bug fixes and new features.
-* Avoid unrelated changes in the same PR.
-* Zero internal corporate paths, private credentials, or API keys in tracked files.
+---
+
+## 6. Чеклист для Pull Request
+
+- [ ] Изменение атомарно и решает одну конкретную задачу.
+- [ ] Добавлены покрывающие юнит-тесты (TDD).
+- [ ] `gofmt`, `go vet ./...` и `go test ./...` завершаются без ошибок и предупреждений.
+- [ ] Нет регрессий на бенчмарках (`false-safe = 0`).
+- [ ] В коде и тестах нет хардкода имён анализируемых продуктов и приватных путей.
+- [ ] Описание PR содержит понятное объяснение решаемой проблемы и архитектурного подхода.
