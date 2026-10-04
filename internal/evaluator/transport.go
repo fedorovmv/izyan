@@ -62,6 +62,20 @@ func (ServerTransportInput) Evaluate(cond domain.Condition, c *domain.AnalysisCa
 		}
 	}
 	if len(frames) == 0 {
+		for _, chain := range c.EvidenceGraph.ModuleReachable {
+			for _, sym := range chain {
+				fr := parseSymbolToCallSite(sym)
+				if !isServerTransportFrame(fr, module) {
+					continue
+				}
+				frames = appendUnique(frames, frameName(fr))
+				for _, id := range moduleReachEvidence(c) {
+					evIDs = appendUniqueID(evIDs, id)
+				}
+			}
+		}
+	}
+	if len(frames) == 0 {
 		// Dep-internal argument provenance recorded for this condition
 		// outranks the structural heuristic below: a resolved origin —
 		// external or not — is decided by the real trace, while a trace
@@ -193,4 +207,24 @@ func appendUnique(list []string, s string) []string {
 		}
 	}
 	return append(list, s)
+}
+
+func parseSymbolToCallSite(sym string) domain.CallSite {
+	lastDot := strings.LastIndexByte(sym, '.')
+	if lastDot < 0 {
+		return domain.CallSite{Function: sym}
+	}
+	fn := sym[lastDot+1:]
+	rest := sym[:lastDot]
+	lastSlash := strings.LastIndexByte(rest, '/')
+	sub := rest
+	if lastSlash >= 0 {
+		sub = rest[lastSlash+1:]
+	}
+	if midDot := strings.IndexByte(sub, '.'); midDot >= 0 {
+		pkg := rest[:len(rest)-len(sub)+midDot]
+		recv := sub[midDot+1:]
+		return domain.CallSite{Package: pkg, Receiver: recv, Function: fn}
+	}
+	return domain.CallSite{Package: rest, Function: fn}
 }
