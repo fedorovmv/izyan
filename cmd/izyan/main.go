@@ -536,6 +536,7 @@ func analyzeCase(ctx context.Context, o analyzeOpts) (*domain.AnalysisCase, erro
 		evaluator.ServerTransportInput{},
 		evaluator.ArgumentOrigin{},
 		evaluator.Validation{},
+		evaluator.MissingCall{},
 		evaluator.Exposure{},
 		evaluator.Authentication{},
 		evaluator.ConfigFlag{},
