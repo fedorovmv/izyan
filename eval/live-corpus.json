@@ -14,8 +14,7 @@
       "vuln": "GHSA-33mj-cw25-m34h",
       "vuln_file": "advisories/live/GHSA-33mj-cw25-m34h.json",
       "expect": [
-        "NO_EXPLOIT_PATH_FOUND",
-        "INCONCLUSIVE"
+        "NO_EXPLOIT_PATH_FOUND"
       ]
     },
     {

@@ -44,7 +44,7 @@ Threat-модель: брокер может быть враждебным/MITM 
 | GHSA-rm6m | RESOURCE_EXHAUSTION (`Qos` signed→unsigned) | NO_EXPLOIT_PATH_FOUND | NO_EXPLOIT_PATH_FOUND | корректно (bound-гарды [0,1024]/[0,1GiB] на всех write-site'ах; аргументы из config) |
 | GHSA-27gv | INFO_LEAK (`Config.SASL` PlainAuth plaintext) | INCONCLUSIVE | INCONCLUSIVE | корректно (creds retained — TRUE; reader не найден статически, dynamic-читатели не исключаемы) |
 | GHSA-465g | URI_CONFUSION (`URI.String`→`ParseURI` round-trip) | **NO_EXPLOIT_PATH_FOUND** | NO_EXPLOIT_PATH_FOUND | корректно: NO_EXPLOIT_PATH_FOUND (0 fail, 0 false-safe; закрыто в B19) |
-| GHSA-33mj | TLS MinVersion в `tlsConfigFromURI` | **NO_EXPLOIT_PATH_FOUND** | INCONCLUSIVE | консервативно приемлемо (snapshot go1.26 → implicit floor TLS1.2; нужен PLATFORM_CONDITION по go_version) |
+| GHSA-33mj | TLS MinVersion в `tlsConfigFromURI` | **NO_EXPLOIT_PATH_FOUND** | NO_EXPLOIT_PATH_FOUND | корректно: NO_EXPLOIT_PATH_FOUND (0 fail, 0 false-safe; закрыто в B18) |
 | GHSA-j497 | INTEGER_OVERFLOW (shortstr uint8 trunc) | **INCONCLUSIVE** | INCONCLUSIVE | корректно — re-pin с EXPLOITABLE, см. обоснование |
 
 ## Обоснования
@@ -111,13 +111,14 @@ Round-trip требует `amqp091.URI.String()` + `ParseURI`. Продукт
 негативная верификация фильтрует `reflect_method` по инстанцированию
 типа ресивера. Вердикт: `NO_EXPLOIT_PATH_FOUND` (0 fail, 0 false-safe).
 
-### GHSA-33mj → NO_EXPLOIT_PATH_FOUND (прогон: INCONCLUSIVE)
+### GHSA-33mj → NO_EXPLOIT_PATH_FOUND (прогон: NO_EXPLOIT_PATH_FOUND)
 
 `tlsConfigFromURI` без `MinVersion` — слабость реализуется только на
 toolchain <1.18; снапшот go1.26.1 → неявный floor TLS 1.2 → брокер не
-может понизить протокол. Условие «слабый TLS negotiated» опровергается
-фактом снапшота (PLATFORM_CONDITION по `go_version`). Анализатор такой
-проверки для этого класса не имеет → INCONCLUSIVE консервативно верно.
+может понизить протокол. Эксплойт-паттерн `CRYPTO_DOWNGRADE` задаёт
+обязательное условие `C-PLATFORM` по `go_version` (floor TLS 1.2 с Go 1.18).
+Условие опровергнуто фактом снапшота (`FalsifierSnapshotFactMismatch`).
+Вердикт: `NO_EXPLOIT_PATH_FOUND` (0 fail, 0 false-safe; закрыто в B18, дефект D3 исправлен).
 
 ### GHSA-27gv → INCONCLUSIVE
 
@@ -154,7 +155,6 @@ module usage). Hostile broker — threat-модель корпуса. Root cause
   истиной случайно; на read-path sink'ах CONSTANT-ориджин может подавить
   transport-эвристику → консервативный UNKNOWN (потеря качества, не
   false-safe).
-- **D3 (P2, backlog)**: классификатор 33mj пометил TLS-MinVersion как
-  INFO_LEAK → модель задаёт нерелевантные условия. Истина требует
-  PLATFORM_CONDITION по `go_version` (floor TLS1.2 с Go 1.18).
+- **D3 (P2, исправлен)**: классификатор 33mj определяет ClassCryptoDowngrade; C-PLATFORM по go_version опровергается на Go >= 1.18 -> NO_EXPLOIT_PATH_FOUND (B18).
 - **D4 (P2, исправлен)**: reflect-демоция и ModuleInternalReach учитывают достижимость и инстанцирование типа субъекта; 465g даёт NO_EXPLOIT_PATH_FOUND.
+
