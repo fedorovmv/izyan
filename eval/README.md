@@ -19,7 +19,7 @@
 | **Cleared Rate** | **20 / 38 (53%)** | Доказанное закрытие алертов без участия человека (`NOT_AFFECTED` + `NO_EXPLOIT_PATH_FOUND`) |
 | **Signal-Cleared Rate** | **9 / 26 (35%)** | Безопасное снятие алертов там, где `govulncheck` выдал шумные сигналы (`REACHABLE` / `package-level`) |
 | **False-Safe Rate** | **0 / 38 (0%)** | Строгий инвариант: ни одного ложно-безопасного вердикта |
-| **Требуют триажа** | **18 / 38 (47%)** | 16 доказанно уязвимых (`EXPLOITABLE`) + 2 кейса с недостаточным контекстом (`INCONCLUSIVE`) |
+| **Требуют триажа** | **18 / 38 (47%)** | 17 доказанно уязвимых (`EXPLOITABLE`) + 1 кейс с недостаточным контекстом (`INCONCLUSIVE`) |
 
 ---
 
@@ -80,7 +80,7 @@ analyzer eval --corpus eval/corpus-real.json --case real-micro-plain-6443x
 | `real-ssh-server` | EXPLOITABLE | reachable | нет — уязвимый SSH-хэндлер активен |
 | `real-ssh-keyparse` | NO_EXPLOIT_PATH_FOUND | package-level | **да — govulncheck-silence + проверка недостижимости неэкспортированных субъектов в коде зависимости** |
 | `real-jose-decrypt` | EXPLOITABLE | reachable | нет — парсинг токенов без ограничений |
-| `real-jwt-auth` | INCONCLUSIVE | package-level | нет — уязвимость в пропуске проверки (missing-call): `VerifyAudience` не вызывается при валидации токена (`MapClaims.Valid`), поэтому отсутствие её вызова не доказывает безопасность |
+| `real-jwt-auth` | EXPLOITABLE | package-level | нет — уязвимость в пропуске проверки (missing-call): `VerifyAudience` опущена на активном конвейере `MapClaims.Valid` (EV-MISSING-CALL) |
 | `real-http2-server` | NOT_AFFECTED | silent | **да — детерминистически безопасная версия** |
 | `real-dns-zone` | EXPLOITABLE | reachable | нет — сетевой парсер DNS-зон достижим |
 | `real-getter-file` | EXPLOITABLE | reachable | нет — file-схема подвержена инъекциям |

@@ -79,6 +79,7 @@
    },
    "_note": "outer URL is constant, but HTTP response may switch protocol through X-Terraform-Get; safe verdict is not justified",
    "expect": [
+    "EXPLOITABLE",
     "INCONCLUSIVE"
    ]
   },
@@ -171,6 +172,7 @@
    },
    "_note": "const file:// URL — dispatch key 'file' selects FileGetter only; no nested re-dispatch (X-Terraform-Get is HttpGetter-only) → GitGetter unreachable if narrowing holds",
    "expect": [
+    "EXPLOITABLE",
     "NO_EXPLOIT_PATH_FOUND",
     "INCONCLUSIVE"
    ]
