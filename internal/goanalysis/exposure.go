@@ -4,6 +4,7 @@ import (
 	"context"
 	"go/ast"
 	"go/constant"
+	"go/token"
 	"go/types"
 	"golang.org/x/tools/go/packages"
 	"regexp"
@@ -11,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/fedorovmv/izyan/internal/domain"
+	"github.com/fedorovmv/izyan/internal/exposure"
 )
 
 // dialNameRe matches API names that initiate outbound connections:
@@ -61,6 +63,9 @@ func (ix *Index) ListenSites(ctx context.Context) ([]domain.ExposureFact, error)
 							CallSite:  ix.callSiteAt(pkg, fn, call),
 						}
 						ix.resolveListenAddr(info, pkg, fn, call, key, &fact)
+						if fact.Address != "" {
+							fact.Scope = exposure.Scope(fact.Address)
+						}
 						out = append(out, fact)
 					}
 					return true
@@ -114,6 +119,9 @@ func (ix *Index) DialSites(ctx context.Context, module string) ([]domain.Exposur
 						CallSite:  ix.callSiteAt(pkg, fn, call),
 					}
 					ix.resolveDialAddr(info, pkg, fn, call, &fact)
+					if fact.AddressSource != "" {
+						fact.Scope = exposure.OutboundScope(fact.AddressSource)
+					}
 					out = append(out, fact)
 					return true
 				})
@@ -289,10 +297,10 @@ func (ix *Index) traceAddr(info *types.Info, pkg *packages.Package, fn *ast.Func
 	switch x := e.(type) {
 	case *ast.UnaryExpr:
 		if lit, ok := x.X.(*ast.CompositeLit); ok {
-			return compositeAddr(info, lit)
+			return ix.compositeAddr(info, pkg, fn, lit)
 		}
 	case *ast.CompositeLit:
-		return compositeAddr(info, x)
+		return ix.compositeAddr(info, pkg, fn, x)
 	case *ast.Ident:
 		return ix.identAssignedAddr(info, pkg, fn, x)
 	}
@@ -333,10 +341,10 @@ func (ix *Index) identAssignedAddr(info *types.Info, pkg *packages.Package, fn *
 			}
 		case *ast.UnaryExpr:
 			if lit, ok := r.X.(*ast.CompositeLit); ok {
-				val, src = compositeAddr(info, lit)
+				val, src = ix.compositeAddr(info, pkg, fn, lit)
 			}
 		case *ast.CompositeLit:
-			val, src = compositeAddr(info, r)
+			val, src = ix.compositeAddr(info, pkg, fn, r)
 		default:
 			val, src = ix.exprStringValue(info, pkg, fn, as.Rhs[0])
 		}
@@ -347,7 +355,7 @@ func (ix *Index) identAssignedAddr(info *types.Info, pkg *packages.Package, fn *
 
 // compositeAddr extracts the Addr/address field from a composite literal
 // like &http.Server{Addr: ":9090"}.
-func compositeAddr(info *types.Info, lit *ast.CompositeLit) (string, string) {
+func (ix *Index) compositeAddr(info *types.Info, pkg *packages.Package, fn *ast.FuncDecl, lit *ast.CompositeLit) (string, string) {
 	for _, elt := range lit.Elts {
 		kv, ok := elt.(*ast.KeyValueExpr)
 		if !ok {
@@ -359,23 +367,238 @@ func compositeAddr(info *types.Info, lit *ast.CompositeLit) (string, string) {
 		}
 		if strings.EqualFold(key.Name, "Addr") || strings.EqualFold(key.Name, "Address") ||
 			strings.EqualFold(key.Name, "ListenAddr") {
-			return exprString(info, kv.Value)
+			return ix.exprStringValue(info, pkg, fn, kv.Value)
 		}
 	}
 	return "", ""
 }
 
 // exprStringValue resolves an expression expected to yield the address:
-// one-hop var resolution inside the enclosing function is included.
+// one-hop var resolution inside the enclosing function, package-level vars,
+// and struct field resolution are included.
 func (ix *Index) exprStringValue(info *types.Info, pkg *packages.Package, fn *ast.FuncDecl, e ast.Expr) (string, string) {
 	if id, ok := e.(*ast.Ident); ok {
-		if _, isVar := info.ObjectOf(id).(*types.Var); isVar {
+		if obj, isVar := info.ObjectOf(id).(*types.Var); isVar {
 			if v, s := ix.identAssignedAddr(info, pkg, fn, id); v != "" || s != "" {
 				return v, s
 			}
+			targetPkg := pkg
+			if obj.Pkg() != nil && obj.Pkg().Path() != pkg.PkgPath {
+				if tp := ix.packageFor(obj.Pkg().Path()); tp != nil {
+					targetPkg = tp
+				}
+			}
+			if val := ix.lookupPackageVarValue(targetPkg, id.Name); val != "" {
+				return val, "var:" + id.Name
+			}
+			return "", "var:" + id.Name
+		}
+	}
+	if sel, ok := e.(*ast.SelectorExpr); ok {
+		val, src := ix.resolveStructField(info, pkg, fn, sel)
+		if src != "" {
+			return val, src
 		}
 	}
 	return exprString(info, e)
+}
+
+func (ix *Index) resolveStructField(info *types.Info, pkg *packages.Package, fn *ast.FuncDecl, sel *ast.SelectorExpr) (string, string) {
+	var src string
+	if seln, ok := info.Selections[sel]; ok {
+		src = "field:" + recvTypeName(seln.Recv()) + "." + seln.Obj().Name()
+	} else if id, ok := sel.X.(*ast.Ident); ok {
+		src = "field:" + id.Name + "." + sel.Sel.Name
+	} else {
+		src = "field:" + sel.Sel.Name
+	}
+
+	fieldName := sel.Sel.Name
+	id, ok := sel.X.(*ast.Ident)
+	if !ok {
+		return "", src
+	}
+
+	// 1. Look inside fn.Body if fn != nil
+	if fn != nil && fn.Body != nil {
+		var val string
+		ast.Inspect(fn.Body, func(n ast.Node) bool {
+			if val != "" {
+				return false
+			}
+			as, ok := n.(*ast.AssignStmt)
+			if !ok {
+				return true
+			}
+			for i, lhs := range as.Lhs {
+				if i >= len(as.Rhs) {
+					continue
+				}
+				if li, ok := lhs.(*ast.Ident); ok && li.Name == id.Name {
+					lit := unwrapCompositeLit(as.Rhs[i])
+					if lit != nil {
+						if v := extractFieldFromCompositeLit(info, lit, fieldName); v != "" {
+							val = v
+							return false
+						}
+					}
+				}
+				if sl, ok := lhs.(*ast.SelectorExpr); ok {
+					if xid, ok := sl.X.(*ast.Ident); ok && xid.Name == id.Name && sl.Sel.Name == fieldName {
+						if v := exprToResolvedString(info, as.Rhs[i]); v != "" {
+							val = v
+							return false
+						}
+					}
+				}
+			}
+			return true
+		})
+		if val != "" {
+			return val, src
+		}
+	}
+
+	// 2. Look at package-level declarations in pkg.Syntax
+	targetPkg := pkg
+	if obj := info.ObjectOf(id); obj != nil && obj.Pkg() != nil && obj.Pkg().Path() != pkg.PkgPath {
+		if tp := ix.packageFor(obj.Pkg().Path()); tp != nil {
+			targetPkg = tp
+		}
+	}
+	if targetPkg != nil {
+		for _, f := range targetPkg.Syntax {
+			if ix.isTestFile(f) {
+				continue
+			}
+			for _, decl := range f.Decls {
+				gd, ok := decl.(*ast.GenDecl)
+				if !ok || gd.Tok != token.VAR {
+					continue
+				}
+				for _, spec := range gd.Specs {
+					vs, ok := spec.(*ast.ValueSpec)
+					if !ok {
+						continue
+					}
+					for i, name := range vs.Names {
+						if name.Name == id.Name {
+							var rhs ast.Expr
+							if i < len(vs.Values) {
+								rhs = vs.Values[i]
+							} else if len(vs.Values) == 1 {
+								rhs = vs.Values[0]
+							}
+							if rhs != nil {
+								lit := unwrapCompositeLit(rhs)
+								if lit != nil {
+									if v := extractFieldFromCompositeLit(targetPkg.TypesInfo, lit, fieldName); v != "" {
+										return v, src
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return "", src
+}
+
+func unwrapCompositeLit(e ast.Expr) *ast.CompositeLit {
+	if u, ok := e.(*ast.UnaryExpr); ok && u.Op == token.AND {
+		e = u.X
+	}
+	if lit, ok := e.(*ast.CompositeLit); ok {
+		return lit
+	}
+	return nil
+}
+
+func extractFieldFromCompositeLit(info *types.Info, lit *ast.CompositeLit, fieldName string) string {
+	if lit == nil {
+		return ""
+	}
+	for _, elt := range lit.Elts {
+		if kv, ok := elt.(*ast.KeyValueExpr); ok {
+			if id, ok := kv.Key.(*ast.Ident); ok && id.Name == fieldName {
+				return exprToResolvedString(info, kv.Value)
+			}
+		}
+	}
+	return ""
+}
+
+func (ix *Index) lookupPackageVarValue(pkg *packages.Package, varName string) string {
+	if pkg == nil {
+		return ""
+	}
+	info := pkg.TypesInfo
+	for _, f := range pkg.Syntax {
+		if ix.isTestFile(f) {
+			continue
+		}
+		for _, decl := range f.Decls {
+			gd, ok := decl.(*ast.GenDecl)
+			if !ok || gd.Tok != token.VAR {
+				continue
+			}
+			for _, spec := range gd.Specs {
+				vs, ok := spec.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+				for i, id := range vs.Names {
+					if id.Name == varName {
+						var rhs ast.Expr
+						if i < len(vs.Values) {
+							rhs = vs.Values[i]
+						} else if len(vs.Values) == 1 {
+							rhs = vs.Values[0]
+						}
+						if rhs != nil {
+							return exprToResolvedString(info, rhs)
+						}
+					}
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func (ix *Index) packageFor(pkgPath string) *packages.Package {
+	for _, p := range ix.pkgs {
+		if p.PkgPath == pkgPath {
+			return p
+		}
+	}
+	return nil
+}
+
+func exprToResolvedString(info *types.Info, e ast.Expr) string {
+	if e == nil {
+		return ""
+	}
+	if lit, ok := e.(*ast.BasicLit); ok {
+		if s, err := strconv.Unquote(lit.Value); err == nil {
+			return s
+		}
+		return lit.Value
+	}
+	if id, ok := e.(*ast.Ident); ok && info != nil {
+		if c, ok := info.ObjectOf(id).(*types.Const); ok && c.Val() != nil && c.Val().Kind() == constant.String {
+			return constant.StringVal(c.Val())
+		}
+	}
+	if info != nil {
+		if tv, ok := info.Types[e]; ok && tv.Value != nil && tv.Value.Kind() == constant.String {
+			return constant.StringVal(tv.Value)
+		}
+	}
+	return ""
 }
 
 // exprString is the leaf resolver: literals, constants, os.Getenv,

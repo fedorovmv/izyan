@@ -56,3 +56,30 @@ func TestDialSites(t *testing.T) {
 		t.Fatalf("other module: facts=%+v err=%v", facts, err)
 	}
 }
+
+func TestListenSites_ConfigFieldAndPackageVar(t *testing.T) {
+	ix := fixture(t, "listenprod")
+	facts, err := ix.ListenSites(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Package-level var cfgAddr = "127.0.0.1:8080"
+	fPkgVar := findExposure(facts, "net.Listen", "127.0.0.1:8080", "var:cfgAddr")
+	if fPkgVar == nil {
+		t.Fatalf("expected package var fact with address 127.0.0.1:8080; got %+v", facts)
+	}
+	if fPkgVar.Scope != domain.ScopeLoopback {
+		t.Fatalf("expected ScopeLoopback, got %s", fPkgVar.Scope)
+	}
+
+	// 2. Struct field serverCfg.Addr = "127.0.0.1:8888"
+	fField := findExposure(facts, "net.Listen", "127.0.0.1:8888", "field:ServerConfig.Addr")
+	if fField == nil {
+		t.Fatalf("expected struct field fact with address 127.0.0.1:8888; got %+v", facts)
+	}
+	if fField.Scope != domain.ScopeLoopback {
+		t.Fatalf("expected ScopeLoopback, got %s", fField.Scope)
+	}
+}
+

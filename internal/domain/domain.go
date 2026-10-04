@@ -498,6 +498,13 @@ const (
 	// the vulnerable functions have no observed call traces or module chains,
 	// requiring negative verification of callers and dynamic markers.
 	FalsifierLocusFunctionUnreached = "locus-function-unreached"
+	// FalsifierConfigGatedOff grounds FALSE for reachability conditions when
+	// all call paths to the vulnerable function are guarded by a configuration
+	// flag that is statically proven disabled (false) or unassigned zero-value bool.
+	FalsifierConfigGatedOff = "config-feature-disabled"
+	// FalsifierLoopbackOnly grounds FALSE for exposure conditions requiring public scope
+	// when all resolved network binds are strictly loopback/unix/cluster-internal.
+	FalsifierLoopbackOnly = "loopback-only"
 )
 
 type EvidenceQuality string
