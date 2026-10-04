@@ -14,6 +14,7 @@ import (
 
 	"github.com/fedorovmv/izyan/internal/affected"
 	"github.com/fedorovmv/izyan/internal/domain"
+	"github.com/fedorovmv/izyan/internal/risk"
 )
 
 // Write stores report.json, report.md, openvex.json and cyclonedx.json
@@ -402,6 +403,7 @@ func Markdown(c *domain.AnalysisCase, lang ...string) string {
 		} else {
 			fmt.Fprintf(&b, "## Verdict: `%s`\n\n> **%s**\n\n", c.Verdict.Verdict, c.Verdict.Reason)
 		}
+		renderTriageAssessment(&b, c, isRU)
 	}
 	if rat := rationale(c); rat != "" {
 		if isRU {
@@ -1531,3 +1533,167 @@ func shortCommit(s string) string {
 	}
 	return s
 }
+
+func renderTriageAssessment(b *strings.Builder, c *domain.AnalysisCase, isRU bool) {
+	r := c.ContextualRisk
+	if r == nil {
+		if c.Verdict == nil {
+			return
+		}
+		res := risk.Assess(c.Vulnerability, c, *c.Verdict)
+		r = &res
+		c.ContextualRisk = r
+	}
+
+	baseSev := r.BaseSeverity
+	if baseSev == "" {
+		baseSev = "CRITICAL"
+	}
+	baseScoreStr := fmt.Sprintf("%.1f", r.BaseScore)
+	if r.BaseScore <= 0 {
+		baseScoreStr = "N/A"
+	}
+
+	nominalPrio := nominalPriority(baseSev, r.BaseScore, isRU)
+	nominalSLA := nominalSLA(r.BaseScore, isRU)
+
+	contextualSevStr := formatContextualSeverity(r.ContextualLevel, r.ContextualScore, isRU)
+	contextualPrioStr := formatTriagePriority(r.Priority, isRU)
+	statusStr := formatRiskStatus(r.Status, isRU)
+
+	if isRU {
+		b.WriteString("## Контекстная критичность и триаж (Triage Assessment)\n\n")
+		b.WriteString("| Параметр | Исходная оценка (CVE / NVD) | Контекстная оценка в продукте |\n")
+		b.WriteString("|---|---|---|\n")
+		fmt.Fprintf(b, "| **Критичность** | %s (CVSS %s) | %s |\n", formatSeverityBadge(baseSev), baseScoreStr, contextualSevStr)
+		fmt.Fprintf(b, "| **Приоритет в очереди** | %s | %s |\n", nominalPrio, contextualPrioStr)
+		fmt.Fprintf(b, "| **Рекомендуемый SLA** | %s | %s |\n", nominalSLA, r.SLA)
+		fmt.Fprintf(b, "| **Статус оценки** | Номинальный | %s |\n\n", statusStr)
+
+		if r.AdjustmentReason != "" {
+			fmt.Fprintf(b, "> ℹ️ **Обоснование переоценки:**\n> %s\n\n", r.AdjustmentReason)
+		}
+	} else {
+		b.WriteString("## Contextual Severity & Triage Assessment\n\n")
+		b.WriteString("| Parameter | Nominal Assessment (CVE / NVD) | Contextual Assessment in Product |\n")
+		b.WriteString("|---|---|---|\n")
+		fmt.Fprintf(b, "| **Severity** | %s (CVSS %s) | %s |\n", formatSeverityBadge(baseSev), baseScoreStr, contextualSevStr)
+		fmt.Fprintf(b, "| **Triage Priority** | %s | %s |\n", nominalPrio, contextualPrioStr)
+		fmt.Fprintf(b, "| **Recommended SLA** | %s | %s |\n", nominalSLA, r.SLA)
+		fmt.Fprintf(b, "| **Assessment Status** | Nominal | %s |\n\n", statusStr)
+
+		if r.AdjustmentReason != "" {
+			fmt.Fprintf(b, "> ℹ️ **Triage Rationale:**\n> %s\n\n", r.AdjustmentReason)
+		}
+	}
+}
+
+func formatSeverityBadge(sev string) string {
+	switch strings.ToUpper(sev) {
+	case "CRITICAL", "BLOCKER":
+		return "🔴 **CRITICAL**"
+	case "HIGH":
+		return "🟠 **HIGH**"
+	case "MEDIUM", "MODERATE":
+		return "🟡 **MEDIUM**"
+	case "LOW":
+		return "🟢 **LOW**"
+	case "NONE":
+		return "⚪ **NONE**"
+	default:
+		return "⚪ **" + sev + "**"
+	}
+}
+
+func formatContextualSeverity(level domain.RiskLevel, score float64, isRU bool) string {
+	badge := formatSeverityBadge(string(level))
+	if level == domain.RiskLevelNone {
+		return badge + " (Score 0.0)"
+	}
+	if score > 0 {
+		return fmt.Sprintf("%s (Score %.1f)", badge, score)
+	}
+	return badge
+}
+
+func nominalPriority(baseSev string, baseScore float64, isRU bool) string {
+	sev := strings.ToUpper(baseSev)
+	if baseScore >= 9.0 || sev == "CRITICAL" || sev == "BLOCKER" {
+		return "**P0 (Blocker)**"
+	}
+	if baseScore >= 7.0 || sev == "HIGH" {
+		return "**P1 (Critical)**"
+	}
+	if baseScore >= 4.0 || sev == "MEDIUM" || sev == "MODERATE" {
+		return "**P2 (Medium)**"
+	}
+	return "**P3 (Low)**"
+}
+
+func nominalSLA(baseScore float64, isRU bool) string {
+	if baseScore >= 9.0 {
+		if isRU {
+			return "24 часа"
+		}
+		return "24 hours"
+	}
+	if baseScore >= 7.0 {
+		if isRU {
+			return "7 дней"
+		}
+		return "7 days"
+	}
+	if isRU {
+		return "30 дней (Sprint)"
+	}
+	return "30 days (Sprint)"
+}
+
+func formatTriagePriority(p domain.TriagePriority, isRU bool) string {
+	switch p {
+	case domain.PriorityP0:
+		return "**P0 (Blocker)**"
+	case domain.PriorityP1:
+		return "**P1 (Critical)**"
+	case domain.PriorityP2:
+		if isRU {
+			return "**P2 (Плановый спринт)**"
+		}
+		return "**P2 (Scheduled Sprint)**"
+	case domain.PriorityP3:
+		if isRU {
+			return "**P3 (Низкий приоритет)**"
+		}
+		return "**P3 (Low Priority)**"
+	case domain.PriorityDismissed:
+		if isRU {
+			return "**DISMISSED (Снято)**"
+		}
+		return "**DISMISSED (No Action)**"
+	default:
+		return "**" + string(p) + "**"
+	}
+}
+
+func formatRiskStatus(s domain.ContextualRiskStatus, isRU bool) string {
+	switch s {
+	case domain.RiskStatusAssessed:
+		if isRU {
+			return "**ASSESSED** (Подтверждено контекстом)"
+		}
+		return "**ASSESSED** (Confirmed by Context)"
+	case domain.RiskStatusProvisional:
+		if isRU {
+			return "**PROVISIONAL** (Предварительно / Требуется триаж)"
+		}
+		return "**PROVISIONAL** (Provisional / Triage Required)"
+	case domain.RiskStatusNotApplicable:
+		if isRU {
+			return "**NOT_APPLICABLE** (Не применимо к сборке)"
+		}
+		return "**NOT_APPLICABLE** (Not Applicable)"
+	default:
+		return "**" + string(s) + "**"
+	}
+}
+

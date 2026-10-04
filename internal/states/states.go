@@ -22,6 +22,7 @@ import (
 	"github.com/fedorovmv/izyan/internal/report"
 	"github.com/fedorovmv/izyan/internal/repository"
 	"github.com/fedorovmv/izyan/internal/review"
+	"github.com/fedorovmv/izyan/internal/risk"
 	"github.com/fedorovmv/izyan/internal/rootcause"
 	"github.com/fedorovmv/izyan/internal/toolaudit"
 	"github.com/fedorovmv/izyan/internal/tracker"
@@ -1513,6 +1514,8 @@ func (h EvaluateVerdict) Run(_ context.Context, c *domain.AnalysisCase) (workflo
 	v := h.Evaluator.Evaluate(affected, model, c.Claims)
 	v.Limitations = append(v.Limitations, c.EvidenceGraph.Limitations...)
 	c.Verdict = &v
+	cRisk := risk.Assess(c.Vulnerability, c, v)
+	c.ContextualRisk = &cRisk
 	return workflow.Transition{Next: domain.StateBuildReport, Reason: "verdict evaluated: " + string(v.Verdict)}, nil
 }
 
@@ -1554,6 +1557,10 @@ func (h BuildReport) Run(ctx context.Context, c *domain.AnalysisCase) (workflow.
 	if c.CVEAnalysisProfile == domain.ProfileAssist || c.CVEAnalysisProfile == domain.ProfileVerified || c.Justification != nil {
 		dossier := justification.Build(c)
 		c.Justification = &dossier
+	}
+	if c.ContextualRisk == nil && c.Verdict != nil {
+		cRisk := risk.Assess(c.Vulnerability, c, *c.Verdict)
+		c.ContextualRisk = &cRisk
 	}
 	if err := report.Write(h.Dir, c); err != nil {
 		return workflow.Transition{}, fmt.Errorf("build report: %w", err)

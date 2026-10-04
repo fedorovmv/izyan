@@ -642,6 +642,13 @@ func printCase(c *domain.AnalysisCase, caseDir string, lang ...string) {
 	if c.Verdict != nil {
 		fmt.Printf("verdict: %s\nreason: %s\n", c.Verdict.Verdict, c.Verdict.Reason)
 	}
+	if c.ContextualRisk != nil {
+		fmt.Printf("priority: %s (Contextual: %s, Score: %.1f, SLA: %s)\n",
+			c.ContextualRisk.Priority, c.ContextualRisk.ContextualLevel, c.ContextualRisk.ContextualScore, c.ContextualRisk.SLA)
+		if c.ContextualRisk.AdjustmentReason != "" {
+			fmt.Printf("triage_reason: %s\n", c.ContextualRisk.AdjustmentReason)
+		}
+	}
 	if len(c.Workflow.Timings) > 0 {
 		var parts []string
 		var total float64
@@ -853,10 +860,11 @@ func runScan(args []string) error {
 	src := vulnerability.OSVSource{BaseURL: o.osvURL}
 
 	type row struct {
-		ID      string `json:"id"`
-		State   string `json:"state"`
-		Verdict string `json:"verdict,omitempty"`
-		Reason  string `json:"reason,omitempty"`
+		ID       string `json:"id"`
+		State    string `json:"state"`
+		Verdict  string `json:"verdict,omitempty"`
+		Priority string `json:"priority,omitempty"`
+		Reason   string `json:"reason,omitempty"`
 	}
 	var rows []row
 	var survivors []string
@@ -868,9 +876,9 @@ func runScan(args []string) error {
 		}
 		res, _, err := resolver.Resolve(ctx, *v, snap)
 		if err == nil && deterministicallyNotAffected(res) {
-			rows = append(rows, row{ID: id, State: "FILTERED", Verdict: "NOT_AFFECTED",
+			rows = append(rows, row{ID: id, State: "FILTERED", Verdict: "NOT_AFFECTED", Priority: "DISMISSED",
 				Reason: notAffectedReason(res)})
-			fmt.Printf("%-18s NOT_AFFECTED (prefilter)\n", id)
+			fmt.Printf("%-18s NOT_AFFECTED [DISMISSED] (prefilter)\n", id)
 			continue
 		}
 		survivors = append(survivors, id)
@@ -904,6 +912,11 @@ func runScan(args []string) error {
 				r.Verdict = string(c.Verdict.Verdict)
 				r.Reason = c.Verdict.Reason
 			}
+			prioStr := ""
+			if c.ContextualRisk != nil {
+				r.Priority = string(c.ContextualRisk.Priority)
+				prioStr = fmt.Sprintf(" [%s]", c.ContextualRisk.Priority)
+			}
 			rows = append(rows, r)
 			var tm string
 			var total float64
@@ -913,7 +926,7 @@ func runScan(args []string) error {
 			if total > 0 {
 				tm = fmt.Sprintf(" (%.0fs, %d llm calls)", total, c.Workflow.Usage.LLMCalls)
 			}
-			fmt.Printf("%-18s %s %s%s\n", id, r.Verdict, r.Reason, tm)
+			fmt.Printf("%-18s %s%s %s%s\n", id, r.Verdict, prioStr, r.Reason, tm)
 		}(id)
 	}
 	wg.Wait()

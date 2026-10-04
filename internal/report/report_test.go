@@ -1164,3 +1164,83 @@ func TestReportTicketMetadata(t *testing.T) {
 		t.Errorf("EN markdown missing ticket release, got:\n%s", mdEN)
 	}
 }
+
+func TestReportTriageAssessmentTable(t *testing.T) {
+	c := &domain.AnalysisCase{
+		ID: "case-triage-test",
+		Vulnerability: domain.Vulnerability{
+			ID:           "CVE-2026-9999",
+			BaseSeverity: "CRITICAL",
+			BaseScore:    10.0,
+		},
+		Product: domain.ProductSnapshot{
+			Repository: "example.com/repo",
+			Commit:     "commit123456",
+			GoVersion:  "go1.26.1",
+		},
+		Verdict: &domain.VerdictResult{
+			Verdict: domain.VerdictExploitable,
+			Reason:  "all mandatory conditions met",
+		},
+		ContextualRisk: &domain.ContextualRisk{
+			Status:           domain.RiskStatusAssessed,
+			BaseSeverity:     "CRITICAL",
+			BaseScore:        10.0,
+			ContextualLevel:  domain.RiskLevelMedium,
+			ContextualScore:  4.5,
+			Priority:         domain.PriorityP2,
+			SLA:              "Sprint (30 days)",
+			AdjustmentReason: "Сетевой доступ из внешней сети отсутствует (слушатель привязан к локальному интерфейсу 127.0.0.1).",
+		},
+	}
+
+	// 1. Check Russian markdown
+	mdRU := Markdown(c, "ru")
+	if !strings.Contains(mdRU, "## Контекстная критичность и триаж (Triage Assessment)") {
+		t.Fatalf("RU markdown missing triage heading:\n%s", mdRU)
+	}
+	if !strings.Contains(mdRU, "🔴 **CRITICAL** (CVSS 10.0)") {
+		t.Errorf("RU markdown missing nominal severity:\n%s", mdRU)
+	}
+	if !strings.Contains(mdRU, "🟡 **MEDIUM** (Score 4.5)") {
+		t.Errorf("RU markdown missing contextual severity:\n%s", mdRU)
+	}
+	if !strings.Contains(mdRU, "**P0 (Blocker)**") {
+		t.Errorf("RU markdown missing nominal priority:\n%s", mdRU)
+	}
+	if !strings.Contains(mdRU, "**P2 (Плановый спринт)**") {
+		t.Errorf("RU markdown missing contextual priority:\n%s", mdRU)
+	}
+	if !strings.Contains(mdRU, "> ℹ️ **Обоснование переоценки:**") {
+		t.Errorf("RU markdown missing adjustment reason header:\n%s", mdRU)
+	}
+
+	// 2. Check English markdown
+	mdEN := Markdown(c, "en")
+	if !strings.Contains(mdEN, "## Contextual Severity & Triage Assessment") {
+		t.Fatalf("EN markdown missing triage heading:\n%s", mdEN)
+	}
+	if !strings.Contains(mdEN, "**P2 (Scheduled Sprint)**") {
+		t.Errorf("EN markdown missing contextual priority:\n%s", mdEN)
+	}
+	if !strings.Contains(mdEN, "> ℹ️ **Triage Rationale:**") {
+		t.Errorf("EN markdown missing triage rationale header:\n%s", mdEN)
+	}
+
+	// 3. Test report.Write serialization
+	tmpDir := t.TempDir()
+	if err := Write(tmpDir, c); err != nil {
+		t.Fatalf("Write failed: %v", err)
+	}
+	repJSON, err := os.ReadFile(filepath.Join(tmpDir, "report.json"))
+	if err != nil {
+		t.Fatalf("reading report.json: %v", err)
+	}
+	if !strings.Contains(string(repJSON), `"contextual_risk"`) {
+		t.Fatalf("report.json missing contextual_risk: %s", string(repJSON))
+	}
+	if !strings.Contains(string(repJSON), `"priority": "P2"`) {
+		t.Fatalf("report.json missing priority P2: %s", string(repJSON))
+	}
+}
+
