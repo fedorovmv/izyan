@@ -18,6 +18,7 @@ func readonly(c *cfg) {
 	// A bare reflect import + read-only calls do not write fields.
 	_ = reflect.TypeOf(c.limit).Kind()
 	vuln.Parse("x")
+	_, _ = vuln.Connect("127.0.0.1:0")
 }
 
 func writevia(c *cfg, v int) {

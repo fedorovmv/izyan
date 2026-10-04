@@ -96,13 +96,9 @@ func (v Verifier) VerifyFalse(ctx context.Context, c *domain.AnalysisCase, claim
 
 	allSites := map[string][]domain.CallSite{}
 	anyExported := false
-	anyExportedMethod := false
 	for _, s := range subjects {
 		if symbolExported(s) {
 			anyExported = true
-			if symbolIsMethod(s) {
-				anyExportedMethod = true
-			}
 		}
 	}
 	dynSeen := map[string]bool{}
@@ -162,7 +158,10 @@ func (v Verifier) VerifyFalse(ctx context.Context, c *domain.AnalysisCase, claim
 				if claim.Falsifier == domain.FalsifierGuards {
 					continue
 				}
-				if !anyExportedMethod {
+				if !symbolIsMethod(subj) || !symbolExported(subj) {
+					continue
+				}
+				if v.Source != nil && !v.Source.IsReceiverTypeInstantiated(subj) {
 					continue
 				}
 				if !dynSeen[m.Kind] {

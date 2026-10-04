@@ -355,6 +355,9 @@ func (v Verifier) verifyLocusFunctionUnreached(ctx context.Context, c *domain.An
 						}
 					case "reflect_method":
 						if symbolIsMethod(subj) && symbolExported(subj) {
+							if v.Source != nil && !v.Source.IsReceiverTypeInstantiated(subj) {
+								continue
+							}
 							nv.Limitations = append(nv.Limitations,
 								"динамический вызов методов через reflect используется в продукте")
 						}

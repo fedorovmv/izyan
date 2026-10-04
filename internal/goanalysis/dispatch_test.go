@@ -165,3 +165,148 @@ func TestModuleInternalReach_XDS(t *testing.T) {
 		t.Fatalf("reach chain for builder.ParseFilterConfig missing; reach: %v", reach)
 	}
 }
+
+func TestModuleInternalReach_SubjectSignatureMismatchNotOpaque(t *testing.T) {
+	dir := t.TempDir()
+	mod := `module example.com/mismatchmod
+
+go 1.22
+`
+	src := `package mismatchmod
+
+type Target struct{}
+
+func (Target) Action() string {
+	return "target"
+}
+
+func Caller(f func(int, string)) {
+	f(42, "hello")
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(mod), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "mismatch.go"), []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	ix := &Index{Dir: dir}
+	entries := []string{"example.com/mismatchmod.Caller"}
+	subjects := []domain.SymbolRef{
+		{
+			Package: "example.com/mismatchmod",
+			Symbol:  "Target.Action",
+		},
+	}
+
+	reach, opaque, err := ix.ModuleInternalReach(context.Background(), "example.com/mismatchmod", entries, subjects)
+	if err != nil {
+		t.Fatalf("ModuleInternalReach failed: %v", err)
+	}
+	if reach["example.com/mismatchmod.Target.Action"] != nil {
+		t.Fatalf("expected Target.Action to be unreachable, got chain: %v", reach["example.com/mismatchmod.Target.Action"])
+	}
+	if opaque {
+		t.Fatalf("expected opaque=false because opaque call signature func(int, string) mismatches subject func() string")
+	}
+
+	// Also verify with pointer-receiver notation (*Target).Action.
+	subjectsPtr := []domain.SymbolRef{
+		{
+			Package: "example.com/mismatchmod",
+			Symbol:  "(*Target).Action",
+		},
+	}
+	reachPtr, opaquePtr, err := ix.ModuleInternalReach(context.Background(), "example.com/mismatchmod", entries, subjectsPtr)
+	if err != nil {
+		t.Fatalf("ModuleInternalReach with pointer receiver notation failed: %v", err)
+	}
+	if reachPtr["example.com/mismatchmod.(*Target).Action"] != nil {
+		t.Fatalf("expected (*Target).Action to be unreachable, got chain: %v", reachPtr["example.com/mismatchmod.(*Target).Action"])
+	}
+	if opaquePtr {
+		t.Fatalf("expected opaque=false for pointer receiver notation (*Target).Action")
+	}
+}
+
+func TestModuleInternalReach_UniverseFuncCallNotOpaque(t *testing.T) {
+	dir := t.TempDir()
+	mod := `module example.com/errormod
+
+go 1.22
+`
+	src := `package errormod
+
+type Target struct{}
+
+func (Target) String() string {
+	return "target"
+}
+
+func Caller(err error) string {
+	if err != nil {
+		return err.Error()
+	}
+	return ""
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(mod), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "err.go"), []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	ix := &Index{Dir: dir}
+	entries := []string{"example.com/errormod.Caller"}
+	subjects := []domain.SymbolRef{
+		{
+			Package: "example.com/errormod",
+			Symbol:  "Target.String",
+		},
+	}
+
+	reach, opaque, err := ix.ModuleInternalReach(context.Background(), "example.com/errormod", entries, subjects)
+	if err != nil {
+		t.Fatalf("ModuleInternalReach failed: %v", err)
+	}
+	if reach["example.com/errormod.Target.String"] != nil {
+		t.Fatalf("expected Target.String to be unreachable, got chain: %v", reach["example.com/errormod.Target.String"])
+	}
+	if opaque {
+		t.Fatalf("expected opaque=false because universe error.Error() is a known static call, not an opaque dispatch")
+	}
+}
+
+func TestModuleInternalReach_AmqpNotOpaque(t *testing.T) {
+	prodDir := os.Getenv("VA_PRODUCT_REPO")
+	if prodDir == "" {
+		t.Skip("VA_PRODUCT_REPO not set")
+	}
+	if _, err := os.Stat(prodDir); err != nil {
+		t.Skip("prodDir does not exist")
+	}
+	ix := &Index{Dir: prodDir}
+	entries := []string{
+		"github.com/rabbitmq/amqp091-go.Dial",
+		"github.com/rabbitmq/amqp091-go.DialTLS",
+		"github.com/rabbitmq/amqp091-go.DialTLS_ExternalAuth",
+	}
+	subjects := []domain.SymbolRef{
+		{
+			Package: "github.com/rabbitmq/amqp091-go",
+			Symbol:  "URI.String",
+		},
+	}
+	reach, opaque, err := ix.ModuleInternalReach(context.Background(), "github.com/rabbitmq/amqp091-go", entries, subjects)
+	if err != nil {
+		t.Skipf("skipping: module not found in VA_PRODUCT_REPO: %v", err)
+	}
+	if len(reach) != 0 {
+		t.Fatalf("expected URI.String not reached, got %v", reach)
+	}
+	if opaque {
+		t.Fatalf("expected opaque=false because reachable opaque calls do not match URI.String")
+	}
+}

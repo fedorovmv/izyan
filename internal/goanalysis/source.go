@@ -2007,6 +2007,11 @@ func (ix *Index) ModuleUsage(ctx context.Context, module string) ([]domain.CallS
 	return out, nil
 }
 
+type opaqueSite struct {
+	sig   *types.Signature
+	iface *types.Interface
+}
+
 // ModuleInternalReach resolves which of the given subjects are reachable from
 // the entry symbols (module API functions the product calls) through call
 // edges inside the vendored module source. Returns subject key ("pkg.Symbol")
@@ -2033,26 +2038,52 @@ func (ix *Index) ModuleInternalReach(ctx context.Context, module string, entries
 	if err != nil {
 		return nil, false, err
 	}
-	edges, opaqueCallers := ix.moduleEdges(pkgs, module)
+	edges, opaqueSites := ix.moduleEdgesSites(pkgs, module)
 
 	out := map[string][]string{}
+	var unreached []domain.SymbolRef
 	for _, subj := range subjects {
 		target := subj.Package + "." + subj.Symbol
+		found := false
 		for _, e := range entries {
 			if chain := bfsChain(edges, e, target); chain != nil {
 				out[target] = chain
+				found = true
+				break
+			}
+		}
+		if !found {
+			unreached = append(unreached, subj)
+		}
+	}
+	if len(unreached) == 0 {
+		return out, false, nil
+	}
+
+	// Opaque dispatch (func values, dynamic calls) only invalidates reachability
+	// if an opaque call site is actually reachable from the product's used API
+	// entries AND its signature or interface is compatible with an unreached subject.
+	var reachableSites []opaqueSite
+	for oc, sites := range opaqueSites {
+		if len(sites) == 0 {
+			continue
+		}
+		for _, e := range entries {
+			if bfsChain(edges, e, oc) != nil {
+				reachableSites = append(reachableSites, sites...)
 				break
 			}
 		}
 	}
-	// Opaque dispatch (func values, dynamic calls) only invalidates reachability
-	// if an opaque call site is actually reachable from the product's used API
-	// entries — opaque calls in dead code or unrelated sub-packages do not
-	// execute during product runs.
+	if len(reachableSites) == 0 {
+		return out, false, nil
+	}
+
 	opaque := false
-	for _, e := range entries {
-		for oc := range opaqueCallers {
-			if bfsChain(edges, e, oc) != nil {
+	for _, subj := range unreached {
+		subjObj, recvType := findSubjectObject(pkgs, subj)
+		for _, site := range reachableSites {
+			if isOpaqueSiteCompatible(site, subj, subjObj, recvType) {
 				opaque = true
 				break
 			}
@@ -2064,20 +2095,238 @@ func (ix *Index) ModuleInternalReach(ctx context.Context, module string, entries
 	return out, opaque, nil
 }
 
+// findSubjectObject resolves the subject symbol to its types.Object and receiver type
+// from the loaded module packages.
+func findSubjectObject(pkgs []*packages.Package, subj domain.SymbolRef) (types.Object, types.Type) {
+	var targetPkg *packages.Package
+	for _, p := range pkgs {
+		if p.PkgPath == subj.Package && p.Types != nil {
+			targetPkg = p
+			break
+		}
+	}
+	if targetPkg == nil {
+		return nil, nil
+	}
+
+	typeName, name := splitSymbol(subj.Symbol)
+	typeName = strings.TrimSpace(typeName)
+	typeName = strings.Trim(typeName, "()*")
+	typeName = strings.TrimSpace(typeName)
+	if typeName == "" {
+		if obj := targetPkg.Types.Scope().Lookup(name); obj != nil {
+			return obj, nil
+		}
+		for _, n := range targetPkg.Types.Scope().Names() {
+			tn, ok := targetPkg.Types.Scope().Lookup(n).(*types.TypeName)
+			if !ok {
+				continue
+			}
+			nt := mustNamed(tn)
+			if nt == nil {
+				continue
+			}
+			if iface, ok := nt.Underlying().(*types.Interface); ok {
+				for i := 0; i < iface.NumMethods(); i++ {
+					m := iface.Method(i)
+					if m.Name() == name {
+						return m, nt
+					}
+				}
+				continue
+			}
+			mset := types.NewMethodSet(types.NewPointer(nt))
+			for i := 0; i < mset.Len(); i++ {
+				m := mset.At(i).Obj()
+				if m.Name() == name {
+					return m, nt
+				}
+			}
+		}
+		return nil, nil
+	}
+
+	tn, ok := targetPkg.Types.Scope().Lookup(typeName).(*types.TypeName)
+	if !ok {
+		return nil, nil
+	}
+	nt := mustNamed(tn)
+	if nt == nil {
+		return nil, nil
+	}
+	if iface, ok := nt.Underlying().(*types.Interface); ok {
+		for i := 0; i < iface.NumMethods(); i++ {
+			m := iface.Method(i)
+			if m.Name() == name {
+				return m, nt
+			}
+		}
+		return nil, nt
+	}
+	mset := types.NewMethodSet(types.NewPointer(nt))
+	for i := 0; i < mset.Len(); i++ {
+		m := mset.At(i).Obj()
+		if m.Name() == name {
+			return m, nt
+		}
+	}
+	return nil, nt
+}
+
+// isOpaqueSiteCompatible checks whether an opaque call site (func variable or unlinked
+// interface call) could plausibly invoke the target subject.
+func isOpaqueSiteCompatible(site opaqueSite, subj domain.SymbolRef, subjObj types.Object, recvType types.Type) bool {
+	if site.sig == nil && site.iface == nil {
+		return true
+	}
+	if subjObj == nil {
+		return true
+	}
+	fn, ok := subjObj.(*types.Func)
+	if !ok {
+		return false
+	}
+	subjSig, ok := fn.Type().(*types.Signature)
+	if !ok {
+		return false
+	}
+
+	if site.sig != nil {
+		if sigCompatible(site.sig, subjSig) {
+			return true
+		}
+	}
+	if site.iface != nil {
+		if ifaceCompatible(site.iface, subj, recvType) {
+			return true
+		}
+	}
+	return false
+}
+
+// sigCompatible reports whether an indirect function call with siteSig could
+// plausibly invoke a target with subjSig (directly as a func/method value or via method expression).
+func sigCompatible(siteSig, subjSig *types.Signature) bool {
+	if types.Identical(siteSig, subjSig) {
+		return true
+	}
+	resultsMatch := func(r1, r2 *types.Tuple) bool {
+		if r1.Len() != r2.Len() {
+			return false
+		}
+		for i := 0; i < r1.Len(); i++ {
+			if !types.Identical(r1.At(i).Type(), r2.At(i).Type()) {
+				return false
+			}
+		}
+		return true
+	}
+	paramsMatch := func(p1, p2 *types.Tuple) bool {
+		if p1.Len() != p2.Len() {
+			return false
+		}
+		for i := 0; i < p1.Len(); i++ {
+			if !types.Identical(p1.At(i).Type(), p2.At(i).Type()) {
+				return false
+			}
+		}
+		return true
+	}
+
+	if resultsMatch(siteSig.Results(), subjSig.Results()) {
+		// Case 1: direct parameter match (package-level func or method value call)
+		if paramsMatch(siteSig.Params(), subjSig.Params()) && siteSig.Variadic() == subjSig.Variadic() {
+			return true
+		}
+		// Case 2: method expression call (first param is receiver)
+		if subjSig.Recv() != nil && siteSig.Params().Len() == 1+subjSig.Params().Len() {
+			firstParam := siteSig.Params().At(0).Type()
+			recvT := subjSig.Recv().Type()
+			recvMatch := types.Identical(firstParam, recvT) || types.Identical(firstParam, types.NewPointer(recvT))
+			if !recvMatch {
+				if ptr, ok := recvT.(*types.Pointer); ok {
+					recvMatch = types.Identical(firstParam, ptr.Elem())
+				}
+			}
+			if recvMatch {
+				tailMatch := true
+				for i := 0; i < subjSig.Params().Len(); i++ {
+					if !types.Identical(siteSig.Params().At(i+1).Type(), subjSig.Params().At(i).Type()) {
+						tailMatch = false
+						break
+					}
+				}
+				if tailMatch && siteSig.Variadic() == subjSig.Variadic() {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// ifaceCompatible reports whether an interface method dispatch on iface could
+// invoke the target subject method on receiver type recvType.
+func ifaceCompatible(iface *types.Interface, subj domain.SymbolRef, recvType types.Type) bool {
+	if iface == nil || recvType == nil {
+		return false
+	}
+	_, name := splitSymbol(subj.Symbol)
+	hasMethod := false
+	for i := 0; i < iface.NumMethods(); i++ {
+		if iface.Method(i).Name() == name {
+			hasMethod = true
+			break
+		}
+	}
+	if !hasMethod {
+		return false
+	}
+	if types.Implements(recvType, iface) {
+		return true
+	}
+	if types.Implements(types.NewPointer(recvType), iface) {
+		return true
+	}
+	return false
+}
+
 // moduleEdges builds the intra-module call graph: caller-qualified-name ->
 // set of callee-qualified-names, plus interface-method -> implementation
 // edges for every module-local impl of invoked interface methods. The
 // map returns the set of qualified caller names that contain opaque dispatch —
 // calls resolving to no function at all (func values).
 func (ix *Index) moduleEdges(pkgs []*packages.Package, module string) (map[string]map[string]bool, map[string]bool) {
+	edges, sites := ix.moduleEdgesSites(pkgs, module)
+	callers := make(map[string]bool, len(sites))
+	for k, v := range sites {
+		if len(v) > 0 {
+			callers[k] = true
+		}
+	}
+	return edges, callers
+}
+
+func (ix *Index) moduleEdgesSites(pkgs []*packages.Package, module string) (map[string]map[string]bool, map[string][]opaqueSite) {
 	edges := map[string]map[string]bool{}
-	opaqueCallers := map[string]bool{}
+	opaqueSites := map[string][]opaqueSite{}
+	addOpaque := func(caller string, site opaqueSite) {
+		for _, existing := range opaqueSites[caller] {
+			sigMatch := (existing.sig == site.sig) || (existing.sig != nil && site.sig != nil && types.Identical(existing.sig, site.sig))
+			ifaceMatch := (existing.iface == site.iface)
+			if sigMatch && ifaceMatch {
+				return
+			}
+		}
+		opaqueSites[caller] = append(opaqueSites[caller], site)
+	}
 	// Interface dispatch call sites, recorded for per-site impl narrowing:
 	// a site `g.M()` where g = registry[key] with an evaluable key reaches
 	// only the impls registered at the key's values, not every impl.
 	type ifaceSite struct {
-		pkg  *packages.Package
-		enc  *ast.FuncDecl
+		pkg *packages.Package
+		enc *ast.FuncDecl
+
 		call *ast.CallExpr
 	}
 	ifaceSites := map[*types.Named]map[string][]ifaceSite{}
@@ -2428,15 +2677,18 @@ func (ix *Index) moduleEdges(pkgs []*packages.Package, module string) (map[strin
 								// call resolves to the interface method but
 								// no impl edges are enumerable — the graph
 								// is incomplete, not "no path".
-								opaqueCallers[pkg.PkgPath+"."+caller] = true
+								iface, _ := rt.Underlying().(*types.Interface)
+								addOpaque(pkg.PkgPath+"."+caller, opaqueSite{iface: iface})
 							}
 						}
 					}
 					addEdge(pkg.PkgPath+"."+caller, callee)
 					return true
 				}
-				if fn, ok := obj.(*types.Func); ok && fn.Pkg() != nil {
-					handleCallee(fn)
+				if fn, ok := obj.(*types.Func); ok {
+					if fn.Pkg() != nil {
+						handleCallee(fn)
+					}
 					return true
 				}
 				if v, ok := obj.(*types.Var); ok {
@@ -2459,7 +2711,8 @@ func (ix *Index) moduleEdges(pkgs []*packages.Package, module string) (map[strin
 										return true
 									}
 								}
-								opaqueCallers[pkg.PkgPath+"."+caller] = true
+								sig, _ := v.Type().Underlying().(*types.Signature)
+								addOpaque(pkg.PkgPath+"."+caller, opaqueSite{sig: sig})
 								return true
 							}
 						}
@@ -2480,7 +2733,8 @@ func (ix *Index) moduleEdges(pkgs []*packages.Package, module string) (map[strin
 									return true
 								}
 							}
-							opaqueCallers[pkg.PkgPath+"."+caller] = true
+							sig, _ := v.Type().Underlying().(*types.Signature)
+							addOpaque(pkg.PkgPath+"."+caller, opaqueSite{sig: sig})
 							return true
 						}
 						// 3. Local func variable / method value
@@ -2517,7 +2771,23 @@ func (ix *Index) moduleEdges(pkgs []*packages.Package, module string) (map[strin
 				switch obj.(type) {
 				case *types.Builtin, *types.TypeName:
 				default:
-					opaqueCallers[pkg.PkgPath+"."+caller] = true
+					if tv, ok := info.Types[fun]; ok && tv.IsType() {
+						break
+					}
+					var siteSig *types.Signature
+					if tv, ok := info.Types[fun]; ok && tv.Type != nil {
+						if sig, ok := tv.Type.Underlying().(*types.Signature); ok {
+							siteSig = sig
+						}
+					}
+					if siteSig == nil {
+						if v, ok := obj.(*types.Var); ok {
+							if sig, ok := v.Type().Underlying().(*types.Signature); ok {
+								siteSig = sig
+							}
+						}
+					}
+					addOpaque(pkg.PkgPath+"."+caller, opaqueSite{sig: siteSig})
 				}
 				return true
 			})
@@ -2606,19 +2876,20 @@ func (ix *Index) moduleEdges(pkgs []*packages.Package, module string) (map[strin
 				// loaded graph (invisible instantiation, unloaded impl
 				// package) leaves the callee unreached — that is unknown
 				// reachability, not disproven.
+				iface, _ := named.Underlying().(*types.Interface)
 				for _, s := range sites {
 					if s.enc != nil && s.enc.Name != nil {
 						fnName := s.enc.Name.Name
 						if s.enc.Recv != nil && len(s.enc.Recv.List) > 0 {
 							fnName = recvDeclName(s.enc.Recv.List[0].Type) + "." + fnName
 						}
-						opaqueCallers[s.pkg.PkgPath+"."+fnName] = true
+						addOpaque(s.pkg.PkgPath+"."+fnName, opaqueSite{iface: iface})
 					}
 				}
 			}
 		}
 	}
-	return edges, opaqueCallers
+	return edges, opaqueSites
 }
 
 // namedKey canonicalizes a named type across load instances — the same
@@ -2644,12 +2915,38 @@ func instantiatedNamed(pkgs []*packages.Package) (set map[string]bool, disabled 
 	set = map[string]bool{}
 	var add func(t types.Type)
 	add = func(t types.Type) {
+		if t == nil {
+			return
+		}
+		if tup, ok := t.(*types.Tuple); ok {
+			for i := 0; i < tup.Len(); i++ {
+				add(tup.At(i).Type())
+			}
+			return
+		}
 		for {
 			if p, ok := t.(*types.Pointer); ok {
 				t = p.Elem()
 				continue
 			}
 			break
+		}
+		if s, ok := t.(*types.Slice); ok {
+			add(s.Elem())
+			return
+		}
+		if a, ok := t.(*types.Array); ok {
+			add(a.Elem())
+			return
+		}
+		if m, ok := t.(*types.Map); ok {
+			add(m.Key())
+			add(m.Elem())
+			return
+		}
+		if c, ok := t.(*types.Chan); ok {
+			add(c.Elem())
+			return
 		}
 		n, ok := t.(*types.Named)
 		if !ok || n.Underlying() == nil {
@@ -2701,6 +2998,9 @@ func instantiatedNamed(pkgs []*packages.Package) (set map[string]bool, disabled 
 						add(info.TypeOf(e.Type))
 					}
 				case *ast.CallExpr:
+					if info != nil {
+						add(info.TypeOf(e))
+					}
 					obj := calleeObject(info, e.Fun)
 					switch o := obj.(type) {
 					case *types.Builtin:
@@ -2748,6 +3048,33 @@ func (ix *Index) instantiated() (map[string]bool, bool) {
 	set, disabled := instantiatedNamed(pkgs)
 	ix.instSet, ix.instDisabled, ix.instGen = set, disabled, ix.extrasGen
 	return set, !disabled
+}
+
+// IsReceiverTypeInstantiated reports whether the receiver type of ref (if ref
+// is a method) is known to be instantiated in the analyzed code.
+// Standalone functions (no receiver type) conservatively return true.
+func (ix *Index) IsReceiverTypeInstantiated(ref domain.SymbolRef) bool {
+	if ix == nil {
+		return true
+	}
+	typeName, _ := splitSymbol(ref.Symbol)
+	typeName = strings.TrimSpace(typeName)
+	typeName = strings.Trim(typeName, "()*")
+	typeName = strings.TrimSpace(typeName)
+	if typeName == "" {
+		return true
+	}
+	ix.mu.Lock()
+	defer ix.mu.Unlock()
+	if err := ix.load(ix.ctxOr(nil)); err != nil {
+		return true
+	}
+	inst, _ := ix.instantiated()
+	if inst == nil {
+		return true
+	}
+	key := ref.Package + "." + typeName
+	return inst[key]
 }
 
 // depCone returns the set of module functions reachable from the product's

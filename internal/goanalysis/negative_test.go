@@ -55,8 +55,8 @@ func TestReflectMarkerStandaloneFunctionScoping(t *testing.T) {
 		}
 	}
 
-	// 2. Exported method on a type: reflect method call DOES add call-graph limitation
-	methodSym := domain.SymbolRef{Package: "example.com/dep/vuln", Symbol: "Server.Serve"}
+	// 2. Exported method on an instantiated type: reflect method call DOES add call-graph limitation
+	methodSym := domain.SymbolRef{Package: "example.com/dep/vuln", Symbol: "Conn.Next"}
 	claim2 := domain.Claim{
 		ConditionID: "C-REACH",
 		Result:      domain.ClaimFalse,
@@ -198,5 +198,97 @@ func TestVerifyInputFalse_ExternalInputContradictsConstantAndConfig(t *testing.T
 		if out.NegativeVerification == nil || out.NegativeVerification.Status != domain.NegativeContradicted {
 			t.Fatalf("falsifier %q: expected NegativeContradicted for external input, got: %+v", falsifier, out.NegativeVerification)
 		}
+	}
+}
+
+func TestNegativeVerification_ReflectMethodUninstantiatedType(t *testing.T) {
+	ix := fixture(t, "reflectprod")
+	v := Verifier{Source: ix}
+	c := &domain.AnalysisCase{}
+	c.Vulnerability.Module = "example.com/dep"
+
+	sym := domain.SymbolRef{Package: "example.com/dep/vuln", Symbol: "ExternalType.Action"}
+	claim := domain.Claim{
+		ConditionID: "C-REACH",
+		Result:      domain.ClaimFalse,
+		Falsifier:   domain.FalsifierGovulncheckSilence,
+	}
+	cond := domain.Condition{
+		ID:       "C-REACH",
+		Kind:     domain.ConditionSymbolReachable,
+		Subjects: []domain.SymbolRef{sym},
+	}
+
+	out := v.VerifyFalse(context.Background(), c, claim, cond)
+	if out.NegativeVerification == nil || out.NegativeVerification.Status != domain.NegativeVerified {
+		t.Fatalf("expected NegativeVerified for uninstantiated receiver type %s, got: %+v", sym.Symbol, out.NegativeVerification)
+	}
+	for _, lim := range out.NegativeVerification.Limitations {
+		if strings.Contains(lim, "widens the call graph") {
+			t.Fatalf("unexpected call-graph limitation for uninstantiated receiver type %s: %s", sym.Symbol, lim)
+		}
+	}
+}
+
+func TestNegativeVerification_ReflectMethodMultiSubjectStandaloneAndUninstantiated(t *testing.T) {
+	ix := fixture(t, "reflectprod")
+	v := Verifier{Source: ix}
+	c := &domain.AnalysisCase{}
+	c.Vulnerability.Module = "example.com/dep"
+
+	// Condition with both an uninstantiated exported method and an exported standalone function.
+	methodSym := domain.SymbolRef{Package: "example.com/dep/vuln", Symbol: "ExternalType.Action"}
+	standaloneSym := domain.SymbolRef{Package: "example.com/dep/vuln", Symbol: "NewDict"}
+
+	claim := domain.Claim{
+		ConditionID: "C-REACH",
+		Result:      domain.ClaimFalse,
+		Falsifier:   domain.FalsifierGovulncheckSilence,
+	}
+	cond := domain.Condition{
+		ID:       "C-REACH",
+		Kind:     domain.ConditionSymbolReachable,
+		Subjects: []domain.SymbolRef{methodSym, standaloneSym},
+	}
+
+	out := v.VerifyFalse(context.Background(), c, claim, cond)
+	if out.NegativeVerification == nil || out.NegativeVerification.Status != domain.NegativeVerified {
+		t.Fatalf("expected NegativeVerified, got: %+v", out.NegativeVerification)
+	}
+	for _, lim := range out.NegativeVerification.Limitations {
+		if strings.Contains(lim, "widens the call graph") {
+			t.Fatalf("unexpected reflect call-graph limitation for standalone function + uninstantiated method: %s", lim)
+		}
+	}
+}
+
+func TestIsReceiverTypeInstantiated(t *testing.T) {
+	ix := fixture(t, "reflectprod")
+
+	// Nil index -> returns true (conservative)
+	var nilIx *Index
+	if !nilIx.IsReceiverTypeInstantiated(domain.SymbolRef{Package: "pkg", Symbol: "Type.Method"}) {
+		t.Fatal("expected nil Index to return true")
+	}
+
+	// Standalone function -> returns true
+	if !ix.IsReceiverTypeInstantiated(domain.SymbolRef{Package: "example.com/dep/vuln", Symbol: "Parse"}) {
+		t.Fatal("expected standalone function to return true")
+	}
+
+	// Instantiated type (Conn is instantiated in reflectprod)
+	if !ix.IsReceiverTypeInstantiated(domain.SymbolRef{Package: "example.com/dep/vuln", Symbol: "Conn.Next"}) {
+		t.Fatal("expected instantiated type Conn.Next to return true")
+	}
+	if !ix.IsReceiverTypeInstantiated(domain.SymbolRef{Package: "example.com/dep/vuln", Symbol: "(*Conn).Next"}) {
+		t.Fatal("expected instantiated pointer type (*Conn).Next to return true")
+	}
+
+	// Uninstantiated external type -> returns false
+	if ix.IsReceiverTypeInstantiated(domain.SymbolRef{Package: "example.com/dep/vuln", Symbol: "ExternalType.Action"}) {
+		t.Fatal("expected uninstantiated ExternalType.Action to return false")
+	}
+	if ix.IsReceiverTypeInstantiated(domain.SymbolRef{Package: "example.com/dep/vuln", Symbol: "(*ExternalType).Action"}) {
+		t.Fatal("expected uninstantiated (*ExternalType).Action to return false")
 	}
 }
